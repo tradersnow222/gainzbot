@@ -63,9 +63,7 @@ class RedFlagChecker:
             "want_to_die", "thoughts_of_self_harm",
         )),
         ("self_harm", ("self_harm", "selfharm")),
-        ("disordered_eating", (
-            "disordered_eating", "starving_to_cut_weight", "laxatives",
-        )),
+        ("disordered_eating", ("disordered_eating",)),
         ("purging", ("purging", "deliberate_vomiting")),
         ("rhabdomyolysis", (
             "dark_urine", "dark_brown_urine", "cola_colored_urine",
@@ -74,8 +72,7 @@ class RedFlagChecker:
         ("injury", ("sudden_pop", "pop")),
         ("tendon_snap", ("tendon_snap", "snap")),
         ("heat_illness", (
-            "heat_illness", "heat_stroke", "stopped_sweating",
-            "confusion_and_stopped_sweating",
+            "heat_illness", "heat_stroke", "confusion_and_stopped_sweating",
         )),
         ("palpitations", (
             "palpitations", "palpitations_with_dizziness",

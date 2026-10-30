@@ -792,6 +792,20 @@ class TestCanonicalItems:
         result = self._ask(purging=None)
         assert "purging" in result.message.lower()
 
+    @pytest.mark.parametrize("narrow,canonical,phrase", [
+        ("laxatives", "disordered_eating", "disordered eating"),
+        ("starving_to_cut_weight", "disordered_eating", "disordered eating"),
+        ("stopped_sweating", "heat_illness", "heat illness"),
+    ])
+    def test_narrow_item_does_not_answer_the_group(self, narrow, canonical, phrase):
+        answers = all_no_checklist()
+        answers.pop(canonical)
+        answers[narrow] = "no"
+        result = RedFlagChecker().scan_check_in({"symptom_checklist": answers})
+        assert result.pause_plan
+        assert "?" in result.message
+        assert phrase in result.message.lower()
+
     @pytest.mark.parametrize("key,phrase", [
         ("palpitations", "palpitations"),
         ("referred_pain", "jaw"),

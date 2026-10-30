@@ -142,5 +142,5 @@ if result.pause_plan:
 
 **Testing:**
 ```bash
-pytest test_red_flag_check.py -v  # 247 tests
+pytest test_red_flag_check.py -v  # 250 tests
 ```
