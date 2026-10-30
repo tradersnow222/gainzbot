@@ -50,6 +50,10 @@ class RedFlagChecker:
             (r"\bheart\s+(?:is\s+)?(?:racing|pounding)\b", True),
             (r"\b(?:irregular\s+heartbeat|palpitations|heart\s+skipping|rapid\s+pulse)\b", False),
             (r"\bheart\s+(?:is\s+)?flutter\w*\b", False),
+            (r"\bheart\s+attacks?\b", False),
+            (r"\bcardiac\s+(?:arrest|event|episode)\b", False),
+            (r"\bmyocardial(?:\s+infarction)?\b", False),
+            (r"\bheart\s+stopped\b(?!\s+(?:racing|pounding))", False),
         ],
         "fainting": [
             (r"\b(?:fainted|passed\s+out|blacked\s+out|lost\s+consciousness)\b", False),
@@ -72,8 +76,39 @@ class RedFlagChecker:
                 False,
             ),
             (r"\b(?:knee|ankle|shoulder|hip|wrist|elbow)\s+popped\b", False),
-            (r"\bpopped and swelled\b", False),
             (r"\binjury to\b", False),
+            (
+                r"(?<!foam[ -])(?<![a-z-])(?:rolled|twisted|tweaked)\s+"
+                r"(?:(?:my|the|an|a)\s+)?(?:left\s+|right\s+)?"
+                r"(?:ankle|knee|wrist|shoulder|elbow|hip|foot)\b",
+                False,
+            ),
+            (
+                r"\b(?:heard|felt)\s+(?:a\s+)?pop\s+(?:in\s+)?(?:my\s+)?"
+                r"(?:left\s+|right\s+)?(?:ankle|knee|wrist|shoulder|elbow|hip|back|calf|foot)\b",
+                False,
+            ),
+            (
+                r"\b(?:ankle|knee|wrist|shoulder|elbow|hip|foot|leg|arm)\s+"
+                r"(?:is|was|got|feels?|looks?)\s+"
+                r"(?:really\s+|so\s+|very\s+|all\s+|pretty\s+)?(?:swollen|swelled)\b",
+                False,
+            ),
+            (
+                r"\b(?:swollen|swelling)\s+(?:in\s+)?(?:my\s+)?"
+                r"(?:left\s+|right\s+)?(?:ankle|knee|wrist|shoulder|elbow|hip|foot)\b",
+                False,
+            ),
+            (
+                r"\b(?:ankle|knee|wrist|shoulder|elbow|hip|foot)\s+"
+                r"(?:rolled|swelled)\b",
+                False,
+            ),
+            (
+                r"\bpopped\s+(?:my\s+)?(?:left\s+|right\s+)?"
+                r"(?:ankle|knee|wrist|shoulder|elbow|hip)\b",
+                False,
+            ),
         ],
         "extreme_fatigue": [
             (r"\b(?:extreme\s+fatigue|severe\s+fatigue|completely\s+exhausted)\b", False),
@@ -91,6 +126,27 @@ class RedFlagChecker:
             (r"\b(?:haven't\s+eaten\s+in\s+days|skipping\s+all\s+meals|not\s+eating\s+at\s+all)\b", False),
             (r"\b(?:obsessed\s+with\s+calories|terrified\s+of\s+food|afraid\s+to\s+eat)\b", False),
             (r"\b(?:exercise\s+to\s+punish|punishing\s+myself)\b", False),
+            (r"\bfingers?\s+down\s+(?:my\s+)?throat\b", False),
+            (r"\b(?:mak(?:e|ing)|made)\s+myself\s+sick\b", False),
+            (
+                r"\b(?:throw(?:ing)? up|threw up|vomit(?:ing|ed)?)\s+"
+                r"(?:everything|whatever)\s+i\s+eat\b",
+                False,
+            ),
+            (
+                r"\b(?:forc(?:e|ed|ing))\s+(?:myself\s+)?to\s+(?:throw up|vomit|puke)\b",
+                False,
+            ),
+            (
+                r"\b(?:throw(?:ing)? up|threw up|vomit(?:ed|ing)?|puk(?:e|ed|ing)|"
+                r"purg(?:e|ed|ing))\s+on purpose\b",
+                False,
+            ),
+            (
+                r"\b(?:on purpose|deliberately|intentionally)\s+"
+                r"(?:throw(?:ing)? up|threw up|vomit(?:ed|ing)?|purg\w*)\b",
+                False,
+            ),
         ],
         "breathing_difficulty": [
             (
@@ -107,6 +163,12 @@ class RedFlagChecker:
         ],
         "numbness": [
             (r"\b(?:went|goes|going|feel(?:s|ing)?|felt)\s+numb\b", False),
+            (
+                r"\b(?:arm|leg|hand|face|foot|finger|fingers|toe|toes|jaw)\b"
+                r"(?:\s+\w+){0,3}\s+(?:is|was|feels?|went|goes|going|felt)\s+numb\b",
+                False,
+            ),
+            (r"\bnumb\s+(?:arm|leg|hand|face|foot|fingers?|toes?|jaw)\b", False),
             (r"\bnumbness\b", False),
             (r"\btingling\s+in\s+(?:my\s+)?(?:arm|leg|face|hand|chest)\b", False),
             (r"\bloss\s+of\s+sensation\b", False),
@@ -124,6 +186,70 @@ class RedFlagChecker:
         "isn't", "isnt", "wasn't", "wasnt", "weren't", "werent",
         "haven't", "havent", "hasn't", "hasnt", "hadn't", "hadnt",
     }
+    _CLAUSE_BOUNDARY = re.compile(
+        r"[,.!?;]|\s+-\s+|\b(?:but|however|though|and|yet)\b"
+    )
+    _RESTRICTION = re.compile(
+        r"\bstarv(?:e|ing|ed)\s+myself\b"
+        r"|\bstarv(?:e|ing|ed)\s+(?:myself\s+)?to\s+(?:make|cut|drop)\s+(?:the\s+)?weight\b"
+        r"|\bstarv(?:e|ing)\s+(?:myself\s+)?for\s+(?:a\s+|the\s+)?weigh-?in\b"
+        r"|\b(?:fasting|not eating|eating nothing|skipping meals|"
+        r"haven't been eating|have not been eating)\s+"
+        r"(?:so\s+(?:i\s+can|that)\s+|in\s+order\s+to\s+|to\s+)?"
+        r"(?:make|cut|drop)\s+(?:the\s+)?weight\b"
+        r"|\b(?:fasting|not eating|starving)\s+(?:for|before)\s+"
+        r"(?:a\s+|the\s+)?weigh-?in\b"
+        r"|\bwater\s+cut(?:ting)?\b"
+        r"|\b(?:stopped|stop)\s+eating\s+(?:entirely\s+)?(?:to\s+)?"
+        r"(?:cut|make|drop)\s+weight\b"
+    )
+    _SUBSTANCE = re.compile(
+        r"\b(?:laxatives?|diuretics?|diet\s+pills?|water\s+pills?|fat\s+burners?)\b"
+    )
+    _MISUSE = re.compile(
+        r"\b(?:lose|losing|make|cut|drop|dropped)\s+(?:the\s+)?weight\b"
+        r"|\bweigh-?in\b"
+        r"|\bempty(?:ing)?\s+out\b"
+        r"|\b(?:abus\w*|misus\w*|purg\w*)\b"
+    )
+    _DOSE = re.compile(
+        r"\b(?:handful|a\s+bunch|too\s+many|a\s+ton)\s+of\s+"
+        r"(?:laxatives?|diuretics?|diet\s+pills?|water\s+pills?|fat\s+burners?)\b"
+    )
+    _CONCUSSION = re.compile(r"\bconcuss(?:ed|ion|ions)?\b")
+    _HEAD_IMPACT = re.compile(
+        r"\b(?:hit|bumped|banged|smacked|knocked|whacked)\s+(?:my\s+)?head\b"
+        r"|\bblow\s+to\s+(?:the\s+|my\s+)?head\b"
+        r"|\bhead\s+(?:injury|trauma|impact|hit|slammed)\b"
+        r"|\b(?:hit|blow|shot)\s+to\s+(?:the\s+|my\s+)?head\b"
+    )
+    _NEURO = re.compile(
+        r"\b(?:confused|confusion|memory\s+loss|saw\s+stars|dazed|double\s+vision|slurred)\b"
+        r"|\b(?:can't|cannot|don't|do not)\s+remember\b"
+        r"|\b(?:can't|cannot)\s+recall\b"
+        r"|\bforget(?:ting)?\s+what\s+happened\b"
+    )
+    _RHABDO = re.compile(r"\brhabdomyolysis\b|\brhabdo\b")
+    _URINE = re.compile(
+        r"\b(?:cola|coke|tea|coffee)[-\s]?(?:colored|coloured)\s+(?:urine|pee)\b"
+        r"|\b(?:dark\s+brown|brown|dark|black|"
+        r"tea[-\s]?(?:colored|coloured)|cola[-\s]?(?:colored|coloured))\s+"
+        r"(?:urine|pee)\b"
+        r"|\b(?:urine|pee)\s+(?:is|was|looks?|looking|turned|went)\s+"
+        r"(?:the\s+(?:color|colour)\s+of\s+|like\s+)?"
+        r"(?:dark\s+brown|brown|dark|black|cola|coke|tea|coffee)"
+        r"(?:[-\s]?(?:colored|coloured))?\b"
+    )
+    _MUSCLE_PAIN = re.compile(
+        r"\b(?:severe|extreme|unbearable|excruciating)\s+muscle\s+"
+        r"(?:pain|ache|soreness)\b"
+        r"|\bmuscles?\s+(?:hurt|ache|aching)\s+(?:so\s+)?bad(?:ly)?\b"
+        r"|\bmuscles?\s+(?:are|were)\s+killing\s+me\b"
+        r"|\b(?:severe|extreme|unbearable)\s+(?:pain|soreness)\s+in\s+"
+        r"(?:my\s+)?muscles\b"
+        r"|\b(?:really|so)\s+bad\s+muscle\s+pain\b"
+        r"|\bmuscle\s+pain\s+(?:is\s+)?(?:severe|unbearable|extreme)\b"
+    )
     _BENIGN = ("in a good way", "felt amazing", "feeling amazing", "lol", "lmao", "haha")
 
     SEVERITY_MESSAGES = {
@@ -143,11 +269,14 @@ class RedFlagChecker:
         """Classify the severity category based on detected flags."""
         if "self_harm" in flags:
             return "crisis"
-        if any(f in flags for f in ("chest_pain", "cardiac_symptoms", "breathing_difficulty", "numbness")):
+        if any(f in flags for f in (
+            "chest_pain", "cardiac_symptoms", "breathing_difficulty",
+            "numbness", "rhabdomyolysis",
+        )):
             return "cardiac"
         if "fainting" in flags:
             return "fainting"
-        if "abnormal_bleeding" in flags:
+        if "abnormal_bleeding" in flags or "head_injury" in flags:
             return "neurological"
         if "injury" in flags or "sharp_joint_pain" in flags:
             return "injury"
@@ -156,9 +285,56 @@ class RedFlagChecker:
         return "general"
 
     def _is_negated(self, text: str, start: int) -> bool:
-        prefix = text[max(0, start - 48):start]
-        words = re.findall(r"[a-z']+", prefix)
-        return any(word in self._NEGATION for word in words[-4:])
+        """Negation applies only inside the current clause.
+
+        It stops at a comma, at but/however/though/and/yet, and at the
+        end of a sentence. A negation in an earlier clause does not
+        cover a later symptom.
+        """
+        prefix = text[:start]
+        cut = 0
+        for match in self._CLAUSE_BOUNDARY.finditer(prefix):
+            cut = match.end()
+        words = re.findall(r"[a-z']+", prefix[cut:])
+        return any(word in self._NEGATION for word in words)
+
+    def _active(self, text: str, pattern: re.Pattern) -> List[re.Match]:
+        return [
+            match for match in pattern.finditer(text)
+            if not self._is_negated(text, match.start())
+        ]
+
+    def _same_sentence(self, text: str, left: re.Pattern, right: re.Pattern) -> bool:
+        def span(index: int):
+            start = 0
+            for mark in re.finditer(r"[.!?]", text):
+                if mark.start() >= index:
+                    return start, mark.start()
+                start = mark.end()
+            return start, len(text)
+
+        for match in self._active(text, left):
+            begin, end = span(match.start())
+            for other in self._active(text, right):
+                if begin <= other.start() < end:
+                    return True
+        return False
+
+    def _extra_flags(self, text: str) -> Set[str]:
+        flags = set()
+        if self._active(text, self._RESTRICTION) or self._active(text, self._DOSE):
+            flags.add("disordered_eating")
+        elif self._same_sentence(text, self._SUBSTANCE, self._MISUSE):
+            flags.add("disordered_eating")
+        if self._active(text, self._CONCUSSION) or self._same_sentence(
+            text, self._HEAD_IMPACT, self._NEURO
+        ):
+            flags.add("head_injury")
+        if self._active(text, self._RHABDO) or self._same_sentence(
+            text, self._URINE, self._MUSCLE_PAIN
+        ):
+            flags.add("rhabdomyolysis")
+        return flags
 
     def _is_benign(self, text: str, end: int) -> bool:
         window = text[end:end + 90]
@@ -191,6 +367,7 @@ class RedFlagChecker:
                     break
         if self._has_very_low_intake(text):
             flags.add("very_low_intake")
+        flags.update(self._extra_flags(text))
         return flags
 
     def _ask(self, detail: str) -> RedFlagResult:
@@ -310,6 +487,18 @@ class RedFlagChecker:
             )
             recommendations.append(
                 "Increase rest days and reassess training volume with your coach."
+            )
+
+        if "rhabdomyolysis" in flags:
+            recommendations.append(
+                "Dark urine with severe muscle pain can be rhabdomyolysis. "
+                "Seek emergency care and do not keep training."
+            )
+
+        if "head_injury" in flags:
+            recommendations.append(
+                "A head impact with confusion, memory loss, or concussion signs "
+                "needs a doctor before any further training."
             )
         
         if "disordered_eating" in flags or "very_low_intake" in flags:

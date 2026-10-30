@@ -429,5 +429,141 @@ class TestReviewerProbes:
         assert "no red flags" not in result.message.lower()
 
 
+class TestGeneralRedFlags:
+    """Clause-scoped negation and categories that are not exact strings."""
+
+    SHOULD_FLAG = [
+        "no chest pain but my left arm is numb",
+        "not dizzy, I fainted",
+        "no chest pain however my left arm is numb",
+        "not dizzy though I fainted",
+        "No chest pain. My left arm went numb.",
+        "I think I'm having a heart attack",
+        "this might be a cardiac event",
+        "felt like my heart stopped",
+        "suspected myocardial infarction",
+        "I stuck my fingers down my throat",
+        "forced myself to vomit after dinner",
+        "throwing up on purpose to stay lean",
+        "making myself sick after meals",
+        "I've been starving myself to make weight",
+        "not eating so I can make weight for Saturday",
+        "doing a water cut before the weigh-in",
+        "fasting to cut weight",
+        "took a handful of laxatives to drop weight",
+        "diet pills to make weight for the meet",
+        "water pills before the weigh-in",
+        "abusing diuretics to cut weight",
+        "I rolled my ankle on the curb",
+        "twisted my wrist in the rack",
+        "heard a pop in my knee",
+        "my ankle is swollen",
+        "my knee swelled up",
+        "I hit my head and now I'm confused",
+        "blow to the head and I can't remember the set",
+        "I think I have a concussion",
+        "saw stars after I banged my head",
+        "my urine is cola colored and I have severe muscle pain",
+        "pee looks like coke and my muscles hurt so bad",
+        "dark brown urine plus unbearable muscle pain",
+        "coach said this could be rhabdo",
+        "tea-coloured urine and extreme muscle soreness",
+    ]
+
+    SHOULD_NOT = [
+        "I'm starving after leg day",
+        "I'm starving, what should I eat",
+        "foam rolled my ankle",
+        "I rolled out my quads",
+        "balloon popped and swelled",
+        "swelling with pride after the PR",
+        "pop song in my headphones",
+        "bumped my head on the rack, I'm fine",
+        "confused about which program to run",
+        "I drank a cola and my legs are sore from squats",
+        "dark brown rice with dinner",
+        "coffee is a natural diuretic",
+        "doctor prescribed a diuretic for my blood pressure",
+        "I don't take laxatives. I want to lose weight.",
+        "my dog threw up on the rug",
+        "vomit-inducing playlist at the gym",
+        "thought I might throw up from that sprint",
+        "I hit my head, but I'm not confused",
+        "I don't have cola-colored urine but my muscles hurt so bad",
+        "the heart of the program is consistency",
+        "we attacked the last set",
+        "had no chest pain at all today",
+        "I'm not concussed, just tired",
+        "I did not have a heart attack",
+        "not dizzy, but I did not faint",
+        "severe muscle pain after leg day but urine is normal",
+    ]
+
+    @pytest.mark.parametrize("text", SHOULD_FLAG)
+    def test_general_phrasing_flags(self, text):
+        result = RedFlagChecker().scan_text(text)
+        assert result.pause_plan
+
+    @pytest.mark.parametrize("text", SHOULD_NOT)
+    def test_lookalikes_do_not_flag(self, text):
+        result = RedFlagChecker().scan_text(text)
+        assert not result.pause_plan
+
+    def test_negation_does_not_cross_but(self):
+        result = RedFlagChecker().scan_text("no chest pain but my left arm is numb")
+        assert "numbness" in result.flags_detected
+        assert "chest_pain" not in result.flags_detected
+        assert "emergency" in result.message.lower()
+
+    def test_negation_stops_at_comma(self):
+        result = RedFlagChecker().scan_text("not dizzy, I fainted")
+        assert "fainting" in result.flags_detected
+        assert result.pause_plan
+
+    def test_later_clause_can_be_negated(self):
+        result = RedFlagChecker().scan_text("I have chest pain, but no numbness")
+        assert "chest_pain" in result.flags_detected
+        assert "numbness" not in result.flags_detected
+
+    def test_sentence_boundary_resets_negation(self):
+        result = RedFlagChecker().scan_text("No chest pain. My left arm went numb.")
+        assert "numbness" in result.flags_detected
+        assert "chest_pain" not in result.flags_detected
+
+    def test_heart_attack_is_emergency(self):
+        result = RedFlagChecker().scan_text("pretty sure this is a heart attack")
+        assert "cardiac_symptoms" in result.flags_detected
+        assert "emergency" in result.message.lower()
+
+    def test_purging_and_restriction_ask_for_help(self):
+        purging = RedFlagChecker().scan_text("I made myself throw up on purpose")
+        cutting = RedFlagChecker().scan_text("starving myself for the weigh-in")
+        pills = RedFlagChecker().scan_text("a bunch of diet pills to lose weight")
+        for result in (purging, cutting, pills):
+            assert "disordered_eating" in result.flags_detected
+            blob = result.message + " " + " ".join(result.recommendations)
+            assert "professional" in blob.lower() or "NEDA" in blob
+
+    def test_acute_injury_pauses(self):
+        result = RedFlagChecker().scan_text("felt a pop and my ankle rolled")
+        assert "injury" in result.flags_detected
+
+    def test_concussion_needs_a_doctor(self):
+        result = RedFlagChecker().scan_text("I got concussed when I fell")
+        assert "head_injury" in result.flags_detected
+        assert "doctor" in result.message.lower()
+
+    def test_rhabdo_combination_is_emergency(self):
+        result = RedFlagChecker().scan_text(
+            "pee turned the color of coke and my muscles hurt so bad"
+        )
+        assert "rhabdomyolysis" in result.flags_detected
+        assert "emergency" in result.message.lower()
+
+    def test_named_rhabdo_without_other_symptoms(self):
+        result = RedFlagChecker().scan_text("worried this is rhabdomyolysis")
+        assert "rhabdomyolysis" in result.flags_detected
+
+
 if __name__ == "__main__":
     pytest.main([__file__, "-v"])

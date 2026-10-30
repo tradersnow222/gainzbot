@@ -93,17 +93,20 @@ pytest test_readiness_screen.py -v  # 34 tests
 Scans user check-ins and messages for medical and safety red flags requiring immediate plan pause and professional consultation.
 
 **Red flag detection:**
-- **Cardiac symptoms**: Chest pain, chest pressure, heart racing, irregular heartbeat
+- **Cardiac symptoms**: Chest pain, chest pressure, heart racing, irregular heartbeat, suspected heart attack or other cardiac event
 - **Fainting**: Loss of consciousness, blacking out, syncope (conditional emergency guidance)
 - **Sharp joint pain**: Acute pain in knees, hips, shoulders, etc.
-- **Injuries**: Pulled muscles, torn ligaments, sprains
+- **Injuries**: Pulled muscles, torn ligaments, sprains, a rolled or twisted joint, a pop, or swelling
+- **Head injury**: A concussion, or a head impact together with confusion, memory loss, or similar signs
+- **Rhabdomyolysis**: The condition by name, or dark brown / cola-colored urine together with severe muscle pain
+- **Disordered eating**: Purging or deliberate vomiting, starving or extreme restriction to make weight, and laxative, diuretic, or diet-pill misuse
 - **Extreme fatigue**: Severe exhaustion, inability to function
-- **Disordered eating**: Purging, binging on food, food fear, exercise as punishment
 - **Breathing difficulty**: Shortness of breath, wheezing, labored breathing
 - **Neurological**: Numbness, tingling, abnormal bleeding
 
 **Context-aware matching:**
 - Uses Unicode normalization for curly quotes/apostrophes
+- Negation stops at a comma, at but/however/though, and at the end of a sentence
 - Avoids false positives: "binge-watched Netflix", "starving after leg day", "can't stand burpees"
 - Requires eating context for binge/starving triggers
 
