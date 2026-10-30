@@ -25,8 +25,8 @@ All guardrail scripts use shared input validation with fail-closed behavior:
 Validates proposed nutrition and training plans against hard safety bounds before any changes are applied.
 
 **Validation checks:**
-- **Age**: Under 13 is rejected. Ages 13–17 require a passing readiness screen result (`clear` or `caution`, and not blocked) passed into `validate_plan`. The adult calorie floor is not applied to those minors. Ages over 100 are rejected.
-- **Calorie floor**: Minimum 1,500 kcal for men, 1,200 kcal for women, adults only. Never allows calories below estimated BMR without explicit medical clearance.
+- **Age**: Under 13 is rejected. Ages 13–17 require a passing readiness screen result (`clear` or `caution`, and not blocked) passed into `validate_plan` before training guidance. Calorie targets and deficits are never set for anyone under 18, even with a passing screen or medical clearance. Ages over 100 are rejected.
+- **Calorie floor**: Minimum 1,500 kcal for men, 1,200 kcal for women. Applies to adults only. Never allows calories below estimated BMR without explicit medical clearance.
 - **Weight change rate**: Maximum 1% of body weight per week for loss or gain. Zero (maintain) is allowed.
 - **Protein intake**: 1.6 to 2.2 g/kg body weight.
 - **Calorie changes**: Maximum 100-200 kcal adjustment per week.

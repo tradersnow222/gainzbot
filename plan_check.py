@@ -97,6 +97,28 @@ class PlanValidator:
             ]
         return []
 
+    def _minor_target_errors(self, plan: Dict) -> List[str]:
+        """Minors can train. They cannot be given a calorie target or a deficit."""
+        errors = []
+        nutrition = plan.get("nutrition")
+        if isinstance(nutrition, dict) and len(nutrition) > 0:
+            errors.append("Calorie targets are not set for anyone under 18.")
+        goals = plan.get("goals")
+        if isinstance(goals, dict) and "weight_loss_kg_per_week" in goals:
+            try:
+                loss = InputValidator.parse_number(
+                    goals["weight_loss_kg_per_week"],
+                    "weight_loss_kg_per_week",
+                    allow_zero=True,
+                    allow_negative=True,
+                )
+            except ValidationError as error:
+                errors.append(str(error))
+            else:
+                if loss > 0:
+                    errors.append("A calorie deficit is not set for anyone under 18.")
+        return errors
+
     def _validate_calories(
         self,
         proposed_calories: float,
@@ -124,6 +146,11 @@ class PlanValidator:
             return ValidationResult(valid=False, errors=[str(e)])
 
         age_errors = self._age_policy_errors(age_value, readiness_result)
+        if age_value < self.ADULT_AGE:
+            return ValidationResult(
+                valid=False,
+                errors=["Calorie targets are not set for anyone under 18."],
+            )
         if age_errors:
             return ValidationResult(valid=False, errors=age_errors)
         age = int(age_value)
@@ -434,6 +461,10 @@ class PlanValidator:
             age_errors = self._age_policy_errors(age_value, readiness_result)
             if age_errors:
                 return ValidationResult(valid=False, errors=age_errors)
+            if age_value < self.ADULT_AGE:
+                minor_errors = self._minor_target_errors(plan)
+                if minor_errors:
+                    return ValidationResult(valid=False, errors=minor_errors)
         
         if "nutrition" in plan:
             nutrition = plan["nutrition"]

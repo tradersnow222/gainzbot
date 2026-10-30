@@ -850,22 +850,81 @@ class TestAgeReadinessAndRates:
         assert "readiness" in blob
         assert "floor" not in blob
 
-    def test_under_18_with_passing_screen_skips_adult_floor(self):
+    def test_under_18_with_passing_screen_rejects_calorie_target(self):
         plan = {
             "user": {"sex": "F", "weight_kg": 40, "age": 16, "height_cm": 150},
             "nutrition": {"calories": 1150},
         }
         result = PlanValidator().validate_plan(plan, PASSING_SCREEN)
-        assert result.valid
-        assert result.errors == []
+        assert not result.valid
+        blob = " ".join(result.errors).lower()
+        assert "under 18" in blob
+        assert "floor" not in blob
+        assert "bmr" not in blob
 
-    def test_under_18_accepts_screen_object(self):
+    def test_fifteen_with_clearance_and_screen_rejects_600_kcal(self):
         plan = {
-            "user": {"sex": "F", "weight_kg": 40, "age": 16, "height_cm": 150},
-            "nutrition": {"calories": 1150},
+            "user": {
+                "sex": "M",
+                "weight_kg": 55,
+                "age": 15,
+                "height_cm": 170,
+                "medical_clearance": True,
+            },
+            "nutrition": {"calories": 600},
+            "training": {"previous_load": 80, "current_load": 84},
+        }
+        result = PlanValidator().validate_plan(
+            plan, {"clearance": "clear", "blocked": False}
+        )
+        assert not result.valid
+        blob = " ".join(result.errors).lower()
+        assert "under 18" in blob
+        assert "floor" not in blob
+
+    def test_minor_high_calories_still_rejected(self):
+        plan = {
+            "user": {
+                "sex": "F",
+                "weight_kg": 50,
+                "age": 17,
+                "height_cm": 160,
+                "medical_clearance": True,
+            },
+            "nutrition": {"calories": 2200},
         }
         result = PlanValidator().validate_plan(plan, _Screen("clear", False))
+        assert not result.valid
+        assert "floor" not in " ".join(result.errors).lower()
+
+    def test_minor_deficit_rejected_with_passing_screen(self):
+        plan = {
+            "user": {"sex": "F", "weight_kg": 50, "age": 16, "height_cm": 160},
+            "goals": {"weight_loss_kg_per_week": 0.2},
+        }
+        result = PlanValidator().validate_plan(plan, PASSING_SCREEN)
+        assert not result.valid
+        assert "deficit" in " ".join(result.errors).lower()
+
+    def test_minor_training_without_calories_passes(self):
+        plan = {
+            "user": {
+                "sex": "M",
+                "weight_kg": 55,
+                "age": 15,
+                "height_cm": 170,
+                "medical_clearance": True,
+            },
+            "training": {
+                "previous_load": 100,
+                "current_load": 105,
+                "structured_hours": 4,
+                "sport_hours": 2,
+            },
+        }
+        result = PlanValidator().validate_plan(plan, PASSING_SCREEN)
         assert result.valid
+        assert result.errors == []
 
     def test_blocked_or_uncleared_screen_does_not_pass(self):
         plan = {
@@ -913,19 +972,24 @@ class TestAgeReadinessAndRates:
         }
         result = PlanValidator().validate_plan(plan, PASSING_SCREEN)
         assert not result.valid
-        assert "bmr" in " ".join(result.errors).lower()
-        assert "floor" not in " ".join(result.errors).lower()
+        blob = " ".join(result.errors).lower()
+        assert "under 18" in blob
+        assert "floor" not in blob
+        assert "bmr" not in blob
 
     def test_direct_calories_reject_child_without_screen(self):
         result = PlanValidator().validate_calories(2000, "F", 40, 12, 150)
         assert not result.valid
         assert "floor" not in " ".join(result.errors).lower()
 
-    def test_direct_calories_skip_floor_for_minor_with_screen(self):
+    def test_direct_calories_reject_minor_even_with_clearance_and_screen(self):
         result = PlanValidator().validate_calories(
-            1150, "F", 40, 16, 150, False, PASSING_SCREEN
+            600, "M", 55, 15, 170, True, {"clearance": "clear", "blocked": False}
         )
-        assert result.valid
+        assert not result.valid
+        blob = " ".join(result.errors).lower()
+        assert "under 18" in blob
+        assert "floor" not in blob
 
     def test_gain_within_one_percent_passes(self):
         result = PlanValidator().validate_weight_loss_rate(-0.5, 60)
