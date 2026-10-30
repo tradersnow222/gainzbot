@@ -8,9 +8,10 @@ Uses shared input validation with fail-closed behavior.
 """
 
 from dataclasses import dataclass
-from typing import Dict, List
+from typing import Dict, List, Tuple
 from enum import Enum
 import json
+import re
 import sys
 import os
 
@@ -80,6 +81,9 @@ class ReadinessScreen:
         "cardiac disease": "heart_disease",
         "cardiovascular disease": "heart_disease",
     }
+
+    NO_CONDITION_WORDS = {"none", "n/a", "na", "no", "nope", "nil", "nothing", ""}
+    _CONDITION_SPLIT = re.compile(r"\s*(?:,|&|\band\b)\s*", re.IGNORECASE)
 
     @staticmethod
     def normalize_condition(condition: str) -> str:
@@ -165,35 +169,102 @@ class ReadinessScreen:
             recommendations=[]
         )
 
+    def _yes_no(self, data: Dict, key: str, default: bool = False):
+        """Parse a yes/no field with the shared parser. Missing uses default."""
+        if key not in data:
+            return default, None
+        try:
+            return InputValidator.parse_boolean(data[key], key), None
+        except ValidationError as e:
+            return None, str(e)
+
+    def _parse_conditions(self, raw) -> Tuple[List[str], str]:
+        """Return condition strings, or an error when the shape is unsafe."""
+        if isinstance(raw, dict):
+            return [], "medical_conditions must be a list or text, not an object."
+        if isinstance(raw, str):
+            parts = self._CONDITION_SPLIT.split(raw)
+        elif isinstance(raw, list):
+            parts = []
+            for item in raw:
+                if not isinstance(item, str):
+                    return [], "medical_conditions contains a value that is not text."
+                parts.extend(self._CONDITION_SPLIT.split(item))
+        else:
+            return [], "medical_conditions has an invalid type."
+
+        conditions = []
+        for part in parts:
+            text = part.strip()
+            if text.lower() in self.NO_CONDITION_WORDS:
+                continue
+            if text:
+                conditions.append(text)
+        return conditions, ""
+
+    def _blocked(self, reasons: List[str], recommendations: List[str]) -> ScreeningResult:
+        return ScreeningResult(
+            clearance=ClearanceLevel.NEEDS_DOCTOR_CLEARANCE,
+            reasons=reasons,
+            blocked=True,
+            recommendations=recommendations,
+        )
+
     def check_par_q(self, responses: Dict[str, bool]) -> ScreeningResult:
-        """Check PAR-Q+ style questions."""
+        """Check PAR-Q+ style questions. Missing or unknown keys block."""
+        if not isinstance(responses, dict):
+            return self._blocked(
+                ["PAR-Q answers must be a complete set of yes/no responses."],
+                ["Please answer every PAR-Q question with yes or no."],
+            )
+
+        known = set(self.PAR_Q_RED_FLAGS)
+        unknown = [key for key in responses if key not in known]
+        missing = [flag for flag in self.PAR_Q_RED_FLAGS if flag not in responses]
+        parsed = {}
+        parse_errors = []
+        for key, value in responses.items():
+            if key not in known:
+                continue
+            if isinstance(value, bool):
+                parsed[key] = value
+                continue
+            try:
+                parsed[key] = InputValidator.parse_boolean(value, key)
+            except ValidationError as error:
+                parse_errors.append(str(error))
+
+        red_flags = [
+            flag.replace("_", " ").title()
+            for flag in self.PAR_Q_RED_FLAGS
+            if parsed.get(flag) is True
+        ]
         reasons = []
         recommendations = []
-        red_flags = []
-        
-        for flag in self.PAR_Q_RED_FLAGS:
-            if responses.get(flag, False):
-                red_flags.append(flag.replace("_", " ").title())
-        
         if red_flags:
-            reasons.append(
-                f"Red flag responses: {', '.join(red_flags)}"
-            )
+            reasons.append(f"Red flag responses: {', '.join(red_flags)}")
             recommendations.append(
                 "Physician clearance required before beginning any exercise program."
             )
-            return ScreeningResult(
-                clearance=ClearanceLevel.NEEDS_DOCTOR_CLEARANCE,
-                reasons=reasons,
-                blocked=True,
-                recommendations=recommendations
+        reasons.extend(parse_errors)
+        if unknown:
+            reasons.append(
+                "Unknown PAR-Q key(s): "
+                + ", ".join(unknown)
+                + ". A typo or missing question blocks screening."
             )
-        
+        if missing:
+            reasons.append("PAR-Q is incomplete. Missing: " + ", ".join(missing) + ".")
+        if unknown or missing or parse_errors:
+            recommendations.append("Please answer every PAR-Q question with yes or no.")
+        if reasons:
+            return self._blocked(reasons, recommendations)
+
         return ScreeningResult(
             clearance=ClearanceLevel.CLEAR,
             reasons=[],
             blocked=False,
-            recommendations=[]
+            recommendations=[],
         )
 
     def check_pregnancy(self, is_pregnant: bool, has_clearance: bool = False) -> ScreeningResult:
@@ -326,76 +397,84 @@ class ReadinessScreen:
         Returns:
             ScreeningResult with overall clearance level and recommendations
         """
+        if not isinstance(intake, dict):
+            return self._blocked(
+                ["Intake must be an object."],
+                ["Please resubmit the readiness form."],
+            )
+
         all_reasons = []
         all_recommendations = []
         blocked = False
         highest_level = ClearanceLevel.CLEAR
-        
-        age = intake.get("age", 30)
-        parental_consent = intake.get("parental_consent", False)
-        age_result = self.check_age(age, parental_consent)
-        
-        if age_result.clearance.value != ClearanceLevel.CLEAR.value:
-            all_reasons.extend(age_result.reasons)
-            all_recommendations.extend(age_result.recommendations)
-            blocked = blocked or age_result.blocked
-            if age_result.clearance == ClearanceLevel.NEEDS_DOCTOR_CLEARANCE:
+
+        def absorb(result: ScreeningResult) -> None:
+            nonlocal blocked, highest_level
+            if result.clearance == ClearanceLevel.CLEAR:
+                return
+            all_reasons.extend(result.reasons)
+            all_recommendations.extend(result.recommendations)
+            blocked = blocked or result.blocked
+            if result.clearance == ClearanceLevel.NEEDS_DOCTOR_CLEARANCE:
                 highest_level = ClearanceLevel.NEEDS_DOCTOR_CLEARANCE
-            elif age_result.clearance == ClearanceLevel.CAUTION and highest_level != ClearanceLevel.NEEDS_DOCTOR_CLEARANCE:
+            elif (
+                result.clearance == ClearanceLevel.CAUTION
+                and highest_level != ClearanceLevel.NEEDS_DOCTOR_CLEARANCE
+            ):
                 highest_level = ClearanceLevel.CAUTION
-        
-        par_q_responses = intake.get("par_q", {})
-        par_q_result = self.check_par_q(par_q_responses)
-        
-        if par_q_result.clearance.value != ClearanceLevel.CLEAR.value:
-            all_reasons.extend(par_q_result.reasons)
-            all_recommendations.extend(par_q_result.recommendations)
-            blocked = blocked or par_q_result.blocked
-            if par_q_result.clearance == ClearanceLevel.NEEDS_DOCTOR_CLEARANCE:
-                highest_level = ClearanceLevel.NEEDS_DOCTOR_CLEARANCE
-        
-        is_pregnant = intake.get("pregnant", False)
-        pregnancy_clearance = intake.get("pregnancy_clearance", False)
-        pregnancy_result = self.check_pregnancy(is_pregnant, pregnancy_clearance)
-        
-        if pregnancy_result.clearance.value != ClearanceLevel.CLEAR.value:
-            all_reasons.extend(pregnancy_result.reasons)
-            all_recommendations.extend(pregnancy_result.recommendations)
-            blocked = blocked or pregnancy_result.blocked
-            if pregnancy_result.clearance == ClearanceLevel.NEEDS_DOCTOR_CLEARANCE:
-                highest_level = ClearanceLevel.NEEDS_DOCTOR_CLEARANCE
-            elif pregnancy_result.clearance == ClearanceLevel.CAUTION and highest_level != ClearanceLevel.NEEDS_DOCTOR_CLEARANCE:
-                highest_level = ClearanceLevel.CAUTION
-        
-        medical_conditions_raw = intake.get("medical_conditions", [])
-        
-        medical_conditions = []
-        if isinstance(medical_conditions_raw, str):
-            medical_conditions = [c.strip() for c in medical_conditions_raw.split(',') if c.strip()]
-        elif isinstance(medical_conditions_raw, list):
-            medical_conditions = medical_conditions_raw
-        
-        medical_clearance = intake.get("medical_clearance", False)
-        medical_result = self.check_medical_conditions(medical_conditions, medical_clearance)
-        
-        if medical_result.clearance.value != ClearanceLevel.CLEAR.value:
-            all_reasons.extend(medical_result.reasons)
-            all_recommendations.extend(medical_result.recommendations)
-            blocked = blocked or medical_result.blocked
-            if medical_result.clearance == ClearanceLevel.NEEDS_DOCTOR_CLEARANCE:
-                highest_level = ClearanceLevel.NEEDS_DOCTOR_CLEARANCE
-            elif medical_result.clearance == ClearanceLevel.CAUTION and highest_level != ClearanceLevel.NEEDS_DOCTOR_CLEARANCE:
-                highest_level = ClearanceLevel.CAUTION
-        
+
+        if "age" not in intake:
+            absorb(self._blocked(
+                ["Age is required. There is no default age."],
+                ["Please provide your age."],
+            ))
+        else:
+            parental_consent, consent_error = self._yes_no(intake, "parental_consent", False)
+            if consent_error:
+                absorb(self._blocked([consent_error], ["Please answer parental consent with yes or no."]))
+            else:
+                absorb(self.check_age(intake["age"], parental_consent))
+
+        if "par_q" not in intake:
+            absorb(self._blocked(
+                ["A complete PAR-Q is required."],
+                ["Please answer every PAR-Q question with yes or no."],
+            ))
+        else:
+            absorb(self.check_par_q(intake["par_q"]))
+
+        is_pregnant, pregnant_error = self._yes_no(intake, "pregnant", False)
+        pregnancy_clearance, pregnancy_error = self._yes_no(intake, "pregnancy_clearance", False)
+        if pregnant_error or pregnancy_error:
+            absorb(self._blocked(
+                [error for error in (pregnant_error, pregnancy_error) if error],
+                ["Please answer pregnancy questions with yes or no."],
+            ))
+        else:
+            absorb(self.check_pregnancy(is_pregnant, pregnancy_clearance))
+
+        medical_clearance, medical_error = self._yes_no(intake, "medical_clearance", False)
+        if "medical_conditions" not in intake:
+            conditions, condition_error = [], ""
+        else:
+            conditions, condition_error = self._parse_conditions(intake["medical_conditions"])
+        if medical_error or condition_error:
+            absorb(self._blocked(
+                [error for error in (medical_error, condition_error) if error],
+                ["Please correct the medical history answers."],
+            ))
+        else:
+            absorb(self.check_medical_conditions(conditions, medical_clearance))
+
         if not all_reasons:
             all_reasons.append("No risk factors identified.")
             all_recommendations.append("Safe to proceed with program design.")
-        
+
         return ScreeningResult(
             clearance=highest_level,
             reasons=all_reasons,
             blocked=blocked,
-            recommendations=all_recommendations
+            recommendations=all_recommendations,
         )
 
 
@@ -405,13 +484,7 @@ def main():
     
     example_intake = {
         "age": 32,
-        "par_q": {
-            "chest_pain_at_rest": False,
-            "chest_pain_during_activity": False,
-            "loss_of_balance_dizziness": False,
-            "loss_of_consciousness": False,
-            "bone_joint_problem_worsened_by_activity": False,
-        },
+        "par_q": {flag: False for flag in screener.PAR_Q_RED_FLAGS},
         "pregnant": False,
         "medical_conditions": [],
         "medical_clearance": False

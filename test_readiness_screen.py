@@ -5,6 +5,13 @@ import pytest
 from readiness_screen import ReadinessScreen, ClearanceLevel
 
 
+def complete_par_q(**overrides):
+    """Every PAR-Q question answered, defaults to no."""
+    answers = {flag: False for flag in ReadinessScreen.PAR_Q_RED_FLAGS}
+    answers.update(overrides)
+    return answers
+
+
 class TestAgeCheck:
     """Test age requirement checks."""
     
@@ -38,14 +45,7 @@ class TestPARQ:
     def test_all_clear_responses(self):
         """All 'no' responses get clear status."""
         screener = ReadinessScreen()
-        responses = {
-            "chest_pain_at_rest": False,
-            "chest_pain_during_activity": False,
-            "loss_of_balance_dizziness": False,
-            "loss_of_consciousness": False,
-            "bone_joint_problem_worsened_by_activity": False,
-        }
-        result = screener.check_par_q(responses)
+        result = screener.check_par_q(complete_par_q())
         assert result.clearance == ClearanceLevel.CLEAR
         assert not result.blocked
     
@@ -197,13 +197,7 @@ class TestCompleteIntake:
         screener = ReadinessScreen()
         intake = {
             "age": 30,
-            "par_q": {
-                "chest_pain_at_rest": False,
-                "chest_pain_during_activity": False,
-                "loss_of_balance_dizziness": False,
-                "loss_of_consciousness": False,
-                "bone_joint_problem_worsened_by_activity": False,
-            },
+            "par_q": complete_par_q(),
             "pregnant": False,
             "medical_conditions": [],
             "medical_clearance": False
@@ -238,13 +232,7 @@ class TestCompleteIntake:
         intake = {
             "age": 16,
             "parental_consent": True,
-            "par_q": {
-                "chest_pain_at_rest": False,
-                "chest_pain_during_activity": False,
-                "loss_of_balance_dizziness": False,
-                "loss_of_consciousness": False,
-                "bone_joint_problem_worsened_by_activity": False,
-            },
+            "par_q": complete_par_q(),
             "pregnant": False,
             "medical_conditions": ["diabetes"],
             "medical_clearance": False
@@ -259,13 +247,7 @@ class TestCompleteIntake:
         screener = ReadinessScreen()
         intake = {
             "age": 30,
-            "par_q": {
-                "chest_pain_at_rest": False,
-                "chest_pain_during_activity": False,
-                "loss_of_balance_dizziness": False,
-                "loss_of_consciousness": False,
-                "bone_joint_problem_worsened_by_activity": False,
-            },
+            "par_q": complete_par_q(),
             "pregnant": True,
             "pregnancy_clearance": True,
             "medical_conditions": [],
@@ -281,6 +263,7 @@ class TestCompleteIntake:
         intake = {}
         result = screener.screen_intake(intake)
         assert result is not None
+        assert result.blocked
         assert isinstance(result.clearance, ClearanceLevel)
 
 
@@ -292,13 +275,7 @@ class TestMessyInput:
         screener = ReadinessScreen()
         intake = {
             "age": "25",
-            "par_q": {
-                "chest_pain_at_rest": False,
-                "chest_pain_during_activity": False,
-                "loss_of_balance_dizziness": False,
-                "loss_of_consciousness": False,
-                "bone_joint_problem_worsened_by_activity": False,
-            },
+            "par_q": complete_par_q(),
             "medical_conditions": []
         }
         result = screener.screen_intake(intake)
@@ -359,7 +336,7 @@ class TestMessyInput:
         intake = {
             "age": 15,
             "parental_consent": True,
-            "par_q": {},
+            "par_q": complete_par_q(),
             "medical_conditions": []
         }
         result = screener.screen_intake(intake)
@@ -371,7 +348,7 @@ class TestMessyInput:
         screener = ReadinessScreen()
         intake = {
             "age": 30,
-            "par_q": {},
+            "par_q": complete_par_q(),
             "medical_conditions": "heart_disease, diabetes",
             "medical_clearance": False
         }
@@ -425,7 +402,7 @@ class TestConditionNormalization:
         screener = ReadinessScreen()
         intake = {
             "age": 30,
-            "par_q": {},
+            "par_q": complete_par_q(),
             "medical_conditions": ["unknown_illness"],
             "medical_clearance": False
         }
@@ -466,6 +443,175 @@ class TestNewPARQQuestions:
         result = screener.check_par_q(responses)
         assert result.clearance == ClearanceLevel.NEEDS_DOCTOR_CLEARANCE
         assert result.blocked
+
+
+class TestReviewerProbes:
+    """Reviewer probes for readiness_screen. Each case asserts block or pass."""
+
+    def setup_method(self):
+        self.screen = ReadinessScreen()
+
+    def _reasons(self, intake):
+        result = self.screen.screen_intake(intake)
+        return result, " ".join(result.reasons).lower()
+
+    def test_empty_intake_blocks(self):
+        result, _ = self._reasons({})
+        assert result.blocked
+        assert "no risk factors" not in " ".join(result.reasons).lower()
+
+    def test_missing_age_and_par_q_blocks(self):
+        result, text = self._reasons({"pregnant": False})
+        assert result.blocked
+        assert "age" in text
+
+    def test_age_15_without_consent_blocks(self):
+        result, text = self._reasons({"age": 15})
+        assert result.blocked
+        assert "without parental consent" in text
+
+    def test_age_9_with_consent_blocks(self):
+        result, text = self._reasons({"age": 9, "parental_consent": True})
+        assert result.blocked
+        assert "13" in text
+
+    def test_age_15_consent_no_string_blocks(self):
+        result, text = self._reasons({"age": 15, "parental_consent": "no"})
+        assert result.blocked
+        assert "without parental consent" in text
+        assert "has parental consent" not in text
+
+    def test_age_string_16_without_consent_blocks(self):
+        result, text = self._reasons({"age": "16"})
+        assert result.blocked
+        assert "without parental consent" in text
+
+    def test_age_none_blocks(self):
+        result, text = self._reasons({"age": None})
+        assert result.blocked
+        assert "age" in text
+
+    @pytest.mark.parametrize(
+        "condition,marker",
+        [
+            ("Heart Disease", "heart disease"),
+            ("high blood pressure", "high blood pressure"),
+            ("hypertension", "high blood pressure"),
+            ("type 2 diabetes", "type 2 diabetes"),
+            ("Type 1 Diabetes", "type 1 diabetes"),
+            ("heart_disease ", "heart disease"),
+            ("takes blood pressure medication", "unrecognized"),
+            ("Hypertension\u2019s fine now", "unrecognized"),
+            ("afib", "unrecognized"),
+            ("COPD", "unrecognized"),
+            ("epilepsy", "unrecognized"),
+        ],
+    )
+    def test_real_conditions_block(self, condition, marker):
+        result, text = self._reasons({"age": 40, "medical_conditions": [condition]})
+        assert result.blocked
+        assert marker in text
+
+    @pytest.mark.parametrize("condition", ["none", "N/A", "no", ""])
+    def test_no_condition_words_are_not_conditions(self, condition):
+        result, text = self._reasons({"age": 40, "medical_conditions": [condition]})
+        assert result.blocked
+        assert "unrecognized" not in text
+        assert "par-q" in text
+
+    def test_condition_string_diabetes_blocks(self):
+        result, text = self._reasons({"age": 40, "medical_conditions": "diabetes"})
+        assert result.blocked
+        assert "diabetes" in text
+
+    def test_condition_string_comma_blocks(self):
+        result, text = self._reasons({"age": 40, "medical_conditions": "asthma, diabetes"})
+        assert result.blocked
+        assert "asthma" in text and "diabetes" in text
+
+    def test_condition_string_and_blocks(self):
+        result, text = self._reasons({"age": 40, "medical_conditions": "asthma and diabetes"})
+        assert result.blocked
+        assert "asthma" in text and "diabetes" in text
+
+    def test_condition_dict_blocks(self):
+        result, text = self._reasons({"age": 40, "medical_conditions": {"heart_disease": True}})
+        assert result.blocked
+        assert "no risk factors" not in text
+
+    def test_condition_list_with_non_text_blocks(self):
+        result, text = self._reasons({"age": 40, "medical_conditions": [None, 5]})
+        assert result.blocked
+        assert "no risk factors" not in text
+
+    def test_par_q_typo_blocks(self):
+        result, text = self._reasons({"age": 40, "par_q": {"chest_pain": True}})
+        assert result.blocked
+        assert "unknown" in text
+        assert "chest_pain" in text
+
+    def test_par_q_no_string_is_not_a_yes(self):
+        result, text = self._reasons({"age": 40, "par_q": {"chest_pain_at_rest": "no"}})
+        assert result.blocked
+        assert "red flag" not in text
+
+    def test_par_q_yes_string_blocks(self):
+        result, text = self._reasons({"age": 40, "par_q": {"chest_pain_at_rest": "yes"}})
+        assert result.blocked
+        assert "red flag" in text
+
+    def test_par_q_list_blocks_without_crashing(self):
+        result, text = self._reasons({"age": 40, "par_q": ["chest_pain_at_rest"]})
+        assert result.blocked
+        assert "no risk factors" not in text
+
+    def test_par_q_empty_dict_blocks(self):
+        result, text = self._reasons({"age": 40, "par_q": {}})
+        assert result.blocked
+        assert "incomplete" in text or "par-q" in text
+
+    def test_pregnant_no_string_is_not_pregnant(self):
+        result, text = self._reasons({"age": 30, "pregnant": "no"})
+        assert result.blocked
+        assert "pregnant" not in text
+
+    def test_pregnancy_clearance_false_string_blocks(self):
+        result, text = self._reasons(
+            {"age": 30, "pregnant": "yes", "pregnancy_clearance": "false"}
+        )
+        assert result.blocked
+        assert "without medical clearance" in text
+
+    def test_medical_clearance_false_string_blocks(self):
+        result, text = self._reasons(
+            {
+                "age": 40,
+                "medical_conditions": ["heart_disease"],
+                "medical_clearance": "false",
+            }
+        )
+        assert result.blocked
+        assert "without clearance" in text
+
+    def test_pregnancy_ignores_medical_clearance_only(self):
+        result, text = self._reasons(
+            {"age": 30, "pregnant": True, "medical_clearance": True}
+        )
+        assert result.blocked
+        assert "without medical clearance" in text
+
+    def test_full_clean_adult_passes(self):
+        result = self.screen.screen_intake(
+            {
+                "age": 32,
+                "par_q": {flag: False for flag in ReadinessScreen.PAR_Q_RED_FLAGS},
+                "pregnant": False,
+                "medical_conditions": [],
+                "medical_clearance": False,
+            }
+        )
+        assert result.clearance == ClearanceLevel.CLEAR
+        assert not result.blocked
 
 
 if __name__ == "__main__":
