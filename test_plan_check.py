@@ -3,6 +3,32 @@
 
 import pytest
 from plan_check import PlanValidator, ValidationResult
+from readiness_screen import ReadinessScreen
+from red_flag_check import RedFlagChecker
+
+
+def passing_check_in():
+    checker = RedFlagChecker()
+    answers = {
+        aliases[0]: "no"
+        for _flag, aliases in checker.CHECKLIST_GROUPS
+    }
+    return checker.scan_check_in({
+        "symptom_checklist": answers,
+        "notes": "Easy lift, slept fine.",
+    })
+
+
+def minor_screen(age=15):
+    screener = ReadinessScreen()
+    return screener.screen_intake({
+        "age": age,
+        "parental_consent": True,
+        "par_q": {flag: False for flag in screener.PAR_Q_RED_FLAGS},
+        "pregnant": False,
+        "medical_conditions": "none",
+        "medical_clearance": False,
+    })
 
 
 class TestBMREstimation:
@@ -285,7 +311,7 @@ class TestCompletePlanValidation:
                 "sport_hours": 3
             }
         }
-        result = validator.validate_plan(plan)
+        result = validator.validate_plan(plan, check_in_result=passing_check_in())
         assert result.valid
         assert len(result.errors) == 0
     
@@ -335,7 +361,7 @@ class TestCompletePlanValidation:
                 "protein_g": 108
             }
         }
-        result = validator.validate_plan(plan)
+        result = validator.validate_plan(plan, check_in_result=passing_check_in())
         assert result.valid
 
 
@@ -394,7 +420,7 @@ class TestMessyInput:
                 "protein_g": "108"
             }
         }
-        result = validator.validate_plan(plan)
+        result = validator.validate_plan(plan, check_in_result=passing_check_in())
         assert result.valid
     
     def test_nan_rejected(self):
@@ -460,7 +486,7 @@ class TestMessyInput:
                 "protein_g": 144
             }
         }
-        result = validator.validate_plan(plan)
+        result = validator.validate_plan(plan, check_in_result=passing_check_in())
         assert result.valid
     
     def test_sport_hours_without_structured_validated(self):
@@ -519,7 +545,7 @@ class TestBMREnforcement:
                 "calories": 1600
             }
         }
-        result = validator.validate_plan(plan)
+        result = validator.validate_plan(plan, check_in_result=passing_check_in())
         assert result.valid
 
 
@@ -617,7 +643,7 @@ class TestReviewerProbes:
                 False,
             ),
             ("nutrition empty", {"user": USER, "nutrition": {}}, False),
-            ("only user", {"user": USER}, True),
+            ("only user", {"user": USER}, False),
             (
                 "male 1300",
                 {
@@ -799,7 +825,7 @@ class TestReviewerProbes:
         ],
     )
     def test_plan_probe(self, name, plan, expected_valid):
-        result = PlanValidator().validate_plan(plan)
+        result = PlanValidator().validate_plan(plan, check_in_result=passing_check_in())
         assert result.valid is expected_valid
 
     def test_direct_validate_calories_normalizes_sex(self):
@@ -855,7 +881,7 @@ class TestAgeReadinessAndRates:
             "user": {"sex": "F", "weight_kg": 40, "age": 16, "height_cm": 150},
             "nutrition": {"calories": 1150},
         }
-        result = PlanValidator().validate_plan(plan, PASSING_SCREEN)
+        result = PlanValidator().validate_plan(plan, minor_screen(16))
         assert not result.valid
         blob = " ".join(result.errors).lower()
         assert "under 18" in blob
@@ -874,9 +900,7 @@ class TestAgeReadinessAndRates:
             "nutrition": {"calories": 600},
             "training": {"previous_load": 80, "current_load": 84},
         }
-        result = PlanValidator().validate_plan(
-            plan, {"clearance": "clear", "blocked": False}
-        )
+        result = PlanValidator().validate_plan(plan, minor_screen(15))
         assert not result.valid
         blob = " ".join(result.errors).lower()
         assert "under 18" in blob
@@ -893,7 +917,7 @@ class TestAgeReadinessAndRates:
             },
             "nutrition": {"calories": 2200},
         }
-        result = PlanValidator().validate_plan(plan, _Screen("clear", False))
+        result = PlanValidator().validate_plan(plan, minor_screen(17))
         assert not result.valid
         assert "floor" not in " ".join(result.errors).lower()
 
@@ -902,7 +926,7 @@ class TestAgeReadinessAndRates:
             "user": {"sex": "F", "weight_kg": 50, "age": 16, "height_cm": 160},
             "goals": {"weight_loss_kg_per_week": 0.2},
         }
-        result = PlanValidator().validate_plan(plan, PASSING_SCREEN)
+        result = PlanValidator().validate_plan(plan, minor_screen(16))
         assert not result.valid
         assert "deficit" in " ".join(result.errors).lower()
 
@@ -922,7 +946,9 @@ class TestAgeReadinessAndRates:
                 "sport_hours": 2,
             },
         }
-        result = PlanValidator().validate_plan(plan, PASSING_SCREEN)
+        result = PlanValidator().validate_plan(
+            plan, minor_screen(15), passing_check_in()
+        )
         assert result.valid
         assert result.errors == []
 
@@ -953,7 +979,7 @@ class TestAgeReadinessAndRates:
             "user": {"sex": "M", "weight_kg": 70, "age": 100, "height_cm": 170},
             "nutrition": {"calories": 1800},
         }
-        result = PlanValidator().validate_plan(plan)
+        result = PlanValidator().validate_plan(plan, check_in_result=passing_check_in())
         assert result.valid
 
     def test_age_18_still_uses_adult_floor(self):
@@ -970,7 +996,7 @@ class TestAgeReadinessAndRates:
             "user": {"sex": "F", "weight_kg": 40, "age": 16, "height_cm": 150},
             "nutrition": {"calories": 900},
         }
-        result = PlanValidator().validate_plan(plan, PASSING_SCREEN)
+        result = PlanValidator().validate_plan(plan, minor_screen(16))
         assert not result.valid
         blob = " ".join(result.errors).lower()
         assert "under 18" in blob
@@ -1011,7 +1037,8 @@ class TestAgeReadinessAndRates:
 
     def test_zero_to_zero_load_passes(self):
         result = PlanValidator().validate_plan(
-            {"training": {"previous_load": 0, "current_load": 0}}
+            {"training": {"previous_load": 0, "current_load": 0}},
+            check_in_result=passing_check_in(),
         )
         assert result.valid
 

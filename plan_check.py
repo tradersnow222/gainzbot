@@ -15,6 +15,8 @@ import os
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from guardrails.validate import InputValidator, ValidationError
+from readiness_screen import ScreeningResult
+from red_flag_check import is_passing_check_in
 
 
 @dataclass
@@ -64,20 +66,31 @@ class PlanValidator:
             return (10 * weight_kg) + (6.25 * height_cm) - (5 * age) - 161
 
     def _readiness_passes(self, readiness_result) -> bool:
-        """True when a readiness screen cleared or cautioned and did not block."""
-        if readiness_result is None:
+        """True only for a real readiness result that cleared or cautioned."""
+        if not isinstance(readiness_result, ScreeningResult):
             return False
-        if isinstance(readiness_result, dict):
-            blocked = readiness_result.get("blocked", True)
-            clearance = readiness_result.get("clearance")
-        else:
-            blocked = getattr(readiness_result, "blocked", True)
-            clearance = getattr(readiness_result, "clearance", None)
+        if readiness_result.blocked is not False:
+            return False
+        clearance = readiness_result.clearance
         if hasattr(clearance, "value"):
             clearance = clearance.value
         if not isinstance(clearance, str):
             return False
-        return blocked is False and clearance.strip().lower() in {"clear", "caution"}
+        return clearance.strip().lower() in {"clear", "caution"}
+
+    def _plan_gate_errors(self, plan: Dict, check_in_result) -> List[str]:
+        """A plan is valid only with a real check-in and a real plan section."""
+        errors = []
+        if not is_passing_check_in(check_in_result):
+            errors.append("A passing check-in is required before a plan can be valid.")
+        has_plan_section = any(
+            name in plan for name in ("nutrition", "goals", "training")
+        )
+        if "user" in plan and not has_plan_section:
+            errors.append(
+                "A user block alone is not a plan. Add nutrition, goals, or training."
+            )
+        return errors
 
     def _age_policy_errors(self, age_value: float, readiness_result) -> List[str]:
         """Reject children, implausible ages, and minors without a passing screen."""
@@ -407,7 +420,7 @@ class PlanValidator:
         
         return errors
 
-    def validate_plan(self, plan: Dict, readiness_result=None) -> ValidationResult:
+    def validate_plan(self, plan: Dict, readiness_result=None, check_in_result=None) -> ValidationResult:
         """
         Validate a complete plan against all guardrails.
         
@@ -586,7 +599,8 @@ class PlanValidator:
                     all_errors.extend(result.errors)
                 except ValidationError as e:
                     all_errors.append(str(e))
-        
+
+        all_errors.extend(self._plan_gate_errors(plan, check_in_result))
         return ValidationResult(valid=len(all_errors) == 0, errors=all_errors)
 
 

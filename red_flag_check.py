@@ -8,6 +8,8 @@ immediate plan pause and professional consultation.
 
 from dataclasses import dataclass
 from typing import Dict, List, Set
+import hashlib
+import hmac
 import json
 import os
 import re
@@ -17,6 +19,26 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from guardrails.validate import InputValidator, ValidationError
 
 
+_CHECKIN_SECRET = b"gainzbot-scan-check-in-v1"
+
+
+def _check_in_seal(message: str) -> str:
+    return hmac.new(_CHECKIN_SECRET, message.encode("utf-8"), hashlib.sha256).hexdigest()
+
+
+def is_passing_check_in(result) -> bool:
+    """True only for a clear scan_check_in result issued by this module."""
+    if not isinstance(result, RedFlagResult):
+        return False
+    if result.pause_plan or result.flags_detected:
+        return False
+    if "continue with your plan" not in (result.message or "").lower():
+        return False
+    expected = _check_in_seal(result.message)
+    seal = getattr(result, "issuer_seal", "") or ""
+    return hmac.compare_digest(seal, expected)
+
+
 @dataclass
 class RedFlagResult:
     """Result of red flag scanning."""
@@ -24,6 +46,7 @@ class RedFlagResult:
     flags_detected: List[str]
     message: str
     recommendations: List[str]
+    issuer_seal: str = ""
 
     def to_dict(self) -> Dict:
         return {
@@ -866,6 +889,8 @@ class RedFlagChecker:
         result = self._from_flags(flags)
         if questions:
             return self._with_question(result, " ".join(questions))
+        if not result.pause_plan and not result.flags_detected:
+            result.issuer_seal = _check_in_seal(result.message)
         return result
 
     def _flatten(self, value) -> str:
