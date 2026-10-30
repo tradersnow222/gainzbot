@@ -91,9 +91,11 @@ class TestSafetyCaps:
             {"date": day.isoformat(), "calories": 1600, "protein_g": 144}
             for day in dates
         ]
+        user = self._adult()
+        user["goal"] = "cut"
         result = TrendReview().review(
             {"weights": weights, "intake": intake},
-            self._adult(),
+            user,
             28,
             dates[-1].isoformat(),
         )
@@ -111,7 +113,7 @@ class TestSafetyCaps:
         intake = [{"date": day.isoformat(), "calories": 1250, "protein_g": 110} for day in dates]
         result = TrendReview().review(
             {"weights": weights, "intake": intake},
-            {"sex": "F", "age": 40, "weight_kg": 60},
+            {"sex": "F", "age": 40, "weight_kg": 60, "goal": "cut"},
             28,
             dates[-1].isoformat(),
         )
@@ -267,6 +269,178 @@ class TestSafetyCaps:
         assert calories
         assert calories[0] - 2400 <= 200
         assert calories[0] >= 1500
+
+    def test_missing_age_blocks_calorie_and_protein(self):
+        dates = days("2026-10-22", 7)
+        weights = []
+        intake = []
+        for index, day in enumerate(dates):
+            weights.append({"date": day.isoformat(), "kg": 80 - (index * 0.25)})
+            intake.append({"date": day.isoformat(), "calories": 2200, "protein_g": 80})
+        result = TrendReview().review(
+            {"weights": weights, "intake": intake},
+            {"sex": "M", "weight_kg": 80},
+            7,
+            dates[-1].isoformat(),
+        )
+        changes = [item["changes"] for item in result["proposals"]]
+        assert all("calories" not in item and "protein_g" not in item for item in changes)
+        assert "18" not in result["message"]
+
+    def test_missing_age_still_allows_a_load_change(self):
+        dates = days("2026-10-22", 7)
+        sessions = [{"date": day.isoformat(), "planned": True, "completed": True} for day in dates]
+        loads = [{"date": day.isoformat(), "load": 100} for day in dates]
+        result = TrendReview().review(
+            {"sessions": sessions, "loads": loads},
+            {"sex": "M", "weight_kg": 80},
+            7,
+            dates[-1].isoformat(),
+        )
+        load = next(item["changes"]["load"] for item in result["proposals"] if "load" in item["changes"])
+        assert load == 110
+        assert all("calories" not in item["changes"] and "protein_g" not in item["changes"] for item in result["proposals"])
+
+    def _steady_load(self, start, count, load):
+        dates = days(start, count)
+        return dates, {
+            "sessions": [{"date": day.isoformat(), "planned": True, "completed": True} for day in dates],
+            "loads": [{"date": day.isoformat(), "load": load} for day in dates],
+        }
+
+    def test_reviews_a_day_apart_do_not_stack_load(self):
+        review = TrendReview()
+        dates, logs = self._steady_load("2026-10-16", 7, 100)
+        user = self._adult()
+        first = review.review(logs, user, 7, dates[-1].isoformat())
+        assert next(item["changes"]["load"] for item in first["proposals"] if "load" in item["changes"]) == 110
+
+        next_day = dates[-1] + timedelta(days=1)
+        dates2, logs2 = self._steady_load((next_day - timedelta(days=6)).isoformat(), 7, 110)
+        logs2["confirmed_changes"] = [{
+            "date": dates[-1].isoformat(),
+            "changes": {"load": 110},
+            "confirmed": True,
+        }]
+        second = review.review(logs2, user, 7, next_day.isoformat())
+        proposed = [item["changes"].get("load") for item in second["proposals"]]
+        assert 121 not in proposed
+        assert all(load is None or load <= 110 for load in proposed)
+
+    def test_load_change_is_allowed_when_the_last_one_is_7_days_old(self):
+        day = date(2026, 10, 29)
+        dates, logs = self._steady_load((day - timedelta(days=6)).isoformat(), 7, 110)
+        logs["confirmed_changes"] = [{
+            "date": (day - timedelta(days=7)).isoformat(),
+            "changes": {"load": 110},
+        }]
+        result = TrendReview().review(logs, self._adult(), 7, day.isoformat())
+        load = next(item["changes"]["load"] for item in result["proposals"] if "load" in item["changes"])
+        assert load == 121
+
+    def test_reviews_a_day_apart_do_not_stack_calories(self):
+        review = TrendReview()
+        user = self._adult()
+        first_dates = days("2026-10-16", 7)
+        weights = []
+        intake = []
+        for index, day in enumerate(first_dates):
+            weights.append({"date": day.isoformat(), "kg": 80 - (index * 0.25)})
+            intake.append({"date": day.isoformat(), "calories": 2200, "protein_g": 144})
+        first = review.review(
+            {"weights": weights, "intake": intake},
+            user,
+            7,
+            first_dates[-1].isoformat(),
+        )
+        calories = next(item["changes"]["calories"] for item in first["proposals"] if "calories" in item["changes"])
+        assert calories == 2400
+
+        next_day = first_dates[-1] + timedelta(days=1)
+        second_dates = days((next_day - timedelta(days=6)).isoformat(), 7)
+        weights = []
+        intake = []
+        for index, day in enumerate(second_dates):
+            weights.append({"date": day.isoformat(), "kg": 78.5 - (index * 0.25)})
+            intake.append({"date": day.isoformat(), "calories": 2400, "protein_g": 144})
+        second = review.review(
+            {
+                "weights": weights,
+                "intake": intake,
+                "confirmed_changes": [{
+                    "date": first_dates[-1].isoformat(),
+                    "changes": {"calories": 2400},
+                    "confirmed": True,
+                }],
+            },
+            user,
+            7,
+            next_day.isoformat(),
+        )
+        proposed = [item["changes"].get("calories") for item in second["proposals"]]
+        assert 2600 not in proposed
+        assert all(value is None for value in proposed)
+
+    def test_calorie_change_is_allowed_when_the_last_one_is_7_days_old(self):
+        end = date(2026, 10, 29)
+        dates = days((end - timedelta(days=6)).isoformat(), 7)
+        weights = []
+        intake = []
+        for index, day in enumerate(dates):
+            weights.append({"date": day.isoformat(), "kg": 78 - (index * 0.25)})
+            intake.append({"date": day.isoformat(), "calories": 2400, "protein_g": 144})
+        result = TrendReview().review(
+            {
+                "weights": weights,
+                "intake": intake,
+                "confirmed_changes": [{
+                    "date": (end - timedelta(days=7)).isoformat(),
+                    "changes": {"calories": 2400},
+                }],
+            },
+            self._adult(),
+            7,
+            end.isoformat(),
+        )
+        calories = next(item["changes"]["calories"] for item in result["proposals"] if "calories" in item["changes"])
+        assert calories == 2600
+        assert calories - 2400 <= PlanValidator.MAX_CALORIE_CHANGE_PER_WEEK
+
+    def _stall(self, goal):
+        dates = days("2026-10-01", 28)
+        weights = [{"date": dates[0].isoformat(), "kg": 80}, {"date": dates[-1].isoformat(), "kg": 80}]
+        intake = [{"date": day.isoformat(), "calories": 2200, "protein_g": 144} for day in dates]
+        user = self._adult()
+        if goal is not None:
+            user["goal"] = goal
+        result = TrendReview().review(
+            {"weights": weights, "intake": intake},
+            user,
+            28,
+            dates[-1].isoformat(),
+        )
+        return [
+            item for item in result["proposals"] if "calories" in item["changes"]
+        ]
+
+    def test_stall_on_a_cut_lowers_calories(self):
+        proposals = self._stall("cut")
+        assert proposals
+        assert proposals[0]["changes"]["calories"] < 2200
+        assert "lower" in proposals[0]["summary"].lower()
+
+    def test_stall_on_a_gain_raises_calories(self):
+        proposals = self._stall("gain")
+        assert proposals
+        calories = proposals[0]["changes"]["calories"]
+        assert 2200 < calories <= 2200 + PlanValidator.MAX_CALORIE_CHANGE_PER_WEEK
+        assert "raise" in proposals[0]["summary"].lower()
+
+    def test_stall_on_hold_proposes_nothing(self):
+        assert self._stall("hold") == []
+
+    def test_stall_with_no_goal_proposes_nothing(self):
+        assert self._stall(None) == []
 
 
 class TestConfirmationGate:

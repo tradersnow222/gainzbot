@@ -4,6 +4,12 @@ Review logged weight, intake, training load, and adherence.
 
 Proposals stay inside the safety caps. Nothing is applied until a
 record_confirmation covers that exact proposal.
+
+A missing age blocks calorie and protein proposals. Under 18 gets no
+calorie targets. A load or calorie change is proposed only when the last
+confirmed change of that kind is at least 7 days old. A weight stall
+follows the goal: cut lowers calories, gain raises them, and hold or no
+goal changes nothing.
 """
 
 from datetime import date, datetime, timedelta
@@ -96,22 +102,33 @@ class TrendReview:
         age = self._age(user)
         sex = self._sex(user)
         weight = self._body_weight(user, window_rows)
+        goal = self._goal(user)
         proposals = []
         blocked_calories = False
+        # Missing age blocks calorie and protein the same way a missing sex
+        # blocks a calorie target. Under 18 is handled below.
+        calorie_wait = self._change_is_too_soon(logs, user, "calories", end)
+        load_wait = self._change_is_too_soon(logs, user, "load", end)
 
-        weight_proposal = self._weight_proposal(window_rows, weight, sex, age)
-        if weight_proposal == "minor":
-            blocked_calories = True
-        elif weight_proposal:
-            proposals.append(weight_proposal)
+        if age is None:
+            weight_proposal = None
+            protein_proposal = None
+        else:
+            weight_proposal = self._weight_proposal(
+                window_rows, weight, sex, age, goal, calorie_wait,
+            )
+            if weight_proposal == "minor":
+                blocked_calories = True
+            elif weight_proposal:
+                proposals.append(weight_proposal)
 
-        protein_proposal = self._protein_proposal(window_rows, weight, age)
-        if protein_proposal == "minor":
-            blocked_calories = True
-        elif protein_proposal:
-            proposals.append(protein_proposal)
+            protein_proposal = self._protein_proposal(window_rows, weight, age)
+            if protein_proposal == "minor":
+                blocked_calories = True
+            elif protein_proposal:
+                proposals.append(protein_proposal)
 
-        load_proposal = self._load_proposal(window_rows, end)
+        load_proposal = self._load_proposal(window_rows, end, load_wait)
         if load_proposal:
             proposals.append(load_proposal)
 
@@ -280,7 +297,51 @@ class TrendReview:
             return PlanValidator.CALORIE_FLOOR_WOMEN
         return None
 
-    def _weight_proposal(self, rows, weight, sex, age):
+    def _goal(self, user) -> Optional[str]:
+        raw = user.get("goal")
+        if not isinstance(raw, str):
+            return None
+        text = raw.strip().lower()
+        if text in {"cut", "gain", "hold"}:
+            return text
+        return None
+
+    def _change_is_too_soon(self, logs, user, kind: str, end: date) -> bool:
+        """Weekly caps are per 7 days since the last confirmed change, not per review."""
+        last = self._last_confirmed(logs, user, kind)
+        if last is None:
+            return False
+        return (end - last).days < 7
+
+    def _last_confirmed(self, logs, user, kind: str) -> Optional[date]:
+        latest = None
+        sources = []
+        if isinstance(logs, dict):
+            sources.append(logs.get("confirmed_changes"))
+        if isinstance(user, dict):
+            sources.append(user.get("confirmed_changes"))
+        for entries in sources:
+            if isinstance(entries, dict):
+                entries = [entries]
+            if not isinstance(entries, list):
+                continue
+            for item in entries:
+                found = self._confirmed_on(item, kind)
+                if found is not None and (latest is None or found > latest):
+                    latest = found
+        return latest
+
+    def _confirmed_on(self, item, kind: str) -> Optional[date]:
+        if not isinstance(item, dict) or item.get("confirmed") is False:
+            return None
+        changes = item.get("changes")
+        if not isinstance(changes, dict):
+            changes = item
+        if kind not in changes and item.get("kind") != kind:
+            return None
+        return _parse_date(item.get("date") or item.get("day") or item.get("confirmed_on"))
+
+    def _weight_proposal(self, rows, weight, sex, age, goal, calorie_wait):
         points = self._series(rows, "weight")
         intakes = self._series(rows, "calories")
         if len(points) < 2 or not intakes or not weight:
@@ -298,7 +359,7 @@ class TrendReview:
             if abs(per_week) > limit or (span_days >= 14 and abs(delta) < 0.2):
                 return "minor"
             return None
-        if floor is None:
+        if floor is None or calorie_wait:
             return None
 
         if per_week < -limit:
@@ -312,10 +373,17 @@ class TrendReview:
                 summary="Weight is climbing faster than 1 percent a week. Lower calories.",
             )
         if span_days >= 14 and abs(delta) < 0.2:
-            return self._calorie_step(
-                current, floor, 150, up=False,
-                summary="Weight has stalled. Lower calories a little.",
-            )
+            if goal == "cut":
+                return self._calorie_step(
+                    current, floor, 150, up=False,
+                    summary="Weight has stalled. Lower calories a little.",
+                )
+            if goal == "gain":
+                return self._calorie_step(
+                    current, floor, 150, up=True,
+                    summary="Weight has stalled. Raise calories a little.",
+                )
+            return None
         return None
 
     def _calorie_step(self, current, floor, step, up, summary):
@@ -338,7 +406,7 @@ class TrendReview:
         return self._proposal(summary, {"calories": _whole(target)})
 
     def _protein_proposal(self, rows, weight, age):
-        if age is not None and age < PlanValidator.ADULT_AGE:
+        if age is None or age < PlanValidator.ADULT_AGE:
             return None
         points = self._series(rows, "protein")
         if len(points) < 2 or not weight:
@@ -355,7 +423,7 @@ class TrendReview:
             return None
         return self._proposal(summary, {"protein_g": _whole(target)})
 
-    def _load_proposal(self, rows, end):
+    def _load_proposal(self, rows, end, load_wait):
         loads = self._series(rows, "load")
         sessions = [row for row in rows if "completed" in row and row.get("planned", True)]
         planned = len(sessions)
@@ -370,18 +438,19 @@ class TrendReview:
                     reference = nxt["date"]
             days_since_drop = (end - reference).days
         deload_due = days_since_drop is not None and days_since_drop >= 28 and current
+        proposal = None
         if deload_due:
             target = _whole(current * 0.90)
-            return self._proposal(
+            proposal = self._proposal(
                 "It has been at least 4 weeks without a lighter week. Drop the load by about 10 percent for a deload.",
                 {"load": target},
             )
-        if missed and current is not None:
-            return self._proposal(
+        elif missed and current is not None:
+            proposal = self._proposal(
                 "Sessions were missed. Keep the load where it is.",
                 {"load": _whole(current)},
             )
-        if (
+        elif (
             current
             and planned >= 4
             and completed / planned >= 0.9
@@ -389,11 +458,19 @@ class TrendReview:
             and days_since_drop < 28
         ):
             target = _whole(current * (1 + PlanValidator.MAX_TRAINING_LOAD_INCREASE_PERCENT / 100))
-            return self._proposal(
+            proposal = self._proposal(
                 "Sessions are on track. The load can rise by about 10 percent.",
                 {"load": target},
             )
-        return None
+        if proposal and load_wait and self._moves_load(proposal, current):
+            return None
+        return proposal
+
+    def _moves_load(self, proposal, current) -> bool:
+        value = proposal["changes"].get("load")
+        if value is None or current is None:
+            return True
+        return abs(float(value) - float(current)) > 1e-9
 
     def _confirmation_covers(self, proposal, confirmation) -> bool:
         fields = self._confirmation_fields(confirmation)
