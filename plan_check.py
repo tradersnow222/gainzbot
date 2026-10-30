@@ -32,6 +32,9 @@ class PlanValidator:
 
     CALORIE_FLOOR_MEN = 1500
     CALORIE_FLOOR_WOMEN = 1200
+    MIN_AGE = 13
+    ADULT_AGE = 18
+    MAX_AGE = 100
     MAX_WEIGHT_LOSS_PERCENT = 1.0
     MIN_PROTEIN_G_PER_KG = 1.6
     MAX_PROTEIN_G_PER_KG = 2.2
@@ -60,6 +63,40 @@ class PlanValidator:
         else:
             return (10 * weight_kg) + (6.25 * height_cm) - (5 * age) - 161
 
+    def _readiness_passes(self, readiness_result) -> bool:
+        """True when a readiness screen cleared or cautioned and did not block."""
+        if readiness_result is None:
+            return False
+        if isinstance(readiness_result, dict):
+            blocked = readiness_result.get("blocked", True)
+            clearance = readiness_result.get("clearance")
+        else:
+            blocked = getattr(readiness_result, "blocked", True)
+            clearance = getattr(readiness_result, "clearance", None)
+        if hasattr(clearance, "value"):
+            clearance = clearance.value
+        if not isinstance(clearance, str):
+            return False
+        return blocked is False and clearance.strip().lower() in {"clear", "caution"}
+
+    def _age_policy_errors(self, age_value: float, readiness_result) -> List[str]:
+        """Reject children, implausible ages, and minors without a passing screen."""
+        if age_value < self.MIN_AGE:
+            return [
+                f"Age {age_value:g} is under {self.MIN_AGE}. "
+                f"Users under {self.MIN_AGE} are rejected."
+            ]
+        if age_value > self.MAX_AGE:
+            return [
+                f"Age {age_value:g} is over {self.MAX_AGE} and is not a plausible age."
+            ]
+        if age_value < self.ADULT_AGE and not self._readiness_passes(readiness_result):
+            return [
+                f"Age {age_value:g} is under {self.ADULT_AGE}. "
+                "A passing readiness screen result is required."
+            ]
+        return []
+
     def _validate_calories(
         self,
         proposed_calories: float,
@@ -67,7 +104,8 @@ class PlanValidator:
         weight_kg: float,
         age: int,
         height_cm: float,
-        has_medical_clearance: bool = False
+        has_medical_clearance: bool = False,
+        readiness_result=None,
     ) -> ValidationResult:
         """Validate proposed calorie target (internal)."""
         errors = []
@@ -76,7 +114,7 @@ class PlanValidator:
             sex = InputValidator.parse_sex(sex, "sex").value
             proposed_calories = InputValidator.parse_number(proposed_calories, "proposed_calories")
             weight_kg = InputValidator.parse_number(weight_kg, "weight_kg")
-            age = int(InputValidator.parse_number(age, "age"))
+            age_value = InputValidator.parse_number(age, "age")
             height_cm = InputValidator.parse_number(height_cm, "height_cm")
             if not isinstance(has_medical_clearance, bool):
                 has_medical_clearance = InputValidator.parse_boolean(
@@ -84,10 +122,15 @@ class PlanValidator:
                 )
         except ValidationError as e:
             return ValidationResult(valid=False, errors=[str(e)])
+
+        age_errors = self._age_policy_errors(age_value, readiness_result)
+        if age_errors:
+            return ValidationResult(valid=False, errors=age_errors)
+        age = int(age_value)
         
         floor = self.CALORIE_FLOOR_MEN if sex == 'M' else self.CALORIE_FLOOR_WOMEN
         
-        if proposed_calories < floor:
+        if age_value >= self.ADULT_AGE and proposed_calories < floor:
             errors.append(
                 f"Calorie target {proposed_calories:.0f} kcal is below the floor of "
                 f"{floor} kcal for {sex.upper()}."
@@ -109,11 +152,13 @@ class PlanValidator:
         weight_kg: float,
         age: int,
         height_cm: float,
-        has_medical_clearance: bool = False
+        has_medical_clearance: bool = False,
+        readiness_result=None,
     ) -> ValidationResult:
         """Validate proposed calorie target (public for backward compatibility)."""
         return self._validate_calories(
-            proposed_calories, sex, weight_kg, age, height_cm, has_medical_clearance
+            proposed_calories, sex, weight_kg, age, height_cm,
+            has_medical_clearance, readiness_result,
         )
 
     def _validate_weight_loss_rate(
@@ -135,7 +180,18 @@ class PlanValidator:
         except ValidationError as e:
             return ValidationResult(valid=False, errors=[str(e)])
 
-        if target_loss_kg_per_week <= 0:
+        if target_loss_kg_per_week < 0:
+            gain = -target_loss_kg_per_week
+            max_gain = current_weight_kg * (self.MAX_WEIGHT_LOSS_PERCENT / 100)
+            if gain > max_gain:
+                errors.append(
+                    f"Target weight gain {gain:.2f} kg/week exceeds "
+                    f"maximum safe rate of {max_gain:.2f} kg/week "
+                    f"(1% of body weight {current_weight_kg:.1f} kg)."
+                )
+            return ValidationResult(valid=len(errors) == 0, errors=errors)
+
+        if target_loss_kg_per_week == 0:
             return ValidationResult(valid=True, errors=[])
         
         max_loss = current_weight_kg * (self.MAX_WEIGHT_LOSS_PERCENT / 100)
@@ -235,7 +291,12 @@ class PlanValidator:
         """Validate training load increase."""
         errors = []
         
-        if current_load == 0:
+        if current_load <= 0:
+            if proposed_load > 0:
+                return ValidationResult(
+                    valid=False,
+                    errors=["Training load needs a positive baseline before it can increase."],
+                )
             return ValidationResult(valid=True, errors=[])
         
         increase_percent = ((proposed_load - current_load) / current_load) * 100
@@ -319,7 +380,7 @@ class PlanValidator:
         
         return errors
 
-    def validate_plan(self, plan: Dict) -> ValidationResult:
+    def validate_plan(self, plan: Dict, readiness_result=None) -> ValidationResult:
         """
         Validate a complete plan against all guardrails.
         
@@ -365,6 +426,14 @@ class PlanValidator:
                     f"height_cm value {height_cm} is not a plausible height in centimeters."
                 )
                 return ValidationResult(valid=False, errors=all_errors)
+
+            try:
+                age_value = InputValidator.parse_number(plan["user"]["age"], "age")
+            except ValidationError as e:
+                return ValidationResult(valid=False, errors=[str(e)])
+            age_errors = self._age_policy_errors(age_value, readiness_result)
+            if age_errors:
+                return ValidationResult(valid=False, errors=age_errors)
         
         if "nutrition" in plan:
             nutrition = plan["nutrition"]
@@ -382,9 +451,10 @@ class PlanValidator:
                         proposed_calories=calories,
                         sex=user_validated["sex_str"],
                         weight_kg=user_validated["weight_kg"],
-                        age=user_validated["age"],
+                        age=plan["user"]["age"],
                         height_cm=user_validated["height_cm"],
-                        has_medical_clearance=user_validated["medical_clearance"]
+                        has_medical_clearance=user_validated["medical_clearance"],
+                        readiness_result=readiness_result,
                     )
                     all_errors.extend(result.errors)
                 except ValidationError as e:
@@ -441,7 +511,12 @@ class PlanValidator:
         if "training" in plan:
             training = plan["training"]
             
-            if "previous_load" in training and "current_load" in training:
+            if "current_load" in training and "previous_load" not in training:
+                all_errors.append(
+                    "Training load needs a positive baseline (previous_load) "
+                    "before current_load can be set."
+                )
+            elif "previous_load" in training and "current_load" in training:
                 try:
                     previous_load = InputValidator.parse_number(training["previous_load"], "previous_load", allow_zero=True)
                     current_load = InputValidator.parse_number(training["current_load"], "current_load", allow_zero=True)

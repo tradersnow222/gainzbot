@@ -201,13 +201,14 @@ class TestTrainingLoad:
         assert result.valid
     
     def test_first_training_block(self):
-        """Accept any load when starting from zero."""
+        """A zero baseline cannot jump to a new load."""
         validator = PlanValidator()
         result = validator.validate_training_load_increase(
             current_load=0,
             proposed_load=100
         )
-        assert result.valid
+        assert not result.valid
+        assert "baseline" in result.errors[0].lower()
 
 
 class TestDeloadSchedule:
@@ -707,7 +708,7 @@ class TestReviewerProbes:
             (
                 "weight loss gain",
                 {"user": USER, "goals": {"weight_loss_kg_per_week": -5}},
-                True,
+                False,
             ),
             (
                 "weight loss maintain",
@@ -722,7 +723,7 @@ class TestReviewerProbes:
             (
                 "load from zero",
                 {"training": {"previous_load": 0, "current_load": 1000}},
-                True,
+                False,
             ),
             ("deload negative", {"training": {"weeks_since_deload": -3}}, False),
             ("sport hours over cap", {"training": {"sport_hours": 30}}, False),
@@ -752,7 +753,7 @@ class TestReviewerProbes:
                     "user": {"sex": "F", "weight_kg": 40, "age": 12, "height_cm": 150},
                     "nutrition": {"calories": 1250},
                 },
-                True,
+                False,
             ),
             (
                 "height in meters",
@@ -808,6 +809,147 @@ class TestReviewerProbes:
     def test_direct_validate_protein_zero_weight_does_not_crash(self):
         result = PlanValidator().validate_protein(100, 0)
         assert result.valid is False
+
+
+class _Clearance:
+    def __init__(self, value):
+        self.value = value
+
+
+class _Screen:
+    def __init__(self, clearance, blocked):
+        self.clearance = _Clearance(clearance)
+        self.blocked = blocked
+
+
+PASSING_SCREEN = {"clearance": "caution", "blocked": False}
+
+
+class TestAgeReadinessAndRates:
+    """Age gates, gain cap, and load baseline."""
+
+    def test_under_13_rejected_even_with_passing_screen(self):
+        plan = {
+            "user": {"sex": "F", "weight_kg": 40, "age": 12, "height_cm": 150},
+            "nutrition": {"calories": 2000},
+        }
+        result = PlanValidator().validate_plan(plan, PASSING_SCREEN)
+        assert not result.valid
+        assert "under 13" in result.errors[0].lower()
+        assert "floor" not in " ".join(result.errors).lower()
+
+    def test_under_18_without_screen_does_not_apply_adult_floor(self):
+        plan = {
+            "user": {"sex": "F", "weight_kg": 40, "age": 16, "height_cm": 150},
+            "nutrition": {"calories": 1150},
+        }
+        result = PlanValidator().validate_plan(plan)
+        assert not result.valid
+        blob = " ".join(result.errors).lower()
+        assert "under 18" in blob
+        assert "readiness" in blob
+        assert "floor" not in blob
+
+    def test_under_18_with_passing_screen_skips_adult_floor(self):
+        plan = {
+            "user": {"sex": "F", "weight_kg": 40, "age": 16, "height_cm": 150},
+            "nutrition": {"calories": 1150},
+        }
+        result = PlanValidator().validate_plan(plan, PASSING_SCREEN)
+        assert result.valid
+        assert result.errors == []
+
+    def test_under_18_accepts_screen_object(self):
+        plan = {
+            "user": {"sex": "F", "weight_kg": 40, "age": 16, "height_cm": 150},
+            "nutrition": {"calories": 1150},
+        }
+        result = PlanValidator().validate_plan(plan, _Screen("clear", False))
+        assert result.valid
+
+    def test_blocked_or_uncleared_screen_does_not_pass(self):
+        plan = {
+            "user": {"sex": "F", "weight_kg": 40, "age": 16, "height_cm": 150},
+            "nutrition": {"calories": 1800},
+        }
+        validator = PlanValidator()
+        blocked = validator.validate_plan(plan, {"clearance": "clear", "blocked": True})
+        doctor = validator.validate_plan(
+            plan, {"clearance": "needs_doctor_clearance", "blocked": False}
+        )
+        assert not blocked.valid
+        assert not doctor.valid
+
+    def test_age_over_100_rejected(self):
+        plan = {
+            "user": {"sex": "M", "weight_kg": 70, "age": 100.2, "height_cm": 170},
+            "nutrition": {"calories": 2000},
+        }
+        result = PlanValidator().validate_plan(plan)
+        assert not result.valid
+        assert "plausible" in result.errors[0].lower()
+
+    def test_age_100_adult_floor_still_applies(self):
+        plan = {
+            "user": {"sex": "M", "weight_kg": 70, "age": 100, "height_cm": 170},
+            "nutrition": {"calories": 1800},
+        }
+        result = PlanValidator().validate_plan(plan)
+        assert result.valid
+
+    def test_age_18_still_uses_adult_floor(self):
+        plan = {
+            "user": {"sex": "F", "weight_kg": 60, "age": 18, "height_cm": 165},
+            "nutrition": {"calories": 1100},
+        }
+        result = PlanValidator().validate_plan(plan)
+        assert not result.valid
+        assert "floor" in " ".join(result.errors).lower()
+
+    def test_child_below_bmr_still_rejected_with_screen(self):
+        plan = {
+            "user": {"sex": "F", "weight_kg": 40, "age": 16, "height_cm": 150},
+            "nutrition": {"calories": 900},
+        }
+        result = PlanValidator().validate_plan(plan, PASSING_SCREEN)
+        assert not result.valid
+        assert "bmr" in " ".join(result.errors).lower()
+        assert "floor" not in " ".join(result.errors).lower()
+
+    def test_direct_calories_reject_child_without_screen(self):
+        result = PlanValidator().validate_calories(2000, "F", 40, 12, 150)
+        assert not result.valid
+        assert "floor" not in " ".join(result.errors).lower()
+
+    def test_direct_calories_skip_floor_for_minor_with_screen(self):
+        result = PlanValidator().validate_calories(
+            1150, "F", 40, 16, 150, False, PASSING_SCREEN
+        )
+        assert result.valid
+
+    def test_gain_within_one_percent_passes(self):
+        result = PlanValidator().validate_weight_loss_rate(-0.5, 60)
+        assert result.valid
+
+    def test_gain_over_one_percent_rejected(self):
+        result = PlanValidator().validate_weight_loss_rate(-0.7, 60)
+        assert not result.valid
+        assert "gain" in result.errors[0].lower()
+
+    def test_maintain_still_passes(self):
+        result = PlanValidator().validate_weight_loss_rate(0, 60)
+        assert result.valid
+
+    def test_missing_load_baseline_rejected(self):
+        result = PlanValidator().validate_plan({"training": {"current_load": 100}})
+        assert not result.valid
+        assert "baseline" in " ".join(result.errors).lower()
+
+    def test_zero_to_zero_load_passes(self):
+        result = PlanValidator().validate_plan(
+            {"training": {"previous_load": 0, "current_load": 0}}
+        )
+        assert result.valid
 
 
 if __name__ == "__main__":
