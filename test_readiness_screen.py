@@ -614,5 +614,176 @@ class TestReviewerProbes:
         assert not result.blocked
 
 
+class TestP2bProbes:
+    """Follow-up probes. Each case must block or pass as specified."""
+
+    def setup_method(self):
+        self.screen = ReadinessScreen()
+        self.pq = {flag: False for flag in ReadinessScreen.PAR_Q_RED_FLAGS}
+
+    def _screen(self, intake):
+        result = self.screen.screen_intake(intake)
+        return result, " ".join(result.reasons)
+
+    def test_full_par_q_no_strings_clear(self):
+        result, _ = self._screen(
+            {"age": 30, "par_q": {k: "no" for k in ReadinessScreen.PAR_Q_RED_FLAGS}}
+        )
+        assert result.clearance == ClearanceLevel.CLEAR
+        assert not result.blocked
+
+    def test_full_par_q_curly_no_clear(self):
+        result, _ = self._screen(
+            {"age": 30, "par_q": {k: "\u201cNo\u201d" for k in ReadinessScreen.PAR_Q_RED_FLAGS}}
+        )
+        assert result.clearance == ClearanceLevel.CLEAR
+        assert not result.blocked
+
+    def test_one_yes_blocks(self):
+        result, text = self._screen(
+            {"age": 30, "par_q": {**self.pq, "chest_pain_at_rest": "Yes "}}
+        )
+        assert result.blocked
+        assert "chest pain at rest" in text.lower()
+
+    def test_maybe_blocks(self):
+        result, _ = self._screen(
+            {"age": 30, "par_q": {**self.pq, "loss_of_consciousness": "maybe"}}
+        )
+        assert result.blocked
+
+    def test_none_answer_blocks(self):
+        result, _ = self._screen(
+            {"age": 30, "par_q": {**self.pq, "loss_of_consciousness": None}}
+        )
+        assert result.blocked
+
+    def test_numeric_two_blocks(self):
+        result, _ = self._screen(
+            {"age": 30, "par_q": {**self.pq, "loss_of_consciousness": 2}}
+        )
+        assert result.blocked
+
+    def test_condition_none_with_full_par_q_clear(self):
+        result, _ = self._screen(
+            {"age": 30, "par_q": self.pq, "medical_conditions": ["none"]}
+        )
+        assert result.clearance == ClearanceLevel.CLEAR
+        assert not result.blocked
+
+    def test_condition_na_with_full_par_q_clear(self):
+        result, _ = self._screen(
+            {"age": 30, "par_q": self.pq, "medical_conditions": "N/A"}
+        )
+        assert result.clearance == ClearanceLevel.CLEAR
+        assert not result.blocked
+
+    def test_none_plus_diabetes_blocks(self):
+        result, text = self._screen(
+            {"age": 30, "par_q": self.pq, "medical_conditions": "none, diabetes"}
+        )
+        assert result.blocked
+        assert "diabetes" in text.lower()
+
+    def test_clearance_false_string_blocks(self):
+        result, _ = self._screen(
+            {
+                "age": 40,
+                "par_q": self.pq,
+                "medical_conditions": ["heart disease"],
+                "medical_clearance": "false",
+            }
+        )
+        assert result.blocked
+
+    def test_clearance_true_string_is_caution(self):
+        result, _ = self._screen(
+            {
+                "age": 40,
+                "par_q": self.pq,
+                "medical_conditions": ["heart disease"],
+                "medical_clearance": "true",
+            }
+        )
+        assert result.clearance == ClearanceLevel.CAUTION
+        assert not result.blocked
+
+    def test_pregnant_no_clear(self):
+        result, _ = self._screen({"age": 30, "par_q": self.pq, "pregnant": "no"})
+        assert result.clearance == ClearanceLevel.CLEAR
+        assert not result.blocked
+
+    def test_pregnant_maybe_blocks(self):
+        result, _ = self._screen({"age": 30, "par_q": self.pq, "pregnant": "maybe"})
+        assert result.blocked
+
+    def test_pregnant_yes_clearance_false_blocks(self):
+        result, _ = self._screen(
+            {
+                "age": 30,
+                "par_q": self.pq,
+                "pregnant": "yes",
+                "pregnancy_clearance": "false",
+            }
+        )
+        assert result.blocked
+
+    def test_age_15_consent_no_blocks(self):
+        result, _ = self._screen(
+            {"age": 15, "par_q": self.pq, "parental_consent": "no"}
+        )
+        assert result.blocked
+
+    def test_age_15_consent_yes_caution(self):
+        result, _ = self._screen(
+            {"age": 15, "par_q": self.pq, "parental_consent": "yes"}
+        )
+        assert result.clearance == ClearanceLevel.CAUTION
+        assert not result.blocked
+
+    def test_age_200_blocks(self):
+        result, text = self._screen({"age": 200, "par_q": self.pq})
+        assert result.blocked
+        assert "plausible" in text.lower()
+
+    def test_age_100_with_full_par_q_clear(self):
+        result, _ = self._screen({"age": 100, "par_q": self.pq})
+        assert result.clearance == ClearanceLevel.CLEAR
+        assert not result.blocked
+
+    def test_age_17_9_blocks_even_with_consent(self):
+        result, _ = self._screen(
+            {"age": 17.9, "par_q": self.pq, "parental_consent": "yes"}
+        )
+        assert result.blocked
+
+    def test_misspelled_pregnant_blocks_with_hint(self):
+        result, text = self._screen({"age": 30, "par_q": self.pq, "pregnent": True})
+        assert result.blocked
+        assert "did you mean 'pregnant'" in text.lower()
+
+    def test_misspelled_conditions_blocks_with_hint(self):
+        result, text = self._screen(
+            {"age": 30, "par_q": self.pq, "conditions": ["heart disease"]}
+        )
+        assert result.blocked
+        assert "did you mean 'medical_conditions'" in text.lower()
+        assert result.clearance != ClearanceLevel.CLEAR
+
+    def test_unknown_key_without_close_match_still_blocks(self):
+        result, text = self._screen({"age": 30, "par_q": self.pq, "hobby": "lifting"})
+        assert result.blocked
+        assert "unknown key" in text.lower()
+
+    def test_intake_list_blocks(self):
+        result, text = self._screen([1])
+        assert result.blocked
+        assert "object" in text.lower()
+
+    def test_intake_none_blocks(self):
+        result, _ = self._screen(None)
+        assert result.blocked
+
+
 if __name__ == "__main__":
     pytest.main([__file__, "-v"])

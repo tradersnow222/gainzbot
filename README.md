@@ -59,7 +59,8 @@ pytest test_validate.py -v     # 49 tests for shared validator
 PAR-Q+ style readiness and age screening performed before plan generation. Identifies medical and safety risks requiring clearance or physician consultation.
 
 **Screening checks:**
-- **Age requirements**: Users under 13 are blocked; ages 13-17 require parental consent.
+- **Age requirements**: Users under 13 are blocked; ages 13-17 require parental consent. Ages over 100, and ages that are not whole years, are rejected.
+- **Unknown fields**: Any top-level key that is not part of the intake blocks screening, with a did-you-mean hint when the name is close to a real field.
 - **PAR-Q+ questions**: Chest pain, loss of consciousness, dizziness, balance issues, joint problems worsened by activity, medications, doctor supervision requirements.
 - **Pregnancy**: Requires medical clearance before starting exercise.
 - **Medical conditions**: Heart disease, high blood pressure/hypertension, diabetes, asthma, chronic illness require clearance. Unrecognized conditions block until review.

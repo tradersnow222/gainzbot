@@ -10,6 +10,7 @@ Uses shared input validation with fail-closed behavior.
 from dataclasses import dataclass
 from typing import Dict, List, Tuple
 from enum import Enum
+import difflib
 import json
 import re
 import sys
@@ -48,6 +49,16 @@ class ReadinessScreen:
 
     MIN_AGE = 13
     ADULT_AGE = 18
+    MAX_AGE = 100
+    KNOWN_INTAKE_KEYS = {
+        "age",
+        "parental_consent",
+        "par_q",
+        "pregnant",
+        "pregnancy_clearance",
+        "medical_conditions",
+        "medical_clearance",
+    }
 
     PAR_Q_RED_FLAGS = [
         "chest_pain_at_rest",
@@ -111,13 +122,27 @@ class ReadinessScreen:
         recommendations = []
         
         try:
-            age = int(InputValidator.parse_number(age_raw, "age", allow_zero=False, allow_negative=False))
+            age_value = InputValidator.parse_number(
+                age_raw, "age", allow_zero=False, allow_negative=False
+            )
         except (ValidationError, ValueError, TypeError) as e:
             return ScreeningResult(
                 clearance=ClearanceLevel.NEEDS_DOCTOR_CLEARANCE,
                 reasons=[f"Invalid age: {e}"],
                 blocked=True,
                 recommendations=["Please provide a valid age."]
+            )
+
+        if age_value != int(age_value):
+            return self._blocked(
+                ["Age must be a whole number of years."],
+                ["Please provide age in whole years."],
+            )
+        age = int(age_value)
+        if age > self.MAX_AGE:
+            return self._blocked(
+                [f"Age {age} is over {self.MAX_AGE} and is not a plausible age."],
+                ["Please provide a real age."],
             )
         
         if age < self.MIN_AGE:
@@ -201,6 +226,14 @@ class ReadinessScreen:
             if text:
                 conditions.append(text)
         return conditions, ""
+
+    def _unknown_key_message(self, key: str) -> str:
+        suggestion = difflib.get_close_matches(
+            str(key).lower(), sorted(self.KNOWN_INTAKE_KEYS), n=1, cutoff=0.6
+        )
+        if suggestion:
+            return f"Unknown key: '{key}' (did you mean '{suggestion[0]}'?)"
+        return f"Unknown key: '{key}'"
 
     def _blocked(self, reasons: List[str], recommendations: List[str]) -> ScreeningResult:
         return ScreeningResult(
@@ -422,6 +455,13 @@ class ReadinessScreen:
                 and highest_level != ClearanceLevel.NEEDS_DOCTOR_CLEARANCE
             ):
                 highest_level = ClearanceLevel.CAUTION
+
+        for key in intake:
+            if key not in self.KNOWN_INTAKE_KEYS:
+                absorb(self._blocked(
+                    [self._unknown_key_message(key)],
+                    ["Remove or correct unrecognized fields before screening."],
+                ))
 
         if "age" not in intake:
             absorb(self._blocked(
