@@ -329,5 +329,105 @@ class TestFalsePositives:
         assert len(result.flags_detected) == 0
 
 
+class TestReviewerProbes:
+    """Reviewer probes for red_flag_check. Each case asserts block or pass."""
+
+    SHOULD_FLAG = [
+        "I can\u2019t breathe",
+        "my chest hurts when I run",
+        "I cant breathe",
+        "I can\u02bct breathe",
+        "I can\uff07t breathe",
+        "my chest feels tight on the stairs",
+        "tightness in my chest during intervals",
+        "pain in my chest",
+        "left arm went numb on the treadmill",
+        "I felt faint and almost passed out",
+        "my heart is fluttering weird",
+        "I've been making myself throw up after dinner",
+        "I only ate 500 calories today",
+        "I hate my body and want to disappear",
+        "Im out of breath just walking",
+        "knee popped and swelled up",
+        "I think I tore something in my shoulder",
+        "CHEST PAIN",
+    ]
+
+    SHOULD_NOT = [
+        "I'm starving after leg day",
+        "binge-watched Netflix",
+        "I can't stand burpees",
+        "had no chest pain at all today",
+        "no injuries, feeling great",
+        "I'm not injured, just sore",
+        "the coffee had me heart racing in a good way lol",
+        "vomit-inducing playlist at the gym",
+        "my dog threw up on the rug",
+        "strained yogurt for breakfast",
+        "gasping for air after a PR sprint, felt amazing",
+        "chest day was brutal, pecs are sore",
+        "did a wrist curl superset",
+        "I'm starving, what should I eat",
+        "I can't get enough of this program",
+    ]
+
+    @pytest.mark.parametrize("text", SHOULD_FLAG)
+    def test_probe_flags(self, text):
+        result = RedFlagChecker().scan_text(text)
+        assert result.pause_plan
+
+    @pytest.mark.parametrize("text", SHOULD_NOT)
+    def test_probe_does_not_flag(self, text):
+        result = RedFlagChecker().scan_text(text)
+        assert not result.pause_plan
+
+    def test_numbness_is_emergency(self):
+        result = RedFlagChecker().scan_text("left arm went numb on the treadmill")
+        blob = (result.message + " ".join(result.recommendations)).lower()
+        assert result.pause_plan
+        assert "emergency" in blob
+
+    def test_crisis_wording(self):
+        result = RedFlagChecker().scan_text("I hate my body and want to disappear")
+        blob = result.message + " " + " ".join(result.recommendations)
+        assert result.pause_plan
+        assert "988" in blob
+        assert "emergency" in blob.lower()
+
+    def test_checkin_pain_list_flags(self):
+        result = RedFlagChecker().scan_check_in({"pain": ["chest pain"]})
+        assert result.pause_plan
+        assert "chest_pain" in result.flags_detected
+
+    def test_unknown_field_asks(self):
+        result = RedFlagChecker().scan_check_in({"feeling": "chest pain"})
+        assert result.pause_plan
+        assert "no red flags" not in result.message.lower()
+        assert "?" in result.message
+
+    def test_notes_capital_flags(self):
+        result = RedFlagChecker().scan_check_in({"Notes": "I passed out"})
+        assert result.pause_plan
+        assert "fainting" in result.flags_detected
+
+    def test_checkin_none_asks(self):
+        result = RedFlagChecker().scan_check_in(None)
+        assert result.pause_plan
+        assert "?" in result.message
+        assert "no red flags" not in result.message.lower()
+
+    def test_scan_text_none_asks(self):
+        result = RedFlagChecker().scan_text(None)
+        assert result.pause_plan
+        assert "?" in result.message
+        assert "no red flags" not in result.message.lower()
+
+    def test_checkin_string_asks(self):
+        result = RedFlagChecker().scan_check_in("chest pain")
+        assert result.pause_plan
+        assert "?" in result.message
+        assert "no red flags" not in result.message.lower()
+
+
 if __name__ == "__main__":
     pytest.main([__file__, "-v"])
