@@ -14,7 +14,7 @@ Gainzbot implements four layers of safety guardrails:
 ### Shared Input Validation (`guardrails/validate.py`)
 
 All guardrail scripts use shared input validation with fail-closed behavior:
-- **Required fields**: Missing critical data (weight, sex, age, height) blocks processing—never uses defaults
+- **Required fields**: Missing critical data (weight, sex, age, height) blocks processing and never uses defaults
 - **Strict type checking**: Booleans must be real true/false; string "false" never counts as clearance
 - **Number validation**: Rejects NaN, infinity, zero, and negatives; parses numeric strings cleanly
 - **Sex normalization**: M/male/man → male, F/female/woman → female; anything else blocks
@@ -50,8 +50,8 @@ if not result.valid:
 
 **Testing:**
 ```bash
-pytest test_plan_check.py -v  # 36 tests
-pytest test_validate.py -v     # 49 tests for shared validator
+pytest test_plan_check.py -v  # 91 tests
+pytest test_validate.py -v     # 52 tests for shared validator
 ```
 
 ### readiness_screen.py
@@ -85,5 +85,62 @@ if result.blocked:
 
 **Testing:**
 ```bash
-pytest test_readiness_screen.py -v
+pytest test_readiness_screen.py -v  # 95 tests
+```
+
+### red_flag_check.py
+
+The check-in gate is `scan_check_in(checklist, notes)`. Every check-in needs a yes/no answer for each canonical symptom, plus any notes. A missing, incomplete, or malformed checklist pauses and asks, and names each canonical item that is still missing. Any yes pauses the plan. Notes are scanned as well.
+
+`scan_text(user_message)` is a backstop helper. It is not the gate. A clear text scan never says "Continue with your plan" on its own. That sentence is used only after `scan_check_in` has a complete checklist and no red flags.
+
+**Canonical checklist items (each one is required):**
+- Chest pain or pressure
+- Trouble breathing
+- Fainting or near-fainting, including collapse
+- Stroke signs
+- Face droop (its own item)
+- Coughing or vomiting blood
+- Blue lips
+- Thoughts of self-harm or not wanting to live
+- Self-harm
+- Disordered eating, including starving to cut weight, laxative misuse, and very low intake such as barely eating for days
+- Purging (its own item)
+- Dark brown or cola-colored urine
+- Sudden pop
+- Tendon snap (its own item)
+- Heat illness
+- Palpitations, or a skipped or racing heartbeat with lightheadedness or dizziness
+- Jaw, arm, shoulder, neck, or back pain with sweating, or chest-area pain at rest
+- A hot, red, swollen, or painful calf or leg, especially after travel (possible blood clot)
+- Head injury with confusion, memory loss, vomiting, or a worsening headache
+
+An alias counts only when it is a true synonym of that one item. Face droop does not answer stroke signs. Tendon snap does not answer sudden pop. Purging does not answer disordered eating. Collapse answers fainting.
+
+**Text backstop:**
+Single symptom words and short stems. Negation stops at a comma, at but/however/though, and at the end of a sentence. Self-harm always includes 988. These stay clear: chest day, a PR sprint, "kill for a burger", "dying on that last set", "took a breather", and "tore through my workout". Real self-harm and injury wording still pauses.
+
+**Usage:**
+```python
+from red_flag_check import RedFlagChecker
+
+checker = RedFlagChecker()
+result = checker.scan_check_in({
+    "symptom_checklist": {
+        "chest_pain": "no",
+        "trouble_breathing": "no",
+        # every canonical item, answered yes or no
+    },
+    "notes": "Easy lift, slept fine.",
+})
+
+if result.pause_plan:
+    print(f"PLAN PAUSED: {result.message}")
+    for rec in result.recommendations:
+        print(f"- {rec}")
+```
+
+**Testing:**
+```bash
+pytest test_red_flag_check.py -v  # 250 tests
 ```
