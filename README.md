@@ -25,7 +25,9 @@ All guardrail scripts use shared input validation with fail-closed behavior:
 Validates proposed nutrition and training plans against hard safety bounds before any changes are applied.
 
 **Validation checks:**
-- **Age**: Under 13 is rejected. Ages 13–17 require a passing readiness screen result (`clear` or `caution`, and not blocked) passed into `validate_plan` before training guidance. Calorie targets and deficits are never set for anyone under 18, even with a passing screen or medical clearance. Ages over 100 are rejected.
+- **Age**: Under 13 is rejected. Ages 13-17 require a real readiness screen result (`clear` or `caution`, and not blocked) from `readiness_screen`. A plain dict does not unlock training. Calorie targets and deficits are never set for anyone under 18, even with a passing screen or medical clearance. Ages over 100 are rejected.
+- **Check-in**: `validate_plan` is valid only when a passing `scan_check_in` result is passed in. A missing result, a text-only scan, or a handmade result does not pass.
+- **Plan shape**: A user block alone is not a plan. Nutrition, goals, or training has to be included.
 - **Calorie floor**: Minimum 1,500 kcal for men, 1,200 kcal for women. Applies to adults only. Never allows calories below estimated BMR without explicit medical clearance.
 - **Weight change rate**: Maximum 1% of body weight per week for loss or gain. Zero (maintain) is allowed.
 - **Protein intake**: 1.6 to 2.2 g/kg body weight.
@@ -143,4 +145,37 @@ if result.pause_plan:
 **Testing:**
 ```bash
 pytest test_red_flag_check.py -v  # 250 tests
+```
+
+### record_confirmation.py
+
+Records the user's explicit confirmation of one exact plan version. It fails closed.
+
+**What it accepts:**
+- A clear yes from the user, such as "yes" or "I confirm this plan"
+- The user's exact words, stored as the quote
+- A passing `scan_check_in` result
+- A hash of the exact plan. Any edit after confirming needs a new confirmation
+
+**What it refuses:**
+- Vague replies such as "sure I guess", "looks fine", or "whatever"
+- A reply that is not from the user
+- A missing check-in, a text-only scan, or a forged passing result
+
+A recorded confirmation covers only the plan version that was hashed.
+
+**Usage:**
+```python
+from record_confirmation import ConfirmationRecorder
+
+recorder = ConfirmationRecorder()
+record = recorder.record(plan, "yes", "user", check_in_result)
+
+if record.confirmed and recorder.covers(record, plan):
+    print(record.message)
+```
+
+**Testing:**
+```bash
+pytest test_record_confirmation.py -v  # 23 tests
 ```
