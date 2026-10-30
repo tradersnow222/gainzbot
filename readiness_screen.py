@@ -4,12 +4,18 @@ Readiness screening script for Gainzbot.
 
 Implements PAR-Q+ style readiness and age screening before allowing plan generation.
 Identifies medical and safety risks that require clearance or physician consultation.
+Uses shared input validation with fail-closed behavior.
 """
 
 from dataclasses import dataclass
 from typing import Dict, List
 from enum import Enum
 import json
+import sys
+import os
+
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+from guardrails.validate import InputValidator, ValidationError
 
 
 class ClearanceLevel(Enum):
@@ -39,7 +45,8 @@ class ScreeningResult:
 class ReadinessScreen:
     """Screens users for readiness to begin fitness and nutrition programs."""
 
-    MIN_AGE = 18
+    MIN_AGE = 13
+    ADULT_AGE = 18
 
     PAR_Q_RED_FLAGS = [
         "chest_pain_at_rest",
@@ -47,27 +54,74 @@ class ReadinessScreen:
         "loss_of_balance_dizziness",
         "loss_of_consciousness",
         "bone_joint_problem_worsened_by_activity",
+        "currently_taking_medications",
+        "doctor_advised_supervised_only",
     ]
 
     MEDICAL_CONDITIONS_REQUIRING_CLEARANCE = [
         "heart_disease",
         "high_blood_pressure",
+        "hypertension",
         "diabetes",
+        "type_2_diabetes",
+        "type_1_diabetes",
         "asthma",
         "chronic_illness",
     ]
+    
+    CONDITION_SYNONYMS = {
+        "hypertension": "high_blood_pressure",
+        "high bp": "high_blood_pressure",
+        "type 2 diabetes": "type_2_diabetes",
+        "type 1 diabetes": "type_1_diabetes",
+        "t2d": "type_2_diabetes",
+        "t1d": "type_1_diabetes",
+        "heart condition": "heart_disease",
+        "cardiac disease": "heart_disease",
+        "cardiovascular disease": "heart_disease",
+    }
 
-    def check_age(self, age: int, has_parental_consent: bool = False) -> ScreeningResult:
+    @staticmethod
+    def normalize_condition(condition: str) -> str:
+        """
+        Normalize medical condition text.
+        
+        Args:
+            condition: Raw condition text
+            
+        Returns:
+            Normalized condition key
+        """
+        condition_clean = InputValidator.normalize_unicode(condition)
+        condition_lower = condition_clean.lower().strip()
+        
+        if condition_lower in ReadinessScreen.CONDITION_SYNONYMS:
+            return ReadinessScreen.CONDITION_SYNONYMS[condition_lower]
+        
+        condition_key = condition_lower.replace(" ", "_").replace("-", "_")
+        return condition_key
+
+    def check_age(self, age_raw, has_parental_consent: bool = False) -> ScreeningResult:
         """Check age requirements."""
         reasons = []
         recommendations = []
         
-        if age < self.MIN_AGE and not has_parental_consent:
+        try:
+            age = int(InputValidator.parse_number(age_raw, "age", allow_zero=False, allow_negative=False))
+        except (ValidationError, ValueError, TypeError) as e:
+            return ScreeningResult(
+                clearance=ClearanceLevel.NEEDS_DOCTOR_CLEARANCE,
+                reasons=[f"Invalid age: {e}"],
+                blocked=True,
+                recommendations=["Please provide a valid age."]
+            )
+        
+        if age < self.MIN_AGE:
             reasons.append(
-                f"User is under {self.MIN_AGE} years old without parental consent."
+                f"User is under {self.MIN_AGE} years old."
             )
             recommendations.append(
-                "Parental or guardian consent required for users under 18."
+                f"Users must be at least {self.MIN_AGE} years old."
             )
             return ScreeningResult(
                 clearance=ClearanceLevel.NEEDS_DOCTOR_CLEARANCE,
@@ -76,9 +130,23 @@ class ReadinessScreen:
                 recommendations=recommendations
             )
         
-        if age < self.MIN_AGE and has_parental_consent:
+        if age < self.ADULT_AGE and not has_parental_consent:
             reasons.append(
-                f"User is under {self.MIN_AGE} but has parental consent."
+                f"User is {age} years old (under {self.ADULT_AGE}) without parental consent."
+            )
+            recommendations.append(
+                f"Parental or guardian consent required for users under {self.ADULT_AGE}."
+            )
+            return ScreeningResult(
+                clearance=ClearanceLevel.NEEDS_DOCTOR_CLEARANCE,
+                reasons=reasons,
+                blocked=True,
+                recommendations=recommendations
+            )
+        
+        if age < self.ADULT_AGE and has_parental_consent:
+            reasons.append(
+                f"User is {age} years old (under {self.ADULT_AGE}) but has parental consent."
             )
             recommendations.append(
                 "Youth training program with appropriate modifications required."
@@ -175,12 +243,7 @@ class ReadinessScreen:
         reasons = []
         recommendations = []
         
-        flagged_conditions = [
-            c for c in conditions 
-            if c in self.MEDICAL_CONDITIONS_REQUIRING_CLEARANCE
-        ]
-        
-        if not flagged_conditions:
+        if not conditions:
             return ScreeningResult(
                 clearance=ClearanceLevel.CLEAR,
                 reasons=[],
@@ -188,7 +251,43 @@ class ReadinessScreen:
                 recommendations=[]
             )
         
-        condition_names = [c.replace("_", " ").title() for c in flagged_conditions]
+        normalized_conditions = []
+        unrecognized_conditions = []
+        
+        for condition in conditions:
+            if not condition or not isinstance(condition, str):
+                continue
+            
+            normalized = self.normalize_condition(condition)
+            
+            if normalized in self.MEDICAL_CONDITIONS_REQUIRING_CLEARANCE:
+                normalized_conditions.append(normalized)
+            else:
+                unrecognized_conditions.append(condition)
+        
+        if unrecognized_conditions:
+            reasons.append(
+                f"Unrecognized medical conditions require review: {', '.join(unrecognized_conditions)}"
+            )
+            recommendations.append(
+                "Please provide more details about these conditions for proper screening."
+            )
+            return ScreeningResult(
+                clearance=ClearanceLevel.NEEDS_DOCTOR_CLEARANCE,
+                reasons=reasons,
+                blocked=True,
+                recommendations=recommendations
+            )
+        
+        if not normalized_conditions:
+            return ScreeningResult(
+                clearance=ClearanceLevel.CLEAR,
+                reasons=[],
+                blocked=False,
+                recommendations=[]
+            )
+        
+        condition_names = [c.replace("_", " ").title() for c in normalized_conditions]
         
         if not has_clearance:
             reasons.append(
@@ -268,7 +367,14 @@ class ReadinessScreen:
             elif pregnancy_result.clearance == ClearanceLevel.CAUTION and highest_level != ClearanceLevel.NEEDS_DOCTOR_CLEARANCE:
                 highest_level = ClearanceLevel.CAUTION
         
-        medical_conditions = intake.get("medical_conditions", [])
+        medical_conditions_raw = intake.get("medical_conditions", [])
+        
+        medical_conditions = []
+        if isinstance(medical_conditions_raw, str):
+            medical_conditions = [c.strip() for c in medical_conditions_raw.split(',') if c.strip()]
+        elif isinstance(medical_conditions_raw, list):
+            medical_conditions = medical_conditions_raw
+        
         medical_clearance = intake.get("medical_clearance", False)
         medical_result = self.check_medical_conditions(medical_conditions, medical_clearance)
         

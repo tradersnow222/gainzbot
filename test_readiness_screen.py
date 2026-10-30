@@ -177,15 +177,16 @@ class TestMedicalConditions:
         assert "Heart Disease" in result.reasons[0]
         assert "Diabetes" in result.reasons[0]
     
-    def test_unrelated_condition_clear(self):
-        """Non-flagged conditions don't block."""
+    def test_unrelated_condition_blocks_for_review(self):
+        """Unrecognized conditions block for review."""
         screener = ReadinessScreen()
         result = screener.check_medical_conditions(
             ["seasonal_allergies"],
             has_clearance=False
         )
-        assert result.clearance == ClearanceLevel.CLEAR
-        assert not result.blocked
+        assert result.clearance == ClearanceLevel.NEEDS_DOCTOR_CLEARANCE
+        assert result.blocked
+        assert "unrecognized" in result.reasons[0].lower()
 
 
 class TestCompleteIntake:
@@ -281,6 +282,190 @@ class TestCompleteIntake:
         result = screener.screen_intake(intake)
         assert result is not None
         assert isinstance(result.clearance, ClearanceLevel)
+
+
+class TestMessyInput:
+    """Test handling of messy and invalid input."""
+    
+    def test_string_age_parsed(self):
+        """String age is parsed."""
+        screener = ReadinessScreen()
+        intake = {
+            "age": "25",
+            "par_q": {
+                "chest_pain_at_rest": False,
+                "chest_pain_during_activity": False,
+                "loss_of_balance_dizziness": False,
+                "loss_of_consciousness": False,
+                "bone_joint_problem_worsened_by_activity": False,
+            },
+            "medical_conditions": []
+        }
+        result = screener.screen_intake(intake)
+        assert result.clearance == ClearanceLevel.CLEAR
+    
+    def test_invalid_age_rejected(self):
+        """Invalid age string is rejected."""
+        screener = ReadinessScreen()
+        intake = {
+            "age": "abc",
+            "par_q": {},
+            "medical_conditions": []
+        }
+        result = screener.screen_intake(intake)
+        assert result.blocked
+        assert "age" in result.reasons[0].lower()
+    
+    def test_negative_age_rejected(self):
+        """Negative age is rejected."""
+        screener = ReadinessScreen()
+        intake = {
+            "age": -5,
+            "par_q": {},
+            "medical_conditions": []
+        }
+        result = screener.screen_intake(intake)
+        assert result.blocked
+    
+    def test_age_under_13_blocked(self):
+        """Age under 13 is blocked."""
+        screener = ReadinessScreen()
+        intake = {
+            "age": 12,
+            "parental_consent": True,
+            "par_q": {},
+            "medical_conditions": []
+        }
+        result = screener.screen_intake(intake)
+        assert result.blocked
+        assert "13" in result.reasons[0]
+    
+    def test_age_13_to_17_requires_consent(self):
+        """Ages 13-17 require parental consent."""
+        screener = ReadinessScreen()
+        intake = {
+            "age": 15,
+            "parental_consent": False,
+            "par_q": {},
+            "medical_conditions": []
+        }
+        result = screener.screen_intake(intake)
+        assert result.blocked
+        assert "parental" in result.reasons[0].lower()
+    
+    def test_age_15_with_consent_caution(self):
+        """Age 15 with consent gets caution."""
+        screener = ReadinessScreen()
+        intake = {
+            "age": 15,
+            "parental_consent": True,
+            "par_q": {},
+            "medical_conditions": []
+        }
+        result = screener.screen_intake(intake)
+        assert result.clearance == ClearanceLevel.CAUTION
+        assert not result.blocked
+    
+    def test_comma_separated_conditions(self):
+        """Comma-separated conditions string is parsed."""
+        screener = ReadinessScreen()
+        intake = {
+            "age": 30,
+            "par_q": {},
+            "medical_conditions": "heart_disease, diabetes",
+            "medical_clearance": False
+        }
+        result = screener.screen_intake(intake)
+        assert result.blocked
+        assert "heart" in result.reasons[0].lower() or "diabetes" in result.reasons[0].lower()
+
+
+class TestConditionNormalization:
+    """Test medical condition normalization."""
+    
+    def test_hypertension_normalized(self):
+        """'Hypertension' is normalized to 'high_blood_pressure'."""
+        screener = ReadinessScreen()
+        intake = {
+            "age": 30,
+            "par_q": {},
+            "medical_conditions": ["hypertension"],
+            "medical_clearance": False
+        }
+        result = screener.screen_intake(intake)
+        assert result.blocked
+        assert result.clearance == ClearanceLevel.NEEDS_DOCTOR_CLEARANCE
+    
+    def test_type_2_diabetes_normalized(self):
+        """'Type 2 diabetes' is normalized."""
+        screener = ReadinessScreen()
+        intake = {
+            "age": 30,
+            "par_q": {},
+            "medical_conditions": ["Type 2 diabetes"],
+            "medical_clearance": False
+        }
+        result = screener.screen_intake(intake)
+        assert result.blocked
+    
+    def test_title_case_condition(self):
+        """Title case condition is handled."""
+        screener = ReadinessScreen()
+        intake = {
+            "age": 30,
+            "par_q": {},
+            "medical_conditions": ["Heart Disease"],
+            "medical_clearance": False
+        }
+        result = screener.screen_intake(intake)
+        assert result.blocked
+    
+    def test_unrecognized_condition_blocks(self):
+        """Unrecognized condition blocks until review."""
+        screener = ReadinessScreen()
+        intake = {
+            "age": 30,
+            "par_q": {},
+            "medical_conditions": ["unknown_illness"],
+            "medical_clearance": False
+        }
+        result = screener.screen_intake(intake)
+        assert result.blocked
+        assert "unrecognized" in result.reasons[0].lower()
+
+
+class TestNewPARQQuestions:
+    """Test new PAR-Q+ questions."""
+    
+    def test_medications_flag_blocks(self):
+        """Currently taking medications flag blocks."""
+        screener = ReadinessScreen()
+        responses = {
+            "chest_pain_at_rest": False,
+            "chest_pain_during_activity": False,
+            "loss_of_balance_dizziness": False,
+            "loss_of_consciousness": False,
+            "bone_joint_problem_worsened_by_activity": False,
+            "currently_taking_medications": True,
+        }
+        result = screener.check_par_q(responses)
+        assert result.clearance == ClearanceLevel.NEEDS_DOCTOR_CLEARANCE
+        assert result.blocked
+    
+    def test_doctor_supervised_only_blocks(self):
+        """Doctor advised supervised only blocks."""
+        screener = ReadinessScreen()
+        responses = {
+            "chest_pain_at_rest": False,
+            "chest_pain_during_activity": False,
+            "loss_of_balance_dizziness": False,
+            "loss_of_consciousness": False,
+            "bone_joint_problem_worsened_by_activity": False,
+            "doctor_advised_supervised_only": True,
+        }
+        result = screener.check_par_q(responses)
+        assert result.clearance == ClearanceLevel.NEEDS_DOCTOR_CLEARANCE
+        assert result.blocked
 
 
 if __name__ == "__main__":
