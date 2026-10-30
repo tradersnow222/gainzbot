@@ -73,14 +73,19 @@ class PlanValidator:
         errors = []
         
         try:
+            sex = InputValidator.parse_sex(sex, "sex").value
             proposed_calories = InputValidator.parse_number(proposed_calories, "proposed_calories")
             weight_kg = InputValidator.parse_number(weight_kg, "weight_kg")
             age = int(InputValidator.parse_number(age, "age"))
             height_cm = InputValidator.parse_number(height_cm, "height_cm")
+            if not isinstance(has_medical_clearance, bool):
+                has_medical_clearance = InputValidator.parse_boolean(
+                    has_medical_clearance, "medical_clearance"
+                )
         except ValidationError as e:
             return ValidationResult(valid=False, errors=[str(e)])
         
-        floor = self.CALORIE_FLOOR_MEN if sex.upper() == 'M' else self.CALORIE_FLOOR_WOMEN
+        floor = self.CALORIE_FLOOR_MEN if sex == 'M' else self.CALORIE_FLOOR_WOMEN
         
         if proposed_calories < floor:
             errors.append(
@@ -120,10 +125,18 @@ class PlanValidator:
         errors = []
         
         try:
-            target_loss_kg_per_week = InputValidator.parse_number(target_loss_kg_per_week, "target_loss_kg_per_week")
+            target_loss_kg_per_week = InputValidator.parse_number(
+                target_loss_kg_per_week,
+                "target_loss_kg_per_week",
+                allow_zero=True,
+                allow_negative=True,
+            )
             current_weight_kg = InputValidator.parse_number(current_weight_kg, "current_weight_kg")
         except ValidationError as e:
             return ValidationResult(valid=False, errors=[str(e)])
+
+        if target_loss_kg_per_week <= 0:
+            return ValidationResult(valid=True, errors=[])
         
         max_loss = current_weight_kg * (self.MAX_WEIGHT_LOSS_PERCENT / 100)
         
@@ -317,11 +330,21 @@ class PlanValidator:
             ValidationResult with overall validity and all errors
         """
         all_errors = []
+
+        if not isinstance(plan, dict):
+            return ValidationResult(valid=False, errors=["Plan must be an object."])
         
         try:
             InputValidator.validate_plan_not_empty(plan)
         except ValidationError as e:
             return ValidationResult(valid=False, errors=[str(e)])
+
+        for section in ("user", "nutrition", "goals", "training"):
+            if section in plan and not isinstance(plan[section], dict):
+                return ValidationResult(
+                    valid=False,
+                    errors=[f"Section '{section}' must be an object."],
+                )
         
         unknown_key_errors = self._check_unknown_keys(plan)
         if unknown_key_errors:
@@ -334,6 +357,13 @@ class PlanValidator:
                 user_validated = InputValidator.validate_user_fields(plan["user"])
             except ValidationError as e:
                 all_errors.append(f"User validation failed: {e}")
+                return ValidationResult(valid=False, errors=all_errors)
+
+            height_cm = user_validated["height_cm"]
+            if height_cm < 50 or height_cm > 280:
+                all_errors.append(
+                    f"height_cm value {height_cm} is not a plausible height in centimeters."
+                )
                 return ValidationResult(valid=False, errors=all_errors)
         
         if "nutrition" in plan:
@@ -394,7 +424,12 @@ class PlanValidator:
                     all_errors.append("Weight loss validation requires user.weight_kg.")
                 else:
                     try:
-                        weight_loss = InputValidator.parse_number(goals["weight_loss_kg_per_week"], "weight_loss_kg_per_week")
+                        weight_loss = InputValidator.parse_number(
+                            goals["weight_loss_kg_per_week"],
+                            "weight_loss_kg_per_week",
+                            allow_zero=True,
+                            allow_negative=True,
+                        )
                         result = self._validate_weight_loss_rate(
                             target_loss_kg_per_week=weight_loss,
                             current_weight_kg=user_validated["weight_kg"]

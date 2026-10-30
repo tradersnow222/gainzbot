@@ -23,6 +23,23 @@ class TestUnicodeNormalization:
         assert InputValidator.normalize_unicode('test\u2014dash') == 'test-dash'
 
 
+class TestTextCleanup:
+    """Shared text cleanup used by later guardrails."""
+
+    def test_apostrophe_variants_and_missing_apostrophe(self):
+        assert InputValidator.clean_text("I can’t breathe") == "i can't breathe"
+        assert InputValidator.clean_text("I cant breathe") == "i can't breathe"
+        assert InputValidator.clean_text("I can\u02bct breathe") == "i can't breathe"
+        assert InputValidator.clean_text("I can\uff07t breathe") == "i can't breathe"
+        assert InputValidator.clean_text("Im out of breath") == "i'm out of breath"
+
+    def test_curly_quoted_true_parses(self):
+        assert InputValidator.parse_boolean("\u201ctrue\u201d", "medical_clearance") is True
+
+    def test_thousands_separator_parses(self):
+        assert InputValidator.parse_number("1,800", "calories") == 1800.0
+
+
 class TestBooleanParsing:
     """Test boolean parsing with fail-closed behavior."""
     

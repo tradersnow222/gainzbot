@@ -601,5 +601,214 @@ class TestK06aProbes:
         assert any("calories" in err.lower() for err in result.errors)
 
 
+class TestReviewerProbes:
+    """Reviewer probes for plan_check. Each case asserts block or pass."""
+
+    USER = {"sex": "F", "weight_kg": 60, "age": 30, "height_cm": 165}
+
+    @pytest.mark.parametrize(
+        "name,plan,expected_valid",
+        [
+            ("empty plan", {}, False),
+            (
+                "kcal alias",
+                {"user": USER, "nutrition": {"kcal": 800}},
+                False,
+            ),
+            ("nutrition empty", {"user": USER, "nutrition": {}}, False),
+            ("only user", {"user": USER}, True),
+            (
+                "male 1300",
+                {
+                    "user": {"sex": "male", "weight_kg": 80, "age": 30, "height_cm": 180},
+                    "nutrition": {"calories": 1300},
+                },
+                False,
+            ),
+            (
+                "Male 1300 with clearance still under floor",
+                {
+                    "user": {
+                        "sex": "Male",
+                        "weight_kg": 50,
+                        "age": 70,
+                        "height_cm": 150,
+                        "medical_clearance": True,
+                    },
+                    "nutrition": {"calories": 1300},
+                },
+                False,
+            ),
+            ("no user", {"nutrition": {"calories": 1450}}, False),
+            (
+                "female missing weight",
+                {"user": {"sex": "F"}, "nutrition": {"calories": 1250}},
+                False,
+            ),
+            (
+                "clearance string false",
+                {
+                    "user": {
+                        "sex": "M",
+                        "weight_kg": 100,
+                        "age": 30,
+                        "height_cm": 185,
+                        "medical_clearance": "false",
+                    },
+                    "nutrition": {"calories": 1600},
+                },
+                False,
+            ),
+            (
+                "clearance curly quoted true",
+                {
+                    "user": {
+                        "sex": "M",
+                        "weight_kg": 100,
+                        "age": 30,
+                        "height_cm": 185,
+                        "medical_clearance": "\u201ctrue\u201d",
+                    },
+                    "nutrition": {"calories": 1600},
+                },
+                True,
+            ),
+            (
+                "NaN calories",
+                {"user": USER, "nutrition": {"calories": float("nan")}},
+                False,
+            ),
+            (
+                "calories numeric string below floor",
+                {"user": USER, "nutrition": {"calories": "1000"}},
+                False,
+            ),
+            (
+                "calories thousands separator",
+                {"user": USER, "nutrition": {"calories": "1,800"}},
+                True,
+            ),
+            (
+                "sex None",
+                {
+                    "user": {"sex": None, "weight_kg": 60, "age": 30, "height_cm": 165},
+                    "nutrition": {"calories": 1300},
+                },
+                False,
+            ),
+            (
+                "weight zero",
+                {
+                    "user": {"sex": "F", "weight_kg": 0, "age": 30, "height_cm": 165},
+                    "nutrition": {"protein_g": 100},
+                },
+                False,
+            ),
+            (
+                "weight loss gain",
+                {"user": USER, "goals": {"weight_loss_kg_per_week": -5}},
+                True,
+            ),
+            (
+                "weight loss maintain",
+                {"user": USER, "goals": {"weight_loss_kg_per_week": 0}},
+                True,
+            ),
+            (
+                "load drop",
+                {"training": {"previous_load": 100, "current_load": 0}},
+                True,
+            ),
+            (
+                "load from zero",
+                {"training": {"previous_load": 0, "current_load": 1000}},
+                True,
+            ),
+            ("deload negative", {"training": {"weeks_since_deload": -3}}, False),
+            ("sport hours over cap", {"training": {"sport_hours": 30}}, False),
+            (
+                "weight loss without user",
+                {"goals": {"weight_loss_kg_per_week": 0.7}},
+                False,
+            ),
+            (
+                "sport_hrs alias",
+                {"training": {"sport_hrs": 40, "structured_hours": 2}},
+                False,
+            ),
+            (
+                "nutrition string",
+                {"user": USER, "nutrition": "1000 kcal"},
+                False,
+            ),
+            (
+                "user list",
+                {"user": ["F"], "nutrition": {"calories": 1000}},
+                False,
+            ),
+            (
+                "age 12 above female floor",
+                {
+                    "user": {"sex": "F", "weight_kg": 40, "age": 12, "height_cm": 150},
+                    "nutrition": {"calories": 1250},
+                },
+                True,
+            ),
+            (
+                "height in meters",
+                {
+                    "user": {"sex": "F", "weight_kg": 60, "age": 30, "height_cm": 1.65},
+                    "nutrition": {"calories": 1250},
+                },
+                False,
+            ),
+            (
+                "weight with pounds unit",
+                {
+                    "user": {
+                        "sex": "F",
+                        "weight_kg": "132 lbs",
+                        "age": 30,
+                        "height_cm": 165,
+                    },
+                    "nutrition": {"calories": 1250},
+                },
+                False,
+            ),
+            (
+                "valid baseline",
+                {
+                    "user": {"sex": "M", "weight_kg": 80, "age": 30, "height_cm": 180},
+                    "nutrition": {
+                        "calories": 2000,
+                        "protein_g": 144,
+                        "previous_calories": 2100,
+                    },
+                    "goals": {"weight_loss_kg_per_week": 0.5},
+                    "training": {
+                        "previous_load": 100,
+                        "current_load": 108,
+                        "weeks_since_deload": 4,
+                        "structured_hours": 6,
+                        "sport_hours": 3,
+                    },
+                },
+                True,
+            ),
+        ],
+    )
+    def test_plan_probe(self, name, plan, expected_valid):
+        result = PlanValidator().validate_plan(plan)
+        assert result.valid is expected_valid
+
+    def test_direct_validate_calories_normalizes_sex(self):
+        result = PlanValidator().validate_calories(1300, "Male", 50, 70, 150, True)
+        assert result.valid is False
+
+    def test_direct_validate_protein_zero_weight_does_not_crash(self):
+        result = PlanValidator().validate_protein(100, 0)
+        assert result.valid is False
+
+
 if __name__ == "__main__":
     pytest.main([__file__, "-v"])

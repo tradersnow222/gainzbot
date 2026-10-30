@@ -9,6 +9,7 @@ Never uses defaults for missing critical fields.
 from typing import Any, Dict, List, Optional, Union
 from enum import Enum
 import math
+import re
 import unicodedata
 
 
@@ -43,6 +44,14 @@ class InputValidator:
         replacements = {
             '\u2018': "'",  # Left single quotation mark
             '\u2019': "'",  # Right single quotation mark
+            '\u201B': "'",  # Single high-reversed-9 quotation mark
+            '\u2032': "'",  # Prime
+            '\u02BC': "'",  # Modifier letter apostrophe
+            '\u02BB': "'",  # Modifier letter turned comma
+            '\u02B9': "'",  # Modifier letter prime
+            '\uFF07': "'",  # Fullwidth apostrophe
+            '\u00B4': "'",  # Acute accent
+            '\u0060': "'",  # Grave accent
             '\u201C': '"',  # Left double quotation mark
             '\u201D': '"',  # Right double quotation mark
             '\u2013': '-',  # En dash
@@ -52,6 +61,40 @@ class InputValidator:
         for unicode_char, ascii_char in replacements.items():
             text = text.replace(unicode_char, ascii_char)
         
+        return text
+
+    @staticmethod
+    def clean_text(text: str) -> str:
+        """
+        Shared text cleanup for guardrail matching.
+
+        Folds apostrophe lookalikes, lowercases, and restores common
+        contractions written without an apostrophe ("cant" -> "can't").
+        """
+        text = InputValidator.normalize_unicode(text).lower()
+        contractions = (
+            (r"\bcant\b", "can't"),
+            (r"\bim\b", "i'm"),
+            (r"\bdont\b", "don't"),
+            (r"\bwont\b", "won't"),
+            (r"\bdidnt\b", "didn't"),
+            (r"\bdoesnt\b", "doesn't"),
+            (r"\bisnt\b", "isn't"),
+            (r"\barent\b", "aren't"),
+            (r"\bwasnt\b", "wasn't"),
+            (r"\bwerent\b", "weren't"),
+            (r"\bhavent\b", "haven't"),
+            (r"\bhasnt\b", "hasn't"),
+            (r"\bhadnt\b", "hadn't"),
+            (r"\bcouldnt\b", "couldn't"),
+            (r"\bwouldnt\b", "wouldn't"),
+            (r"\bshouldnt\b", "shouldn't"),
+            (r"\bive\b", "i've"),
+            (r"\byoure\b", "you're"),
+            (r"\btheyre\b", "they're"),
+        )
+        for pattern, replacement in contractions:
+            text = re.sub(pattern, replacement, text)
         return text
 
     @staticmethod
@@ -73,8 +116,14 @@ class InputValidator:
             return value
         
         if isinstance(value, str):
-            value_normalized = InputValidator.normalize_unicode(value)
-            value_lower = value_normalized.lower().strip()
+            value_normalized = InputValidator.normalize_unicode(value).strip()
+            if (
+                len(value_normalized) >= 2
+                and value_normalized[0] == value_normalized[-1]
+                and value_normalized[0] in "\"'"
+            ):
+                value_normalized = value_normalized[1:-1].strip()
+            value_lower = value_normalized.lower()
             
             if value_lower in ["true", "yes", "y", "1"]:
                 return True
@@ -127,7 +176,7 @@ class InputValidator:
             )
         
         if isinstance(value, str):
-            value = value.strip()
+            value = value.strip().replace(",", "")
             try:
                 parsed = float(value)
             except (ValueError, TypeError):
