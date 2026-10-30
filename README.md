@@ -37,6 +37,7 @@ Safety bounds: 1,500/1,200 kcal floors, 10% weekly load cap, 200 kcal max step, 
 - Plan bounds in `plan_check.py`
 - Clear-yes confirmation in `record_confirmation.py`
 - Chart data in `dashboard.py`. The builder only reads logs. A calorie target is left off when age or sex is missing, when the user is under 18, or when the target is below the floor (1,500 for men, 1,200 for women). When age is missing, or the user is under 18, no protein target is set. A protein target outside 1.6 to 2.2 g/kg is left off too. One log is not enough: the message stays "not enough data yet" until there are at least two. Windows are 7, 28, 90, and 365 days.
+- Trend review in `trend_review.py`. The last confirmed load or calorie change comes from one shared history. A new change waits until that confirmed change is at least 7 times 24 hours old in UTC. With nothing confirmed, load and calories do not move up. `apply` waits until `record_confirmation` covers that exact proposal. A missing age blocks calorie and protein proposals. Under 18, no calorie target is proposed. A stall follows the goal: cut or lose lowers calories, gain raises them, hold or no goal changes nothing.
 
 - Photo food log in `photo_food_log.py`. `store_estimate` logs a meal only after `record_confirmation` covers that exact estimate. A single item over 3,000 kcal or over 300 g protein is rejected for a re-check. Under 18, no protein target is set. `usual breakfast` logs a remembered meal in one line.
 
