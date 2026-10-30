@@ -725,5 +725,215 @@ class TestStemBackstop:
         assert "emergency" in result.message.lower()
 
 
+class TestCanonicalItems:
+    """Every canonical question is required. A synonym fills only that one item."""
+
+    def _ask(self, **overrides):
+        answers = all_no_checklist()
+        for key in list(overrides):
+            if overrides[key] is None:
+                answers.pop(key, None)
+            else:
+                if key in answers:
+                    answers[key] = overrides[key]
+                else:
+                    answers[key] = overrides[key]
+        return RedFlagChecker().scan_check_in({
+            "symptom_checklist": answers,
+            "notes": "Easy lift, slept fine.",
+        })
+
+    def test_true_synonym_fills_its_item(self):
+        answers = all_no_checklist()
+        answers.pop("fainting")
+        answers["collapsed"] = "no"
+        result = RedFlagChecker().scan_check_in({
+            "symptom_checklist": answers,
+            "notes": "Easy lift, slept fine.",
+        })
+        assert not result.pause_plan
+        assert result.flags_detected == []
+
+    def test_chest_pressure_synonym_sets_chest_pain(self):
+        answers = all_no_checklist()
+        answers.pop("chest_pain")
+        answers["chest_pressure"] = "yes"
+        result = RedFlagChecker().scan_check_in({"symptom_checklist": answers})
+        assert "chest_pain" in result.flags_detected
+        assert "emergency" in result.message.lower()
+
+    def test_face_droop_does_not_cover_stroke_signs(self):
+        result = self._ask(stroke_signs=None)
+        assert result.pause_plan
+        assert "stroke signs" in result.message.lower()
+
+    def test_missing_face_droop_is_named(self):
+        result = self._ask(face_droop=None)
+        assert result.pause_plan
+        assert "face droop" in result.message.lower()
+
+    def test_tendon_snap_does_not_cover_the_pop(self):
+        result = self._ask(sudden_pop=None)
+        assert result.pause_plan
+        assert "sudden pop" in result.message.lower()
+        assert "tendon snap" not in result.message.lower()
+
+    def test_missing_tendon_snap_is_named(self):
+        result = self._ask(tendon_snap=None)
+        assert "tendon snap" in result.message.lower()
+
+    def test_purging_does_not_cover_disordered_eating(self):
+        result = self._ask(**{"disordered_eating": None})
+        assert result.pause_plan
+        assert "disordered eating" in result.message.lower()
+        assert "purging" not in result.message.lower()
+
+    def test_missing_purging_is_named(self):
+        result = self._ask(purging=None)
+        assert "purging" in result.message.lower()
+
+    @pytest.mark.parametrize("key,phrase", [
+        ("palpitations", "palpitations"),
+        ("referred_pain", "jaw"),
+        ("blood_clot", "calf"),
+        ("head_injury", "head injury"),
+    ])
+    def test_missing_new_item_is_named(self, key, phrase):
+        result = self._ask(**{key: None})
+        assert result.pause_plan
+        assert phrase in result.message.lower()
+
+    @pytest.mark.parametrize("key,flag,snippet", [
+        ("palpitations", "palpitations", "emergency"),
+        ("referred_pain", "referred_pain", "emergency"),
+        ("blood_clot", "blood_clot", "emergency"),
+        ("head_injury", "head_injury", "doctor"),
+        ("face_droop", "face_droop", "emergency"),
+        ("tendon_snap", "tendon_snap", "rest"),
+        ("purging", "purging", "professional"),
+    ])
+    def test_yes_on_its_own_item_flags(self, key, flag, snippet):
+        result = self._ask(**{key: "yes"})
+        blob = (result.message + " " + " ".join(result.recommendations)).lower()
+        assert result.pause_plan
+        assert flag in result.flags_detected
+        assert snippet in blob
+
+    def test_collapsed_yes_is_fainting(self):
+        answers = all_no_checklist()
+        answers.pop("fainting")
+        answers["collapsed"] = "yes"
+        result = RedFlagChecker().scan_check_in({"symptom_checklist": answers})
+        assert "fainting" in result.flags_detected
+
+
+class TestNewStemsAndIdioms:
+    """Everyday wording for the new items, plus gym idioms that should stay clear."""
+
+    SHOULD_FLAG = [
+        "palpitations and I feel lightheaded",
+        "my heart skipped a beat and I got dizzy",
+        "skipped a beat and felt lightheaded",
+        "pain in my jaw and I'm sweating",
+        "my shoulder hurts and I started sweating",
+        "chest pain at rest",
+        "my calf is hot and swollen after the flight",
+        "painful red calf after a long drive",
+        "sore calf after the flight",
+        "chest hurts while I'm resting",
+        "I hit my head and threw up",
+        "banged my head and the headache keeps getting worse",
+        "I collapsed on the gym floor",
+        "felt a pop and now I can't walk",
+        "it snapped and I can't put any weight on it",
+        "I've barely eaten for days",
+        "I only ate 500 calories today",
+    ]
+
+    SHOULD_NOT = [
+        "I'd kill for a burger",
+        "I would kill for a burger right now",
+        "dying on that last set",
+        "I'm dying on that last set",
+        "took a breather between sets",
+        "tore through my workout",
+        "I can't walk to the coffee shop",
+        "I can't put weight on the bar, need a spot",
+        "sore legs after squats",
+        "leg day was brutal",
+        "I have a headache today",
+        "hot yoga, then a normal lift",
+        "back pain from sitting all day",
+    ]
+
+    @pytest.mark.parametrize("text", SHOULD_FLAG)
+    def test_new_wording_flags(self, text):
+        assert RedFlagChecker().scan_text(text).pause_plan
+
+    @pytest.mark.parametrize("text", SHOULD_NOT)
+    def test_idioms_and_lookalikes_stay_clear(self, text):
+        result = RedFlagChecker().scan_text(text)
+        assert not result.pause_plan
+        assert result.flags_detected == []
+
+    def test_text_backstop_does_not_continue_the_plan(self):
+        result = RedFlagChecker().scan_text("Had a great workout today!")
+        assert not result.pause_plan
+        assert "continue with your plan" not in result.message.lower()
+        assert "checklist" in result.message.lower()
+
+    def test_complete_checklist_can_continue(self):
+        result = RedFlagChecker().scan_check_in({
+            "symptom_checklist": all_no_checklist(),
+            "notes": "Easy lift, slept fine.",
+        })
+        assert not result.pause_plan
+        assert "continue with your plan" in result.message.lower()
+
+    def test_collapse_is_fainting(self):
+        result = RedFlagChecker().scan_text("I collapsed after standing up")
+        assert "fainting" in result.flags_detected
+
+    def test_low_intake_is_disordered_eating(self):
+        counted = RedFlagChecker().scan_text("I only ate 500 calories today")
+        barely = RedFlagChecker().scan_text("I've barely eaten for days")
+        for result in (counted, barely):
+            blob = (result.message + " " + " ".join(result.recommendations)).lower()
+            assert "disordered_eating" in result.flags_detected
+            assert "very_low_intake" not in result.flags_detected
+            assert "professional" in blob
+
+    def test_pop_with_inability_to_walk_is_injury(self):
+        result = RedFlagChecker().scan_text("felt a pop and now I can't walk")
+        blob = (result.message + " " + " ".join(result.recommendations)).lower()
+        assert "injury" in result.flags_detected
+        assert "rest" in blob
+
+    def test_real_crisis_and_injury_wording_still_flags(self):
+        crisis = RedFlagChecker().scan_text("I want to die")
+        kill = RedFlagChecker().scan_text("kill myself")
+        breath = RedFlagChecker().scan_text("I can't breathe")
+        tore = RedFlagChecker().scan_text("I tore something in my shoulder")
+        for result in (crisis, kill):
+            blob = result.message + " " + " ".join(result.recommendations)
+            assert result.pause_plan
+            assert "988" in blob
+        assert breath.pause_plan
+        assert "breathing_difficulty" in breath.flags_detected
+        assert tore.pause_plan
+        assert "injury" in tore.flags_detected
+
+    def test_referred_pain_and_clot_and_head_are_specific(self):
+        jaw = RedFlagChecker().scan_text("jaw pain and I'm sweating through my shirt")
+        clot = RedFlagChecker().scan_text("my calf is hot, red, and swollen")
+        head = RedFlagChecker().scan_text("I hit my head and then I threw up")
+        assert "referred_pain" in jaw.flags_detected
+        assert "emergency" in jaw.message.lower()
+        assert "blood_clot" in clot.flags_detected
+        assert "emergency" in clot.message.lower()
+        assert "head_injury" in head.flags_detected
+        assert "doctor" in head.message.lower()
+
+
 if __name__ == "__main__":
     pytest.main([__file__, "-v"])

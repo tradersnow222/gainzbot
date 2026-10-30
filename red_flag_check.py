@@ -37,23 +37,22 @@ class RedFlagResult:
 class RedFlagChecker:
     """Detects medical and safety red flags in user communications."""
 
-    # Checklist groups. Aliases are normalized (lower, punctuation to _).
+    # One required question per entry. Aliases are true synonyms of that
+    # single item. A sub-item never completes a different item.
     CHECKLIST_GROUPS = (
         ("chest_pain", (
-            "chest_pain", "chest_pressure", "chest_pain_or_pressure", "chest",
+            "chest_pain", "chest_pressure", "chest_pain_or_pressure",
         )),
         ("breathing_difficulty", (
-            "trouble_breathing", "breathing", "shortness_of_breath",
+            "trouble_breathing", "shortness_of_breath",
             "difficulty_breathing", "cant_breathe",
         )),
         ("fainting", (
             "fainting", "fainting_or_near_fainting", "fainted", "near_fainting",
-            "passed_out", "syncope",
+            "passed_out", "syncope", "collapse", "collapsed",
         )),
-        ("stroke_signs", (
-            "stroke_signs", "stroke", "face_droop", "facial_droop",
-            "slurred_speech", "one_sided_weakness", "one_sided_numbness",
-        )),
+        ("stroke_signs", ("stroke_signs", "stroke")),
+        ("face_droop", ("face_droop", "facial_droop")),
         ("abnormal_bleeding", (
             "coughing_or_vomiting_blood", "coughing_blood", "vomiting_blood",
             "blood_in_cough", "blood_in_vomit",
@@ -65,20 +64,48 @@ class RedFlagChecker:
         )),
         ("self_harm", ("self_harm", "selfharm")),
         ("disordered_eating", (
-            "disordered_eating", "purging", "deliberate_vomiting", "laxatives",
-            "starving_to_cut_weight", "vomiting_laxatives_or_starving",
+            "disordered_eating", "starving_to_cut_weight", "laxatives",
         )),
+        ("purging", ("purging", "deliberate_vomiting")),
         ("rhabdomyolysis", (
             "dark_urine", "dark_brown_urine", "cola_colored_urine",
             "cola_urine", "brown_urine",
         )),
-        ("injury", (
-            "sudden_pop", "tendon_snap", "sudden_pop_or_tendon_snap", "pop", "snap",
-        )),
+        ("injury", ("sudden_pop", "pop")),
+        ("tendon_snap", ("tendon_snap", "snap")),
         ("heat_illness", (
-            "heat_illness", "heat_stroke", "stopped_sweating", "confusion_and_stopped_sweating",
+            "heat_illness", "heat_stroke", "stopped_sweating",
+            "confusion_and_stopped_sweating",
         )),
+        ("palpitations", (
+            "palpitations", "palpitations_with_dizziness",
+            "skipped_or_racing_heartbeat",
+        )),
+        ("referred_pain", ("referred_pain", "cardiac_referred_pain")),
+        ("blood_clot", ("blood_clot", "painful_swollen_calf")),
+        ("head_injury", ("head_injury", "head_injury_with_confusion")),
     )
+    ITEM_LABELS = {
+        "chest_pain": "chest pain or pressure",
+        "breathing_difficulty": "trouble breathing",
+        "fainting": "fainting or near-fainting",
+        "stroke_signs": "stroke signs",
+        "face_droop": "face droop",
+        "abnormal_bleeding": "coughing or vomiting blood",
+        "blue_lips": "blue lips",
+        "self_harm_thoughts": "thoughts of self-harm",
+        "self_harm": "self-harm",
+        "disordered_eating": "disordered eating",
+        "purging": "purging",
+        "rhabdomyolysis": "dark brown or cola urine",
+        "injury": "sudden pop",
+        "tendon_snap": "tendon snap",
+        "heat_illness": "heat illness",
+        "palpitations": "palpitations or a skipped or racing heartbeat with dizziness",
+        "referred_pain": "jaw, arm, shoulder, neck, or back pain with sweating, or chest pain at rest",
+        "blood_clot": "a hot, red, swollen, or painful calf or leg",
+        "head_injury": "head injury with confusion, memory loss, vomiting, or worsening headache",
+    }
     CHECKLIST_CONTAINERS = (
         "symptom_checklist", "checklist", "symptom_check",
         "red_flag_checklist", "safety_checklist",
@@ -102,11 +129,33 @@ class RedFlagChecker:
     _CHEST_MARK = re.compile(
         r"\b(?:pressure|tight\w*|crush\w*|sitting|elephant|pain|hurts?|squeez\w*|heavy)\b"
     )
-    _HEART = re.compile(r"\bheart\b")
-    _HEART_MARK = re.compile(r"\b(?:racing|pounding|flutter\w*|attacks?|palpitat\w*|stopped)\b")
-    _BREATH = re.compile(r"\b(?:breath\w*|wheez\w*|gasping|gasp)\b")
+    _HEART = re.compile(r"\bhearts?\b|\bheartbeat\b")
+    _HEART_MARK = re.compile(
+        r"\b(?:racing|pounding|flutter\w*|attacks?|palpitat\w*|skipp\w*|stopped)\b"
+    )
+    _BREATH = re.compile(r"\b(?:breath(?!er)\w*|wheez\w*|gasping|gasp)\b")
     _FAINT = re.compile(
-        r"\b(?:faint\w*|syncope|passed\s+out|black(?:ed)?\s+out|blackout|dizz\w*|vertigo)\b"
+        r"\b(?:faint\w*|syncope|passed\s+out|black(?:ed)?\s+out|blackout|"
+        r"dizz\w*|vertigo|collaps(?:e|ed|es|ing))\b"
+    )
+    _PALP = re.compile(r"\bpalpitat\w*\b")
+    _SKIPPED_BEAT = re.compile(
+        r"\b(?:skipp\w*\s+(?:a\s+)?beats?|beats?\s+skipp\w*)\b"
+    )
+    _LIGHTHEADED = re.compile(r"\b(?:dizz\w*|light[-\s]?headed)\b")
+    _REFERRED_PART = re.compile(r"\b(?:jaw|arm|shoulder|neck|back)\b")
+    _PAIN_WORD = re.compile(r"\b(?:pain|hurts?|aching|ache)\b")
+    _SWEAT = re.compile(r"\bsweat(?:y|ing|s)?\b")
+    _AT_REST = re.compile(
+        r"\b(?:at\s+rest|(?:while|when)\s+(?:i'm\s+)?resting)\b"
+    )
+    _TRAVEL = re.compile(
+        r"\b(?:travel\w*|flights?|flew|flying|plane|drove|driving|road\s+trip)\b"
+    )
+    _SORE = re.compile(r"\bsore\b")
+    _LIMB = re.compile(r"\b(?:calf|calves|leg|thigh)\b")
+    _CLOT_MARK = re.compile(
+        r"\b(?:hot|red|swollen|swelling|swelled|painful|tender|hurts?|pain)\b"
     )
     _NUMB = re.compile(r"\bnumb\w*\b")
     _STROKE = re.compile(r"\b(?:slur(?:red|ring)|droop\w*|one-sided|one\s+sided)\b")
@@ -139,8 +188,17 @@ class RedFlagChecker:
     _STARVE_WITH = re.compile(r"\b(?:weight|myself|weigh-?in)\b")
     _RESTRICT = re.compile(
         r"\bhaven't\s+eaten\b|\bnot\s+eating\b|\bterrified\s+of\s+food\b|"
-        r"\bafraid\s+to\s+eat\b|\bwater\s+cut\w*\b|\bpunish\w*\s+myself\b"
+        r"\bafraid\s+to\s+eat\b|\bwater\s+cut\w*\b|\bpunish\w*\s+myself\b|"
+        r"\b(?:barely|hardly|scarcely)\s+(?:eaten|ate|eating|eat)\b|"
+        r"\b(?:barely|hardly)\s+(?:any\s+)?(?:food|calories)\b"
     )
+    _CANT_LOAD = re.compile(
+        r"\b(?:can't|cannot|couldn't|can\s+not|could\s+not)\s+"
+        r"(?:walk\b|put\s+(?:any\s+)?weight\b)"
+    )
+    _POP_OR_SNAP = re.compile(r"\b(?:pop(?:ped)?|snap(?:ped)?)\b")
+    _HEADACHE = re.compile(r"\bheadaches?\b")
+    _WORSE = re.compile(r"\b(?:worse|worsening)\b")
     _POPPED = re.compile(r"\bpopped\b")
     _POP = re.compile(r"\bpop\b")
     _SNAP = re.compile(r"\bsnap(?:ped)?\b|\btendon\b")
@@ -193,16 +251,17 @@ class RedFlagChecker:
         if any(f in flags for f in (
             "chest_pain", "cardiac_symptoms", "breathing_difficulty",
             "numbness", "rhabdomyolysis", "blue_lips", "stroke_signs",
-            "heat_illness",
+            "heat_illness", "face_droop", "palpitations", "referred_pain",
+            "blood_clot",
         )):
             return "cardiac"
         if "fainting" in flags:
             return "fainting"
         if "abnormal_bleeding" in flags or "head_injury" in flags:
             return "neurological"
-        if "injury" in flags or "sharp_joint_pain" in flags:
+        if "injury" in flags or "sharp_joint_pain" in flags or "tendon_snap" in flags:
             return "injury"
-        if "disordered_eating" in flags or "very_low_intake" in flags:
+        if any(f in flags for f in ("disordered_eating", "very_low_intake", "purging")):
             return "psychological"
         return "general"
 
@@ -259,6 +318,27 @@ class RedFlagChecker:
                     return True
         return False
 
+    def _sentence_bounds(self, text: str, index: int):
+        start = 0
+        for mark in re.finditer(r"[.!?]", text):
+            if mark.start() >= index:
+                return start, mark.start()
+            start = mark.end()
+        return start, len(text)
+
+    def _in_same_sentence(self, text: str, *patterns: re.Pattern) -> bool:
+        """Every pattern has a non-negated hit inside one sentence."""
+        if not patterns:
+            return False
+        for match in self._active(text, patterns[0]):
+            begin, end = self._sentence_bounds(text, match.start())
+            if all(
+                any(begin <= other.start() < end for other in self._active(text, pattern))
+                for pattern in patterns[1:]
+            ):
+                return True
+        return False
+
     def _is_benign(self, text: str, end: int) -> bool:
         window = text[end:end + 90]
         return any(marker in window for marker in self._BENIGN)
@@ -284,6 +364,12 @@ class RedFlagChecker:
             flags.add("chest_pain")
         if self._heart_hit(text) or self._active(text, self._CARDIAC_WORD):
             flags.add("cardiac_symptoms")
+        if self._palpitation_hit(text):
+            flags.add("palpitations")
+        if self._referred_hit(text):
+            flags.add("referred_pain")
+        if self._clot_hit(text):
+            flags.add("blood_clot")
         if self._breath_hit(text):
             flags.add("breathing_difficulty")
         if self._active(text, self._FAINT):
@@ -298,19 +384,22 @@ class RedFlagChecker:
             flags.add("blue_lips")
         if self._self_harm_hit(text):
             flags.add("self_harm")
-        if self._eating_hit(text):
+        if self._eating_hit(text) or self._has_very_low_intake(text):
             flags.add("disordered_eating")
         if self._active(text, self._RHABDO) or self._paired(text, self._URINE, self._URINE_COLOR):
             flags.add("rhabdomyolysis")
         flags.update(self._injury_flags(text))
-        if self._active(text, self._CONCUSS) or self._same_sentence(text, self._HEAD, self._NEURO):
+        if (
+            self._active(text, self._CONCUSS)
+            or self._same_sentence(text, self._HEAD, self._NEURO)
+            or self._same_sentence(text, self._HEAD, self._VOMIT)
+            or self._in_same_sentence(text, self._HEAD, self._HEADACHE, self._WORSE)
+        ):
             flags.add("head_injury")
         if self._active(text, self._STOPPED_SWEAT) or self._same_sentence(text, self._HEAT, self._NEURO):
             flags.add("heat_illness")
         if self._active(text, self._FATIGUE):
             flags.add("extreme_fatigue")
-        if self._has_very_low_intake(text):
-            flags.add("very_low_intake")
         return flags
 
     def _chest_hit(self, text: str) -> bool:
@@ -346,12 +435,58 @@ class RedFlagChecker:
             return True
         return False
 
+    def _crisis_idiom(self, text: str, match: re.Match) -> bool:
+        """Gym talk such as 'kill for a burger' or 'dying on that last set'."""
+        word = match.group(0)
+        after = text[match.end():match.end() + 12]
+        if word.startswith("kill") and re.match(r"\s+for\b", after):
+            return True
+        if word == "die" and re.match(r"\s+for\b", after):
+            return True
+        if word == "dying" and re.match(r"\s+(?:on|for)\b", after):
+            return True
+        return False
+
     def _self_harm_hit(self, text: str) -> bool:
         if self._active(text, self._CRISIS_STEM) or self._active(text, self._DONT_WANT_LIVE):
             return True
-        if self._paired(text, self._CRISIS_VERB, self._SPEAKER):
-            return True
+        for match in self._active(text, self._CRISIS_VERB):
+            if self._crisis_idiom(text, match):
+                continue
+            begin, end = self._clause_bounds(text, match.start())
+            if any(begin <= other.start() < end for other in self._active(text, self._SPEAKER)):
+                return True
         return self._paired(text, self._HARM_VERB, self._MYSELF)
+
+    def _palpitation_hit(self, text: str) -> bool:
+        if self._active(text, self._PALP):
+            return True
+        return self._in_same_sentence(text, self._SKIPPED_BEAT, self._LIGHTHEADED)
+
+    def _referred_hit(self, text: str) -> bool:
+        if self._in_same_sentence(text, self._REFERRED_PART, self._PAIN_WORD, self._SWEAT):
+            return True
+        return self._in_same_sentence(text, self._CHEST, self._PAIN_WORD, self._AT_REST)
+
+    def _clot_hit(self, text: str) -> bool:
+        for limb in self._active(text, self._LIMB):
+            if limb.group(0).startswith("leg") and re.match(
+                r"\s+day\b", text[limb.end():limb.end() + 6]
+            ):
+                continue
+            begin, end = self._sentence_bounds(text, limb.start())
+            for mark in self._active(text, self._CLOT_MARK):
+                if not (begin <= mark.start() < end):
+                    continue
+                if mark.group(0) == "hot" and re.match(
+                    r"\s+yoga\b", text[mark.end():mark.end() + 8]
+                ):
+                    continue
+                return True
+            if any(begin <= trip.start() < end for trip in self._active(text, self._TRAVEL)):
+                if any(begin <= sore.start() < end for sore in self._active(text, self._SORE)):
+                    return True
+        return False
 
     def _eating_hit(self, text: str) -> bool:
         if self._active(text, self._PURGE) or self._active(text, self._RESTRICT):
@@ -379,7 +514,14 @@ class RedFlagChecker:
             begin, end = self._clause_bounds(text, match.start())
             if any(begin <= joint.start() < end for joint in self._active(text, self._JOINT)):
                 flags.add("injury")
-        if self._active(text, self._TORE) or self._active(text, self._SNAP):
+        tore = False
+        for match in self._active(text, self._TORE):
+            if re.match(r"\s+through\b", text[match.end():match.end() + 12]):
+                continue
+            tore = True
+        if tore or self._active(text, self._SNAP):
+            flags.add("injury")
+        if self._load_bearing_injury(text):
             flags.add("injury")
         if self._paired(text, self._PULLED, self._PULLED_WHAT):
             flags.add("injury")
@@ -394,6 +536,18 @@ class RedFlagChecker:
         if self._paired(text, self._SHARP, self._JOINT):
             flags.add("sharp_joint_pain")
         return flags
+
+    def _load_bearing_injury(self, text: str) -> bool:
+        """Can't walk or bear weight counts only together with a pop or snap."""
+        if not self._active(text, self._CANT_LOAD):
+            return False
+        for match in self._active(text, self._POP_OR_SNAP):
+            if self._noise_clause(text, match.start()):
+                continue
+            begin, end = self._sentence_bounds(text, match.start())
+            if any(begin <= other.start() < end for other in self._active(text, self._CANT_LOAD)):
+                return True
+        return False
 
     def _ask(self, detail: str) -> RedFlagResult:
         if "?" not in detail:
@@ -432,22 +586,35 @@ class RedFlagChecker:
             recommendations=[],
         )
 
+    def _text_clear(self) -> RedFlagResult:
+        """A text backstop with nothing to flag. It is not clearance to continue."""
+        return RedFlagResult(
+            pause_plan=False,
+            flags_detected=[],
+            message=(
+                "No red flags in this text. "
+                "A complete symptom checklist is still required."
+            ),
+            recommendations=[],
+        )
+
     def scan_text(self, text: str) -> RedFlagResult:
         """
-        Scan text for red flag indicators.
+        Backstop scan of free text.
 
-        Malformed text pauses and asks. It never reports a clean result.
+        This is not the check-in gate. A clear result does not continue the plan.
+        Malformed text pauses and asks.
         """
         if not isinstance(text, str):
             return self._ask("I couldn't read that message. Can you tell me how you're feeling?")
 
         cleaned = InputValidator.clean_text(text)
         if not cleaned.strip():
-            return self._clear()
+            return self._text_clear()
 
         flags_detected = self._detect_flags(cleaned)
         if not flags_detected:
-            return self._clear()
+            return self._text_clear()
 
         severity = self._classify_severity(flags_detected)
         return RedFlagResult(
@@ -495,7 +662,7 @@ class RedFlagChecker:
                 "Avoid any strenuous activity until medically cleared."
             )
         
-        if "injury" in flags or "sharp_joint_pain" in flags:
+        if "injury" in flags or "sharp_joint_pain" in flags or "tendon_snap" in flags:
             recommendations.append(
                 "Rest the affected area and apply ice if needed."
             )
@@ -522,11 +689,12 @@ class RedFlagChecker:
 
         if "head_injury" in flags:
             recommendations.append(
-                "A head impact with confusion, memory loss, or concussion signs "
+                "A head impact with confusion, memory loss, vomiting, "
+                "a worsening headache, or concussion signs "
                 "needs a doctor before any further training."
             )
         
-        if "disordered_eating" in flags or "very_low_intake" in flags:
+        if any(name in flags for name in ("disordered_eating", "very_low_intake", "purging")):
             recommendations.append(
                 "Speak with a mental health professional specializing in eating disorders."
             )
@@ -615,7 +783,7 @@ class RedFlagChecker:
                 "Unknown checklist item: " + ", ".join(unknown) + "."
             )
         missing = [
-            flag.replace("_", " ")
+            self.ITEM_LABELS.get(flag, flag.replace("_", " "))
             for flag, values in grouped.items()
             if not values
         ]
