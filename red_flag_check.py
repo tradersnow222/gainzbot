@@ -10,6 +10,7 @@ from dataclasses import dataclass
 from typing import Dict, List, Set
 import json
 import re
+import unicodedata
 
 
 @dataclass
@@ -36,6 +37,7 @@ class RedFlagChecker:
         "chest_pain": [
             r"\b(chest\s+pain|chest\s+pressure|chest\s+tightness|heart\s+pain)\b",
             r"\b(squeezing\s+chest|crushing\s+chest|burning\s+chest)\b",
+            r"\b(my\s+)?chest\s+(hurts?|hurt(s|ing)?)\b",
         ],
         "cardiac_symptoms": [
             r"\b(heart\s+(is\s+)?racing|heart\s+(is\s+)?pounding|irregular\s+heartbeat|palpitations)\b",
@@ -47,7 +49,7 @@ class RedFlagChecker:
         ],
         "dizziness": [
             r"\b(severe\s+dizziness|extreme\s+dizziness|very\s+dizzy)\b",
-            r"\b(vertigo|room\s+spinning|can't\s+stand)\b",
+            r"\b(vertigo|room\s+spinning)\b",
         ],
         "sharp_joint_pain": [
             r"\b(sharp\s+(knee|hip|shoulder|elbow|wrist|ankle)\s+pain)\b",
@@ -57,7 +59,7 @@ class RedFlagChecker:
         "injury": [
             r"\b(pull(ed)?|tear|tore|torn|sprain(ed)?)\s+(a\s+|my\s+|the\s+)?(muscle|hamstring|quad|groin|ligament|tendon|rotator\s+cuff|ankle|wrist|knee)\b",
             r"\b(muscle|hamstring|quad|groin|ligament|tendon|rotator\s+cuff|ankle|wrist|knee)\s+(pull|tear|sprain)\b",
-            r"\b(injured|hurt\s+my|strain(ed)?|injury\s+to)\b",
+            r"\b(injured|strain(ed)?|injury\s+to)\b",
         ],
         "extreme_fatigue": [
             r"\b(extreme\s+fatigue|severe\s+fatigue|completely\s+exhausted)\b",
@@ -65,9 +67,9 @@ class RedFlagChecker:
             r"\b(chronic\s+fatigue|persistent\s+exhaustion)\b",
         ],
         "disordered_eating": [
-            r"\b(binge(d)?|purge(d)?|purging)\b",
+            r"\b(binge\s+(eat(ing)?|on\s+food)|purge(d)?|purging)\b",
             r"\b(vomit(ed|ing)?|throwing\s+up)(\s+after\s+(eating|meals))?\b",
-            r"\b(starving|haven't\s+eaten\s+in\s+days|skipping\s+all\s+meals)\b",
+            r"\b(haven't\s+eaten\s+in\s+days|skipping\s+all\s+meals|not\s+eating\s+at\s+all)\b",
             r"\b(obsessed\s+with\s+calories|terrified\s+of\s+food|afraid\s+to\s+eat)\b",
             r"\b(exercise\s+to\s+punish|punishing\s+myself)\b",
         ],
@@ -88,16 +90,47 @@ class RedFlagChecker:
     SEVERITY_MESSAGES = {
         "cardiac": "Medical emergency. Stop all activity and seek immediate medical attention.",
         "neurological": "Serious concern. Please see a doctor as soon as possible.",
+        "fainting": "Stop training immediately. Call emergency services if accompanied by chest pain, trouble breathing, or confusion. Otherwise see a doctor before resuming training.",
         "injury": "Training pause required. Professional evaluation recommended.",
         "psychological": "Please speak with a healthcare professional about these concerns.",
         "general": "Plan paused. Professional consultation recommended before continuing.",
     }
 
+    @staticmethod
+    def normalize_text(text: str) -> str:
+        """
+        Normalize text for consistent pattern matching.
+        
+        Converts curly quotes and apostrophes to straight equivalents
+        to ensure patterns match regardless of input device.
+        
+        Args:
+            text: Raw text input
+            
+        Returns:
+            Normalized text
+        """
+        replacements = {
+            '\u2018': "'",  # Left single quotation mark
+            '\u2019': "'",  # Right single quotation mark
+            '\u201C': '"',  # Left double quotation mark
+            '\u201D': '"',  # Right double quotation mark
+            '\u2013': '-',  # En dash
+            '\u2014': '-',  # Em dash
+        }
+        
+        for unicode_char, ascii_char in replacements.items():
+            text = text.replace(unicode_char, ascii_char)
+        
+        return text
+
     def _classify_severity(self, flags: Set[str]) -> str:
         """Classify the severity category based on detected flags."""
         if any(f in flags for f in ["chest_pain", "cardiac_symptoms", "breathing_difficulty"]):
             return "cardiac"
-        if any(f in flags for f in ["fainting", "numbness", "abnormal_bleeding"]):
+        if "fainting" in flags:
+            return "fainting"
+        if any(f in flags for f in ["numbness", "abnormal_bleeding"]):
             return "neurological"
         if "injury" in flags or "sharp_joint_pain" in flags:
             return "injury"
@@ -115,7 +148,8 @@ class RedFlagChecker:
         Returns:
             RedFlagResult with pause recommendation and guidance
         """
-        text_lower = text.lower()
+        text_normalized = self.normalize_text(text)
+        text_lower = text_normalized.lower()
         flags_detected = set()
         
         for flag_type, patterns in self.RED_FLAG_PATTERNS.items():
@@ -157,7 +191,19 @@ class RedFlagChecker:
                 "Do not attempt any physical activity until cleared by a physician."
             )
         
-        if severity == "neurological":
+        if severity == "fainting":
+            recommendations.append(
+                "Stop training immediately."
+            )
+            recommendations.append(
+                "Call emergency services if fainting was accompanied by chest pain, "
+                "trouble breathing, or confusion."
+            )
+            recommendations.append(
+                "Otherwise, see a doctor before resuming training."
+            )
+        
+        if severity == "neurological" and "fainting" not in flags:
             recommendations.append(
                 "See a doctor within 24 hours for evaluation."
             )

@@ -267,6 +267,14 @@ class TestRecommendations:
         assert result.pause_plan
         assert any("911" in rec or "emergency" in rec.lower() for rec in result.recommendations)
     
+    def test_fainting_recommendations_conditional_emergency(self):
+        """Fainting has conditional emergency guidance."""
+        checker = RedFlagChecker()
+        result = checker.scan_text("I fainted during workout.")
+        assert result.pause_plan
+        assert any("emergency services if" in rec.lower() for rec in result.recommendations)
+        assert any("chest pain" in rec.lower() or "breathing" in rec.lower() for rec in result.recommendations)
+    
     def test_injury_recommendations_include_rest(self):
         """Injury recommendations include rest guidance."""
         checker = RedFlagChecker()
@@ -287,6 +295,38 @@ class TestRecommendations:
         result = checker.scan_text("Sharp knee pain.")
         assert result.pause_plan
         assert any("resume" in rec.lower() or "clearance" in rec.lower() for rec in result.recommendations)
+
+
+class TestFalsePositives:
+    """Test that benign phrases don't trigger false positives."""
+    
+    def test_starving_after_workout_not_flagged(self):
+        """'Starving after leg day' doesn't trigger eating disorder flag."""
+        checker = RedFlagChecker()
+        result = checker.scan_text("I'm starving after leg day!")
+        assert not result.pause_plan
+        assert len(result.flags_detected) == 0
+    
+    def test_binge_watched_netflix_not_flagged(self):
+        """'Binge-watched Netflix' doesn't trigger eating disorder flag."""
+        checker = RedFlagChecker()
+        result = checker.scan_text("Binge-watched Netflix last night.")
+        assert not result.pause_plan
+        assert len(result.flags_detected) == 0
+    
+    def test_cant_stand_burpees_not_flagged(self):
+        """'Can't stand burpees' doesn't trigger dizziness flag."""
+        checker = RedFlagChecker()
+        result = checker.scan_text("I can't stand burpees, they're so hard!")
+        assert not result.pause_plan
+        assert len(result.flags_detected) == 0
+    
+    def test_hurt_my_feelings_not_flagged(self):
+        """'Hurt my feelings' doesn't trigger injury flag."""
+        checker = RedFlagChecker()
+        result = checker.scan_text("That comment hurt my feelings.")
+        assert not result.pause_plan
+        assert len(result.flags_detected) == 0
 
 
 if __name__ == "__main__":
