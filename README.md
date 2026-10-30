@@ -85,5 +85,48 @@ if result.blocked:
 
 **Testing:**
 ```bash
-pytest test_readiness_screen.py -v
+pytest test_readiness_screen.py -v  # 34 tests
+```
+
+### red_flag_check.py
+
+Scans user check-ins and messages for medical and safety red flags requiring immediate plan pause and professional consultation.
+
+**Red flag detection:**
+- **Cardiac symptoms**: Chest pain, chest pressure, heart racing, irregular heartbeat
+- **Fainting**: Loss of consciousness, blacking out, syncope (conditional emergency guidance)
+- **Sharp joint pain**: Acute pain in knees, hips, shoulders, etc.
+- **Injuries**: Pulled muscles, torn ligaments, sprains
+- **Extreme fatigue**: Severe exhaustion, inability to function
+- **Disordered eating**: Purging, binging on food, food fear, exercise as punishment
+- **Breathing difficulty**: Shortness of breath, wheezing, labored breathing
+- **Neurological**: Numbness, tingling, abnormal bleeding
+
+**Context-aware matching:**
+- Uses Unicode normalization for curly quotes/apostrophes
+- Avoids false positives: "binge-watched Netflix", "starving after leg day", "can't stand burpees"
+- Requires eating context for binge/starving triggers
+
+**Response:**
+- Pauses plan immediately
+- Provides severity-appropriate messaging (emergency vs. professional consultation)
+- Gives specific recommendations including emergency numbers when needed
+- Never allows continuation without clearance
+
+**Usage:**
+```python
+from red_flag_check import RedFlagChecker
+
+checker = RedFlagChecker()
+result = checker.scan_text(user_message)
+
+if result.pause_plan:
+    print(f"PLAN PAUSED: {result.message}")
+    for rec in result.recommendations:
+        print(f"- {rec}")
+```
+
+**Testing:**
+```bash
+pytest test_red_flag_check.py -v  # 37 tests
 ```
