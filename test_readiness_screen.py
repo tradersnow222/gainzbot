@@ -1,0 +1,287 @@
+#!/usr/bin/env python3
+"""Tests for readiness_screen.py screening guardrails."""
+
+import pytest
+from readiness_screen import ReadinessScreen, ClearanceLevel
+
+
+class TestAgeCheck:
+    """Test age requirement checks."""
+    
+    def test_adult_clear(self):
+        """Adults over 18 get clear status."""
+        screener = ReadinessScreen()
+        result = screener.check_age(25)
+        assert result.clearance == ClearanceLevel.CLEAR
+        assert not result.blocked
+    
+    def test_minor_without_consent_blocked(self):
+        """Minors without parental consent are blocked."""
+        screener = ReadinessScreen()
+        result = screener.check_age(16, has_parental_consent=False)
+        assert result.clearance == ClearanceLevel.NEEDS_DOCTOR_CLEARANCE
+        assert result.blocked
+        assert "under 18" in result.reasons[0]
+    
+    def test_minor_with_consent_caution(self):
+        """Minors with parental consent get caution status."""
+        screener = ReadinessScreen()
+        result = screener.check_age(16, has_parental_consent=True)
+        assert result.clearance == ClearanceLevel.CAUTION
+        assert not result.blocked
+        assert "parental consent" in result.reasons[0]
+
+
+class TestPARQ:
+    """Test PAR-Q+ style screening."""
+    
+    def test_all_clear_responses(self):
+        """All 'no' responses get clear status."""
+        screener = ReadinessScreen()
+        responses = {
+            "chest_pain_at_rest": False,
+            "chest_pain_during_activity": False,
+            "loss_of_balance_dizziness": False,
+            "loss_of_consciousness": False,
+            "bone_joint_problem_worsened_by_activity": False,
+        }
+        result = screener.check_par_q(responses)
+        assert result.clearance == ClearanceLevel.CLEAR
+        assert not result.blocked
+    
+    def test_chest_pain_at_rest_blocked(self):
+        """Chest pain at rest requires clearance."""
+        screener = ReadinessScreen()
+        responses = {
+            "chest_pain_at_rest": True,
+            "chest_pain_during_activity": False,
+            "loss_of_balance_dizziness": False,
+            "loss_of_consciousness": False,
+            "bone_joint_problem_worsened_by_activity": False,
+        }
+        result = screener.check_par_q(responses)
+        assert result.clearance == ClearanceLevel.NEEDS_DOCTOR_CLEARANCE
+        assert result.blocked
+        assert "Chest Pain At Rest" in result.reasons[0]
+    
+    def test_loss_of_consciousness_blocked(self):
+        """Loss of consciousness requires clearance."""
+        screener = ReadinessScreen()
+        responses = {
+            "chest_pain_at_rest": False,
+            "chest_pain_during_activity": False,
+            "loss_of_balance_dizziness": False,
+            "loss_of_consciousness": True,
+            "bone_joint_problem_worsened_by_activity": False,
+        }
+        result = screener.check_par_q(responses)
+        assert result.clearance == ClearanceLevel.NEEDS_DOCTOR_CLEARANCE
+        assert result.blocked
+    
+    def test_multiple_red_flags(self):
+        """Multiple red flags all captured in reasons."""
+        screener = ReadinessScreen()
+        responses = {
+            "chest_pain_at_rest": True,
+            "chest_pain_during_activity": True,
+            "loss_of_balance_dizziness": False,
+            "loss_of_consciousness": False,
+            "bone_joint_problem_worsened_by_activity": False,
+        }
+        result = screener.check_par_q(responses)
+        assert result.clearance == ClearanceLevel.NEEDS_DOCTOR_CLEARANCE
+        assert result.blocked
+        assert "Chest Pain At Rest" in result.reasons[0]
+        assert "Chest Pain During Activity" in result.reasons[0]
+
+
+class TestPregnancy:
+    """Test pregnancy screening."""
+    
+    def test_not_pregnant_clear(self):
+        """Non-pregnant users get clear status."""
+        screener = ReadinessScreen()
+        result = screener.check_pregnancy(is_pregnant=False)
+        assert result.clearance == ClearanceLevel.CLEAR
+        assert not result.blocked
+    
+    def test_pregnant_without_clearance_blocked(self):
+        """Pregnant without clearance is blocked."""
+        screener = ReadinessScreen()
+        result = screener.check_pregnancy(is_pregnant=True, has_clearance=False)
+        assert result.clearance == ClearanceLevel.NEEDS_DOCTOR_CLEARANCE
+        assert result.blocked
+        assert "pregnant" in result.reasons[0].lower()
+    
+    def test_pregnant_with_clearance_caution(self):
+        """Pregnant with clearance gets caution status."""
+        screener = ReadinessScreen()
+        result = screener.check_pregnancy(is_pregnant=True, has_clearance=True)
+        assert result.clearance == ClearanceLevel.CAUTION
+        assert not result.blocked
+        assert "clearance" in result.reasons[0].lower()
+        assert "Modified programming" in result.recommendations[0]
+
+
+class TestMedicalConditions:
+    """Test medical condition screening."""
+    
+    def test_no_conditions_clear(self):
+        """No medical conditions get clear status."""
+        screener = ReadinessScreen()
+        result = screener.check_medical_conditions([], has_clearance=False)
+        assert result.clearance == ClearanceLevel.CLEAR
+        assert not result.blocked
+    
+    def test_heart_disease_without_clearance_blocked(self):
+        """Heart disease without clearance is blocked."""
+        screener = ReadinessScreen()
+        result = screener.check_medical_conditions(
+            ["heart_disease"],
+            has_clearance=False
+        )
+        assert result.clearance == ClearanceLevel.NEEDS_DOCTOR_CLEARANCE
+        assert result.blocked
+        assert "Heart Disease" in result.reasons[0]
+    
+    def test_diabetes_without_clearance_blocked(self):
+        """Diabetes without clearance is blocked."""
+        screener = ReadinessScreen()
+        result = screener.check_medical_conditions(
+            ["diabetes"],
+            has_clearance=False
+        )
+        assert result.clearance == ClearanceLevel.NEEDS_DOCTOR_CLEARANCE
+        assert result.blocked
+    
+    def test_high_blood_pressure_with_clearance_caution(self):
+        """High BP with clearance gets caution status."""
+        screener = ReadinessScreen()
+        result = screener.check_medical_conditions(
+            ["high_blood_pressure"],
+            has_clearance=True
+        )
+        assert result.clearance == ClearanceLevel.CAUTION
+        assert not result.blocked
+        assert "High Blood Pressure" in result.reasons[0]
+    
+    def test_multiple_conditions_without_clearance(self):
+        """Multiple conditions all captured."""
+        screener = ReadinessScreen()
+        result = screener.check_medical_conditions(
+            ["heart_disease", "diabetes"],
+            has_clearance=False
+        )
+        assert result.clearance == ClearanceLevel.NEEDS_DOCTOR_CLEARANCE
+        assert result.blocked
+        assert "Heart Disease" in result.reasons[0]
+        assert "Diabetes" in result.reasons[0]
+    
+    def test_unrelated_condition_clear(self):
+        """Non-flagged conditions don't block."""
+        screener = ReadinessScreen()
+        result = screener.check_medical_conditions(
+            ["seasonal_allergies"],
+            has_clearance=False
+        )
+        assert result.clearance == ClearanceLevel.CLEAR
+        assert not result.blocked
+
+
+class TestCompleteIntake:
+    """Test complete intake screening."""
+    
+    def test_clean_intake_clear(self):
+        """Clean intake with no risk factors."""
+        screener = ReadinessScreen()
+        intake = {
+            "age": 30,
+            "par_q": {
+                "chest_pain_at_rest": False,
+                "chest_pain_during_activity": False,
+                "loss_of_balance_dizziness": False,
+                "loss_of_consciousness": False,
+                "bone_joint_problem_worsened_by_activity": False,
+            },
+            "pregnant": False,
+            "medical_conditions": [],
+            "medical_clearance": False
+        }
+        result = screener.screen_intake(intake)
+        assert result.clearance == ClearanceLevel.CLEAR
+        assert not result.blocked
+        assert "No risk factors" in result.reasons[0]
+    
+    def test_par_q_flag_blocks(self):
+        """PAR-Q red flag blocks intake."""
+        screener = ReadinessScreen()
+        intake = {
+            "age": 30,
+            "par_q": {
+                "chest_pain_at_rest": True,
+                "chest_pain_during_activity": False,
+                "loss_of_balance_dizziness": False,
+                "loss_of_consciousness": False,
+                "bone_joint_problem_worsened_by_activity": False,
+            },
+            "pregnant": False,
+            "medical_conditions": [],
+        }
+        result = screener.screen_intake(intake)
+        assert result.clearance == ClearanceLevel.NEEDS_DOCTOR_CLEARANCE
+        assert result.blocked
+    
+    def test_multiple_issues_highest_level(self):
+        """Multiple issues return highest clearance level."""
+        screener = ReadinessScreen()
+        intake = {
+            "age": 16,
+            "parental_consent": True,
+            "par_q": {
+                "chest_pain_at_rest": False,
+                "chest_pain_during_activity": False,
+                "loss_of_balance_dizziness": False,
+                "loss_of_consciousness": False,
+                "bone_joint_problem_worsened_by_activity": False,
+            },
+            "pregnant": False,
+            "medical_conditions": ["diabetes"],
+            "medical_clearance": False
+        }
+        result = screener.screen_intake(intake)
+        assert result.clearance == ClearanceLevel.NEEDS_DOCTOR_CLEARANCE
+        assert result.blocked
+        assert len(result.reasons) >= 2
+    
+    def test_caution_level_not_blocked(self):
+        """Caution level allows program but with recommendations."""
+        screener = ReadinessScreen()
+        intake = {
+            "age": 30,
+            "par_q": {
+                "chest_pain_at_rest": False,
+                "chest_pain_during_activity": False,
+                "loss_of_balance_dizziness": False,
+                "loss_of_consciousness": False,
+                "bone_joint_problem_worsened_by_activity": False,
+            },
+            "pregnant": True,
+            "pregnancy_clearance": True,
+            "medical_conditions": [],
+        }
+        result = screener.screen_intake(intake)
+        assert result.clearance == ClearanceLevel.CAUTION
+        assert not result.blocked
+        assert len(result.recommendations) > 0
+    
+    def test_minimal_intake_defaults(self):
+        """Minimal intake with defaults doesn't crash."""
+        screener = ReadinessScreen()
+        intake = {}
+        result = screener.screen_intake(intake)
+        assert result is not None
+        assert isinstance(result.clearance, ClearanceLevel)
+
+
+if __name__ == "__main__":
+    pytest.main([__file__, "-v"])
