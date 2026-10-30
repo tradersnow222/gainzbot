@@ -1,0 +1,315 @@
+#!/usr/bin/env python3
+"""
+Plan validation script for Gainzbot.
+
+Validates proposed nutrition and training plans against hard safety bounds.
+Rejects invalid plans with specific reasons; never silently clamps values.
+"""
+
+from dataclasses import dataclass
+from typing import Dict, List, Optional
+import json
+
+
+@dataclass
+class ValidationResult:
+    """Result of plan validation."""
+    valid: bool
+    errors: List[str]
+
+    def to_dict(self) -> Dict:
+        return {"valid": self.valid, "errors": self.errors}
+
+
+class PlanValidator:
+    """Validates fitness and nutrition plans against safety guardrails."""
+
+    CALORIE_FLOOR_MEN = 1500
+    CALORIE_FLOOR_WOMEN = 1200
+    MAX_WEIGHT_LOSS_PERCENT = 1.0
+    MIN_PROTEIN_G_PER_KG = 1.6
+    MAX_PROTEIN_G_PER_KG = 2.2
+    MAX_CALORIE_CHANGE_PER_WEEK = 200
+    MAX_TRAINING_LOAD_INCREASE_PERCENT = 10.0
+    MIN_WEEKS_BETWEEN_DELOADS = 4
+    MAX_WEEKS_BETWEEN_DELOADS = 6
+    MAX_WEEKLY_TRAINING_HOURS = 20
+
+    @staticmethod
+    def estimate_bmr(weight_kg: float, sex: str, age: int, height_cm: float) -> float:
+        """
+        Estimate Basal Metabolic Rate using Mifflin-St Jeor equation.
+        
+        Args:
+            weight_kg: Body weight in kg
+            sex: 'M' or 'F'
+            age: Age in years
+            height_cm: Height in cm
+            
+        Returns:
+            Estimated BMR in kcal/day
+        """
+        if sex.upper() == 'M':
+            return (10 * weight_kg) + (6.25 * height_cm) - (5 * age) + 5
+        else:
+            return (10 * weight_kg) + (6.25 * height_cm) - (5 * age) - 161
+
+    def validate_calories(
+        self,
+        proposed_calories: float,
+        sex: str,
+        weight_kg: float,
+        age: int,
+        height_cm: float,
+        has_medical_clearance: bool = False
+    ) -> ValidationResult:
+        """Validate proposed calorie target."""
+        errors = []
+        
+        floor = self.CALORIE_FLOOR_MEN if sex.upper() == 'M' else self.CALORIE_FLOOR_WOMEN
+        
+        if proposed_calories < floor:
+            errors.append(
+                f"Calorie target {proposed_calories:.0f} kcal is below the floor of "
+                f"{floor} kcal for {sex.upper()}."
+            )
+        
+        bmr = self.estimate_bmr(weight_kg, sex, age, height_cm)
+        if proposed_calories < bmr and not has_medical_clearance:
+            errors.append(
+                f"Calorie target {proposed_calories:.0f} kcal is below estimated BMR "
+                f"({bmr:.0f} kcal). Medical clearance required."
+            )
+        
+        return ValidationResult(valid=len(errors) == 0, errors=errors)
+
+    def validate_weight_loss_rate(
+        self,
+        target_loss_kg_per_week: float,
+        current_weight_kg: float
+    ) -> ValidationResult:
+        """Validate weight loss rate."""
+        errors = []
+        
+        max_loss = current_weight_kg * (self.MAX_WEIGHT_LOSS_PERCENT / 100)
+        
+        if target_loss_kg_per_week > max_loss:
+            errors.append(
+                f"Target weight loss {target_loss_kg_per_week:.2f} kg/week exceeds "
+                f"maximum safe rate of {max_loss:.2f} kg/week "
+                f"(1% of body weight {current_weight_kg:.1f} kg)."
+            )
+        
+        return ValidationResult(valid=len(errors) == 0, errors=errors)
+
+    def validate_protein(
+        self,
+        protein_g: float,
+        weight_kg: float
+    ) -> ValidationResult:
+        """Validate protein intake."""
+        errors = []
+        
+        g_per_kg = protein_g / weight_kg
+        
+        if g_per_kg < self.MIN_PROTEIN_G_PER_KG:
+            errors.append(
+                f"Protein intake {protein_g:.0f}g ({g_per_kg:.2f} g/kg) is below "
+                f"minimum {self.MIN_PROTEIN_G_PER_KG} g/kg."
+            )
+        
+        if g_per_kg > self.MAX_PROTEIN_G_PER_KG:
+            errors.append(
+                f"Protein intake {protein_g:.0f}g ({g_per_kg:.2f} g/kg) exceeds "
+                f"maximum {self.MAX_PROTEIN_G_PER_KG} g/kg."
+            )
+        
+        return ValidationResult(valid=len(errors) == 0, errors=errors)
+
+    def validate_calorie_change(
+        self,
+        current_calories: float,
+        proposed_calories: float
+    ) -> ValidationResult:
+        """Validate weekly calorie change."""
+        errors = []
+        
+        change = abs(proposed_calories - current_calories)
+        
+        if change > self.MAX_CALORIE_CHANGE_PER_WEEK:
+            errors.append(
+                f"Calorie change {change:.0f} kcal exceeds maximum weekly change "
+                f"of {self.MAX_CALORIE_CHANGE_PER_WEEK} kcal."
+            )
+        
+        return ValidationResult(valid=len(errors) == 0, errors=errors)
+
+    def validate_training_load_increase(
+        self,
+        current_load: float,
+        proposed_load: float
+    ) -> ValidationResult:
+        """Validate training load increase."""
+        errors = []
+        
+        if current_load == 0:
+            return ValidationResult(valid=True, errors=[])
+        
+        increase_percent = ((proposed_load - current_load) / current_load) * 100
+        
+        if increase_percent > self.MAX_TRAINING_LOAD_INCREASE_PERCENT:
+            errors.append(
+                f"Training load increase {increase_percent:.1f}% exceeds maximum "
+                f"safe increase of {self.MAX_TRAINING_LOAD_INCREASE_PERCENT}% per week."
+            )
+        
+        return ValidationResult(valid=len(errors) == 0, errors=errors)
+
+    def validate_deload_schedule(
+        self,
+        weeks_since_last_deload: int
+    ) -> ValidationResult:
+        """Validate deload scheduling."""
+        errors = []
+        
+        if weeks_since_last_deload > self.MAX_WEEKS_BETWEEN_DELOADS:
+            errors.append(
+                f"Deload required: {weeks_since_last_deload} weeks since last deload "
+                f"(maximum {self.MAX_WEEKS_BETWEEN_DELOADS} weeks)."
+            )
+        
+        return ValidationResult(valid=len(errors) == 0, errors=errors)
+
+    def validate_weekly_training_hours(
+        self,
+        structured_training_hours: float,
+        sport_practice_hours: float
+    ) -> ValidationResult:
+        """Validate total weekly training hours."""
+        errors = []
+        
+        total_hours = structured_training_hours + sport_practice_hours
+        
+        if total_hours > self.MAX_WEEKLY_TRAINING_HOURS:
+            errors.append(
+                f"Total weekly training hours {total_hours:.1f} "
+                f"(structured: {structured_training_hours:.1f}, "
+                f"sport: {sport_practice_hours:.1f}) exceeds maximum "
+                f"{self.MAX_WEEKLY_TRAINING_HOURS} hours."
+            )
+        
+        return ValidationResult(valid=len(errors) == 0, errors=errors)
+
+    def validate_plan(self, plan: Dict) -> ValidationResult:
+        """
+        Validate a complete plan against all guardrails.
+        
+        Args:
+            plan: Dictionary containing plan parameters
+            
+        Returns:
+            ValidationResult with overall validity and all errors
+        """
+        all_errors = []
+        
+        if "nutrition" in plan:
+            nutrition = plan["nutrition"]
+            user = plan.get("user", {})
+            
+            if "calories" in nutrition:
+                result = self.validate_calories(
+                    proposed_calories=nutrition["calories"],
+                    sex=user.get("sex", "M"),
+                    weight_kg=user.get("weight_kg", 70),
+                    age=user.get("age", 30),
+                    height_cm=user.get("height_cm", 175),
+                    has_medical_clearance=user.get("medical_clearance", False)
+                )
+                all_errors.extend(result.errors)
+            
+            if "protein_g" in nutrition:
+                result = self.validate_protein(
+                    protein_g=nutrition["protein_g"],
+                    weight_kg=user.get("weight_kg", 70)
+                )
+                all_errors.extend(result.errors)
+            
+            if "previous_calories" in nutrition and "calories" in nutrition:
+                result = self.validate_calorie_change(
+                    current_calories=nutrition["previous_calories"],
+                    proposed_calories=nutrition["calories"]
+                )
+                all_errors.extend(result.errors)
+        
+        if "goals" in plan:
+            goals = plan["goals"]
+            user = plan.get("user", {})
+            
+            if "weight_loss_kg_per_week" in goals:
+                result = self.validate_weight_loss_rate(
+                    target_loss_kg_per_week=goals["weight_loss_kg_per_week"],
+                    current_weight_kg=user.get("weight_kg", 70)
+                )
+                all_errors.extend(result.errors)
+        
+        if "training" in plan:
+            training = plan["training"]
+            
+            if "previous_load" in training and "current_load" in training:
+                result = self.validate_training_load_increase(
+                    current_load=training["previous_load"],
+                    proposed_load=training["current_load"]
+                )
+                all_errors.extend(result.errors)
+            
+            if "weeks_since_deload" in training:
+                result = self.validate_deload_schedule(
+                    weeks_since_last_deload=training["weeks_since_deload"]
+                )
+                all_errors.extend(result.errors)
+            
+            if "structured_hours" in training and "sport_hours" in training:
+                result = self.validate_weekly_training_hours(
+                    structured_training_hours=training["structured_hours"],
+                    sport_practice_hours=training["sport_hours"]
+                )
+                all_errors.extend(result.errors)
+        
+        return ValidationResult(valid=len(all_errors) == 0, errors=all_errors)
+
+
+def main():
+    """Example usage."""
+    validator = PlanValidator()
+    
+    example_plan = {
+        "user": {
+            "sex": "M",
+            "weight_kg": 80,
+            "age": 30,
+            "height_cm": 180,
+            "medical_clearance": False
+        },
+        "nutrition": {
+            "calories": 2000,
+            "protein_g": 144,
+            "previous_calories": 2100
+        },
+        "goals": {
+            "weight_loss_kg_per_week": 0.5
+        },
+        "training": {
+            "previous_load": 100,
+            "current_load": 108,
+            "weeks_since_deload": 4,
+            "structured_hours": 6,
+            "sport_hours": 3
+        }
+    }
+    
+    result = validator.validate_plan(example_plan)
+    print(json.dumps(result.to_dict(), indent=2))
+
+
+if __name__ == "__main__":
+    main()
