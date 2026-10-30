@@ -1,14 +1,31 @@
 # gainzbot
 Gainzbot: an open-source Grok Bot fitness and nutrition coach with script-enforced safety guardrails
 
+## Overview
+
+Gainzbot implements four layers of safety guardrails:
+1. **Impossible tools**: X posting, purchases, and service connections are not available to the bot
+2. **Validation scripts**: Automated safety checks reject unsafe plans before implementation
+3. **Plain-English rules**: High-level guidance for bot behavior
+4. **Human confirmation**: Explicit user approval required for all plan changes
+
 ## Guardrail Scripts
+
+### Shared Input Validation (`guardrails/validate.py`)
+
+All guardrail scripts use shared input validation with fail-closed behavior:
+- **Required fields**: Missing critical data (weight, sex, age, height) blocks processing—never uses defaults
+- **Strict type checking**: Booleans must be real true/false; string "false" never counts as clearance
+- **Number validation**: Rejects NaN, infinity, zero, and negatives; parses numeric strings cleanly
+- **Sex normalization**: M/male/man → male, F/female/woman → female; anything else blocks
+- **Unicode handling**: Normalizes curly quotes and apostrophes so input from any device matches
 
 ### plan_check.py
 
 Validates proposed nutrition and training plans against hard safety bounds before any changes are applied.
 
 **Validation checks:**
-- **Calorie floor**: Minimum 1,500 kcal for men, 1,200 kcal for women. Never allows calories below estimated BMR without medical clearance.
+- **Calorie floor**: Minimum 1,500 kcal for men, 1,200 kcal for women. Never allows calories below estimated BMR without explicit medical clearance.
 - **Weight loss rate**: Maximum 1% of body weight per week.
 - **Protein intake**: 1.6 to 2.2 g/kg body weight.
 - **Calorie changes**: Maximum 100-200 kcal adjustment per week.
@@ -32,5 +49,6 @@ if not result.valid:
 
 **Testing:**
 ```bash
-pytest test_plan_check.py -v
+pytest test_plan_check.py -v  # 36 tests
+pytest test_validate.py -v     # 49 tests for shared validator
 ```

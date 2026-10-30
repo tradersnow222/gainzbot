@@ -338,5 +338,189 @@ class TestCompletePlanValidation:
         assert result.valid
 
 
+class TestMessyInput:
+    """Test handling of messy and invalid input."""
+    
+    def test_empty_plan_rejected(self):
+        """Empty plan is rejected."""
+        validator = PlanValidator()
+        result = validator.validate_plan({})
+        assert not result.valid
+        assert "empty" in result.errors[0].lower()
+    
+    def test_missing_user_fields_rejected(self):
+        """Plan with missing required user fields is rejected."""
+        validator = PlanValidator()
+        plan = {
+            "user": {"sex": "M"},
+            "nutrition": {"calories": 2000}
+        }
+        result = validator.validate_plan(plan)
+        assert not result.valid
+        assert any("weight_kg" in err.lower() for err in result.errors)
+    
+    def test_string_boolean_false_not_clearance(self):
+        """String 'false' must not count as clearance."""
+        validator = PlanValidator()
+        plan = {
+            "user": {
+                "sex": "M",
+                "weight_kg": 100,
+                "age": 30,
+                "height_cm": 180,
+                "medical_clearance": "false"
+            },
+            "nutrition": {
+                "calories": 1600
+            }
+        }
+        result = validator.validate_plan(plan)
+        assert not result.valid
+        assert any("BMR" in err for err in result.errors)
+    
+    def test_numeric_string_calories_parsed(self):
+        """Numeric string for calories is parsed."""
+        validator = PlanValidator()
+        plan = {
+            "user": {
+                "sex": "F",
+                "weight_kg": 60,
+                "age": 25,
+                "height_cm": 165
+            },
+            "nutrition": {
+                "calories": "1600",
+                "protein_g": "108"
+            }
+        }
+        result = validator.validate_plan(plan)
+        assert result.valid
+    
+    def test_nan_rejected(self):
+        """NaN values are rejected."""
+        validator = PlanValidator()
+        plan = {
+            "user": {
+                "sex": "M",
+                "weight_kg": float('nan'),
+                "age": 30,
+                "height_cm": 180
+            }
+        }
+        result = validator.validate_plan(plan)
+        assert not result.valid
+        assert any("not finite" in err.lower() or "nan" in err.lower() for err in result.errors)
+    
+    def test_zero_weight_rejected(self):
+        """Zero weight is rejected."""
+        validator = PlanValidator()
+        plan = {
+            "user": {
+                "sex": "M",
+                "weight_kg": 0,
+                "age": 30,
+                "height_cm": 180
+            }
+        }
+        result = validator.validate_plan(plan)
+        assert not result.valid
+        assert any("weight_kg" in err.lower() for err in result.errors)
+    
+    def test_negative_calories_rejected(self):
+        """Negative calories are rejected."""
+        validator = PlanValidator()
+        plan = {
+            "user": {
+                "sex": "M",
+                "weight_kg": 80,
+                "age": 30,
+                "height_cm": 180
+            },
+            "nutrition": {
+                "calories": -1000
+            }
+        }
+        result = validator.validate_plan(plan)
+        assert not result.valid
+        assert any("negative" in err.lower() or "positive" in err.lower() for err in result.errors)
+    
+    def test_title_case_sex_accepted(self):
+        """Title case sex is accepted."""
+        validator = PlanValidator()
+        plan = {
+            "user": {
+                "sex": "Male",
+                "weight_kg": 80,
+                "age": 30,
+                "height_cm": 180
+            },
+            "nutrition": {
+                "calories": 2000,
+                "protein_g": 144
+            }
+        }
+        result = validator.validate_plan(plan)
+        assert result.valid
+    
+    def test_sport_hours_without_structured_validated(self):
+        """Sport hours without structured hours is validated against cap."""
+        validator = PlanValidator()
+        plan = {
+            "user": {
+                "sex": "M",
+                "weight_kg": 80,
+                "age": 30,
+                "height_cm": 180
+            },
+            "training": {
+                "sport_hours": 25
+            }
+        }
+        result = validator.validate_plan(plan)
+        assert not result.valid
+        assert any("20 hours" in err for err in result.errors)
+
+
+class TestBMREnforcement:
+    """Test BMR enforcement requires explicit clearance."""
+    
+    def test_100kg_man_at_1600_fails_without_clearance(self):
+        """100 kg man at 1600 kcal must fail (BMR ~2011)."""
+        validator = PlanValidator()
+        plan = {
+            "user": {
+                "sex": "M",
+                "weight_kg": 100,
+                "age": 30,
+                "height_cm": 180,
+                "medical_clearance": False
+            },
+            "nutrition": {
+                "calories": 1600
+            }
+        }
+        result = validator.validate_plan(plan)
+        assert not result.valid
+        assert any("BMR" in err for err in result.errors)
+    
+    def test_100kg_man_at_1600_passes_with_clearance(self):
+        """100 kg man at 1600 kcal passes with explicit true clearance."""
+        validator = PlanValidator()
+        plan = {
+            "user": {
+                "sex": "M",
+                "weight_kg": 100,
+                "age": 30,
+                "height_cm": 180,
+                "medical_clearance": True
+            },
+            "nutrition": {
+                "calories": 1600
+            }
+        }
+        result = validator.validate_plan(plan)
+        assert result.valid
+
+
 if __name__ == "__main__":
     pytest.main([__file__, "-v"])

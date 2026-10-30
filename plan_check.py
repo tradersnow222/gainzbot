@@ -4,11 +4,17 @@ Plan validation script for Gainzbot.
 
 Validates proposed nutrition and training plans against hard safety bounds.
 Rejects invalid plans with specific reasons; never silently clamps values.
+Uses shared input validation with fail-closed behavior.
 """
 
 from dataclasses import dataclass
-from typing import Dict, List, Optional
+from typing import Dict, List
 import json
+import sys
+import os
+
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+from guardrails.validate import InputValidator, ValidationError
 
 
 @dataclass
@@ -212,68 +218,125 @@ class PlanValidator:
         """
         all_errors = []
         
+        try:
+            InputValidator.validate_plan_not_empty(plan)
+        except ValidationError as e:
+            return ValidationResult(valid=False, errors=[str(e)])
+        
+        user_validated = None
+        if "user" in plan:
+            try:
+                user_validated = InputValidator.validate_user_fields(plan["user"])
+            except ValidationError as e:
+                all_errors.append(f"User validation failed: {e}")
+                return ValidationResult(valid=False, errors=all_errors)
+        
         if "nutrition" in plan:
             nutrition = plan["nutrition"]
-            user = plan.get("user", {})
             
             if "calories" in nutrition:
-                result = self.validate_calories(
-                    proposed_calories=nutrition["calories"],
-                    sex=user.get("sex", "M"),
-                    weight_kg=user.get("weight_kg", 70),
-                    age=user.get("age", 30),
-                    height_cm=user.get("height_cm", 175),
-                    has_medical_clearance=user.get("medical_clearance", False)
-                )
-                all_errors.extend(result.errors)
+                if not user_validated:
+                    all_errors.append("Calorie validation requires user fields (sex, weight_kg, age, height_cm).")
+                else:
+                    try:
+                        calories = InputValidator.parse_number(nutrition["calories"], "calories")
+                        result = self.validate_calories(
+                            proposed_calories=calories,
+                            sex=user_validated["sex_str"],
+                            weight_kg=user_validated["weight_kg"],
+                            age=user_validated["age"],
+                            height_cm=user_validated["height_cm"],
+                            has_medical_clearance=user_validated["medical_clearance"]
+                        )
+                        all_errors.extend(result.errors)
+                    except ValidationError as e:
+                        all_errors.append(str(e))
             
             if "protein_g" in nutrition:
-                result = self.validate_protein(
-                    protein_g=nutrition["protein_g"],
-                    weight_kg=user.get("weight_kg", 70)
-                )
-                all_errors.extend(result.errors)
+                if not user_validated:
+                    all_errors.append("Protein validation requires user.weight_kg.")
+                else:
+                    try:
+                        protein_g = InputValidator.parse_number(nutrition["protein_g"], "protein_g")
+                        result = self.validate_protein(
+                            protein_g=protein_g,
+                            weight_kg=user_validated["weight_kg"]
+                        )
+                        all_errors.extend(result.errors)
+                    except ValidationError as e:
+                        all_errors.append(str(e))
             
             if "previous_calories" in nutrition and "calories" in nutrition:
-                result = self.validate_calorie_change(
-                    current_calories=nutrition["previous_calories"],
-                    proposed_calories=nutrition["calories"]
-                )
-                all_errors.extend(result.errors)
+                try:
+                    previous_calories = InputValidator.parse_number(nutrition["previous_calories"], "previous_calories")
+                    current_calories = InputValidator.parse_number(nutrition["calories"], "calories")
+                    result = self.validate_calorie_change(
+                        current_calories=previous_calories,
+                        proposed_calories=current_calories
+                    )
+                    all_errors.extend(result.errors)
+                except ValidationError as e:
+                    all_errors.append(str(e))
         
         if "goals" in plan:
             goals = plan["goals"]
-            user = plan.get("user", {})
             
             if "weight_loss_kg_per_week" in goals:
-                result = self.validate_weight_loss_rate(
-                    target_loss_kg_per_week=goals["weight_loss_kg_per_week"],
-                    current_weight_kg=user.get("weight_kg", 70)
-                )
-                all_errors.extend(result.errors)
+                if not user_validated:
+                    all_errors.append("Weight loss validation requires user.weight_kg.")
+                else:
+                    try:
+                        weight_loss = InputValidator.parse_number(goals["weight_loss_kg_per_week"], "weight_loss_kg_per_week")
+                        result = self.validate_weight_loss_rate(
+                            target_loss_kg_per_week=weight_loss,
+                            current_weight_kg=user_validated["weight_kg"]
+                        )
+                        all_errors.extend(result.errors)
+                    except ValidationError as e:
+                        all_errors.append(str(e))
         
         if "training" in plan:
             training = plan["training"]
             
             if "previous_load" in training and "current_load" in training:
-                result = self.validate_training_load_increase(
-                    current_load=training["previous_load"],
-                    proposed_load=training["current_load"]
-                )
-                all_errors.extend(result.errors)
+                try:
+                    previous_load = InputValidator.parse_number(training["previous_load"], "previous_load", allow_zero=True)
+                    current_load = InputValidator.parse_number(training["current_load"], "current_load", allow_zero=True)
+                    result = self.validate_training_load_increase(
+                        current_load=previous_load,
+                        proposed_load=current_load
+                    )
+                    all_errors.extend(result.errors)
+                except ValidationError as e:
+                    all_errors.append(str(e))
             
             if "weeks_since_deload" in training:
-                result = self.validate_deload_schedule(
-                    weeks_since_last_deload=training["weeks_since_deload"]
-                )
-                all_errors.extend(result.errors)
+                try:
+                    weeks = int(InputValidator.parse_number(training["weeks_since_deload"], "weeks_since_deload", allow_zero=True))
+                    result = self.validate_deload_schedule(weeks_since_last_deload=weeks)
+                    all_errors.extend(result.errors)
+                except ValidationError as e:
+                    all_errors.append(str(e))
             
-            if "structured_hours" in training and "sport_hours" in training:
-                result = self.validate_weekly_training_hours(
-                    structured_training_hours=training["structured_hours"],
-                    sport_practice_hours=training["sport_hours"]
-                )
-                all_errors.extend(result.errors)
+            structured_hours = 0.0
+            sport_hours = 0.0
+            has_structured = "structured_hours" in training
+            has_sport = "sport_hours" in training
+            
+            if has_structured or has_sport:
+                try:
+                    if has_structured:
+                        structured_hours = InputValidator.parse_number(training["structured_hours"], "structured_hours", allow_zero=True)
+                    if has_sport:
+                        sport_hours = InputValidator.parse_number(training["sport_hours"], "sport_hours", allow_zero=True)
+                    
+                    result = self.validate_weekly_training_hours(
+                        structured_training_hours=structured_hours,
+                        sport_practice_hours=sport_hours
+                    )
+                    all_errors.extend(result.errors)
+                except ValidationError as e:
+                    all_errors.append(str(e))
         
         return ValidationResult(valid=len(all_errors) == 0, errors=all_errors)
 
