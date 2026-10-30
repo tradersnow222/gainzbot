@@ -522,5 +522,84 @@ class TestBMREnforcement:
         assert result.valid
 
 
+class TestK06aProbes:
+    """Test K06a probe scenarios."""
+    
+    def test_unknown_key_kcal_rejected(self):
+        """Unknown key 'kcal' instead of 'calories' is rejected."""
+        validator = PlanValidator()
+        plan = {
+            "user": {
+                "sex": "F",
+                "weight_kg": 60,
+                "age": 25,
+                "height_cm": 165
+            },
+            "nutrition": {
+                "kcal": 800
+            }
+        }
+        result = validator.validate_plan(plan)
+        assert not result.valid
+        assert any("unknown" in err.lower() and "kcal" in err.lower() for err in result.errors)
+    
+    def test_empty_nutrition_rejected(self):
+        """Empty nutrition section is rejected (missing required calories)."""
+        validator = PlanValidator()
+        plan = {
+            "user": {
+                "sex": "F",
+                "weight_kg": 60,
+                "age": 25,
+                "height_cm": 165
+            },
+            "nutrition": {}
+        }
+        result = validator.validate_plan(plan)
+        assert not result.valid
+        assert any("calories" in err.lower() and "require" in err.lower() for err in result.errors)
+    
+    def test_unknown_key_sport_hrs_rejected(self):
+        """Unknown key 'sport_hrs' instead of 'sport_hours' is rejected."""
+        validator = PlanValidator()
+        plan = {
+            "user": {
+                "sex": "M",
+                "weight_kg": 80,
+                "age": 30,
+                "height_cm": 180
+            },
+            "nutrition": {
+                "calories": 2000
+            },
+            "training": {
+                "sport_hrs": 40
+            }
+        }
+        result = validator.validate_plan(plan)
+        assert not result.valid
+        assert any("unknown" in err.lower() and "sport_hrs" in err.lower() for err in result.errors)
+    
+    def test_validate_protein_with_zero_weight_safe(self):
+        """validate_protein with zero weight doesn't crash."""
+        validator = PlanValidator()
+        result = validator._validate_protein(100, 0)
+        assert not result.valid
+        assert any("weight_kg" in err.lower() for err in result.errors)
+    
+    def test_validate_calories_with_invalid_inputs_safe(self):
+        """validate_calories with invalid inputs doesn't crash."""
+        validator = PlanValidator()
+        result = validator._validate_calories(
+            proposed_calories="abc",
+            sex="M",
+            weight_kg=80,
+            age=30,
+            height_cm=180
+        )
+        assert not result.valid
+        assert any("calories" in err.lower() for err in result.errors)
+
+
 if __name__ == "__main__":
     pytest.main([__file__, "-v"])

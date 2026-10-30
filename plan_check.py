@@ -60,7 +60,7 @@ class PlanValidator:
         else:
             return (10 * weight_kg) + (6.25 * height_cm) - (5 * age) - 161
 
-    def validate_calories(
+    def _validate_calories(
         self,
         proposed_calories: float,
         sex: str,
@@ -69,8 +69,16 @@ class PlanValidator:
         height_cm: float,
         has_medical_clearance: bool = False
     ) -> ValidationResult:
-        """Validate proposed calorie target."""
+        """Validate proposed calorie target (internal)."""
         errors = []
+        
+        try:
+            proposed_calories = InputValidator.parse_number(proposed_calories, "proposed_calories")
+            weight_kg = InputValidator.parse_number(weight_kg, "weight_kg")
+            age = int(InputValidator.parse_number(age, "age"))
+            height_cm = InputValidator.parse_number(height_cm, "height_cm")
+        except ValidationError as e:
+            return ValidationResult(valid=False, errors=[str(e)])
         
         floor = self.CALORIE_FLOOR_MEN if sex.upper() == 'M' else self.CALORIE_FLOOR_WOMEN
         
@@ -89,13 +97,33 @@ class PlanValidator:
         
         return ValidationResult(valid=len(errors) == 0, errors=errors)
 
-    def validate_weight_loss_rate(
+    def validate_calories(
+        self,
+        proposed_calories: float,
+        sex: str,
+        weight_kg: float,
+        age: int,
+        height_cm: float,
+        has_medical_clearance: bool = False
+    ) -> ValidationResult:
+        """Validate proposed calorie target (public for backward compatibility)."""
+        return self._validate_calories(
+            proposed_calories, sex, weight_kg, age, height_cm, has_medical_clearance
+        )
+
+    def _validate_weight_loss_rate(
         self,
         target_loss_kg_per_week: float,
         current_weight_kg: float
     ) -> ValidationResult:
-        """Validate weight loss rate."""
+        """Validate weight loss rate (internal)."""
         errors = []
+        
+        try:
+            target_loss_kg_per_week = InputValidator.parse_number(target_loss_kg_per_week, "target_loss_kg_per_week")
+            current_weight_kg = InputValidator.parse_number(current_weight_kg, "current_weight_kg")
+        except ValidationError as e:
+            return ValidationResult(valid=False, errors=[str(e)])
         
         max_loss = current_weight_kg * (self.MAX_WEIGHT_LOSS_PERCENT / 100)
         
@@ -108,13 +136,27 @@ class PlanValidator:
         
         return ValidationResult(valid=len(errors) == 0, errors=errors)
 
-    def validate_protein(
+    def validate_weight_loss_rate(
+        self,
+        target_loss_kg_per_week: float,
+        current_weight_kg: float
+    ) -> ValidationResult:
+        """Validate weight loss rate (public for backward compatibility)."""
+        return self._validate_weight_loss_rate(target_loss_kg_per_week, current_weight_kg)
+
+    def _validate_protein(
         self,
         protein_g: float,
         weight_kg: float
     ) -> ValidationResult:
-        """Validate protein intake."""
+        """Validate protein intake (internal)."""
         errors = []
+        
+        try:
+            protein_g = InputValidator.parse_number(protein_g, "protein_g")
+            weight_kg = InputValidator.parse_number(weight_kg, "weight_kg")
+        except ValidationError as e:
+            return ValidationResult(valid=False, errors=[str(e)])
         
         g_per_kg = protein_g / weight_kg
         
@@ -132,13 +174,27 @@ class PlanValidator:
         
         return ValidationResult(valid=len(errors) == 0, errors=errors)
 
-    def validate_calorie_change(
+    def validate_protein(
+        self,
+        protein_g: float,
+        weight_kg: float
+    ) -> ValidationResult:
+        """Validate protein intake (public for backward compatibility)."""
+        return self._validate_protein(protein_g, weight_kg)
+
+    def _validate_calorie_change(
         self,
         current_calories: float,
         proposed_calories: float
     ) -> ValidationResult:
-        """Validate weekly calorie change."""
+        """Validate weekly calorie change (internal)."""
         errors = []
+        
+        try:
+            current_calories = InputValidator.parse_number(current_calories, "current_calories")
+            proposed_calories = InputValidator.parse_number(proposed_calories, "proposed_calories")
+        except ValidationError as e:
+            return ValidationResult(valid=False, errors=[str(e)])
         
         change = abs(proposed_calories - current_calories)
         
@@ -149,6 +205,14 @@ class PlanValidator:
             )
         
         return ValidationResult(valid=len(errors) == 0, errors=errors)
+
+    def validate_calorie_change(
+        self,
+        current_calories: float,
+        proposed_calories: float
+    ) -> ValidationResult:
+        """Validate weekly calorie change (public for backward compatibility)."""
+        return self._validate_calorie_change(current_calories, proposed_calories)
 
     def validate_training_load_increase(
         self,
@@ -175,7 +239,7 @@ class PlanValidator:
         self,
         weeks_since_last_deload: int
     ) -> ValidationResult:
-        """Validate deload scheduling."""
+        """Validate deload scheduling (public for backward compatibility)."""
         errors = []
         
         if weeks_since_last_deload > self.MAX_WEEKS_BETWEEN_DELOADS:
@@ -191,7 +255,7 @@ class PlanValidator:
         structured_training_hours: float,
         sport_practice_hours: float
     ) -> ValidationResult:
-        """Validate total weekly training hours."""
+        """Validate total weekly training hours (public for backward compatibility)."""
         errors = []
         
         total_hours = structured_training_hours + sport_practice_hours
@@ -205,6 +269,42 @@ class PlanValidator:
             )
         
         return ValidationResult(valid=len(errors) == 0, errors=errors)
+
+    def _check_unknown_keys(self, plan: Dict) -> List[str]:
+        """Check for unknown keys in the plan."""
+        errors = []
+        
+        known_top_level = {"user", "nutrition", "goals", "training"}
+        known_user = {"sex", "weight_kg", "age", "height_cm", "medical_clearance"}
+        known_nutrition = {"calories", "protein_g", "previous_calories"}
+        known_goals = {"weight_loss_kg_per_week"}
+        known_training = {"previous_load", "current_load", "weeks_since_deload", "structured_hours", "sport_hours"}
+        
+        for key in plan.keys():
+            if key not in known_top_level:
+                errors.append(f"Unknown top-level key: '{key}'")
+        
+        if "user" in plan:
+            for key in plan["user"].keys():
+                if key not in known_user:
+                    errors.append(f"Unknown user key: '{key}'")
+        
+        if "nutrition" in plan:
+            for key in plan["nutrition"].keys():
+                if key not in known_nutrition:
+                    errors.append(f"Unknown nutrition key: '{key}' (did you mean 'calories'?)")
+        
+        if "goals" in plan:
+            for key in plan["goals"].keys():
+                if key not in known_goals:
+                    errors.append(f"Unknown goals key: '{key}'")
+        
+        if "training" in plan:
+            for key in plan["training"].keys():
+                if key not in known_training:
+                    errors.append(f"Unknown training key: '{key}' (did you mean 'sport_hours'?)")
+        
+        return errors
 
     def validate_plan(self, plan: Dict) -> ValidationResult:
         """
@@ -223,6 +323,11 @@ class PlanValidator:
         except ValidationError as e:
             return ValidationResult(valid=False, errors=[str(e)])
         
+        unknown_key_errors = self._check_unknown_keys(plan)
+        if unknown_key_errors:
+            all_errors.extend(unknown_key_errors)
+            return ValidationResult(valid=False, errors=all_errors)
+        
         user_validated = None
         if "user" in plan:
             try:
@@ -234,23 +339,26 @@ class PlanValidator:
         if "nutrition" in plan:
             nutrition = plan["nutrition"]
             
-            if "calories" in nutrition:
-                if not user_validated:
-                    all_errors.append("Calorie validation requires user fields (sex, weight_kg, age, height_cm).")
-                else:
-                    try:
-                        calories = InputValidator.parse_number(nutrition["calories"], "calories")
-                        result = self.validate_calories(
-                            proposed_calories=calories,
-                            sex=user_validated["sex_str"],
-                            weight_kg=user_validated["weight_kg"],
-                            age=user_validated["age"],
-                            height_cm=user_validated["height_cm"],
-                            has_medical_clearance=user_validated["medical_clearance"]
-                        )
-                        all_errors.extend(result.errors)
-                    except ValidationError as e:
-                        all_errors.append(str(e))
+            if "calories" not in nutrition:
+                all_errors.append("Nutrition section requires 'calories' field.")
+                return ValidationResult(valid=False, errors=all_errors)
+            
+            if not user_validated:
+                all_errors.append("Calorie validation requires user fields (sex, weight_kg, age, height_cm).")
+            else:
+                try:
+                    calories = InputValidator.parse_number(nutrition["calories"], "calories")
+                    result = self._validate_calories(
+                        proposed_calories=calories,
+                        sex=user_validated["sex_str"],
+                        weight_kg=user_validated["weight_kg"],
+                        age=user_validated["age"],
+                        height_cm=user_validated["height_cm"],
+                        has_medical_clearance=user_validated["medical_clearance"]
+                    )
+                    all_errors.extend(result.errors)
+                except ValidationError as e:
+                    all_errors.append(str(e))
             
             if "protein_g" in nutrition:
                 if not user_validated:
@@ -258,7 +366,7 @@ class PlanValidator:
                 else:
                     try:
                         protein_g = InputValidator.parse_number(nutrition["protein_g"], "protein_g")
-                        result = self.validate_protein(
+                        result = self._validate_protein(
                             protein_g=protein_g,
                             weight_kg=user_validated["weight_kg"]
                         )
@@ -270,7 +378,7 @@ class PlanValidator:
                 try:
                     previous_calories = InputValidator.parse_number(nutrition["previous_calories"], "previous_calories")
                     current_calories = InputValidator.parse_number(nutrition["calories"], "calories")
-                    result = self.validate_calorie_change(
+                    result = self._validate_calorie_change(
                         current_calories=previous_calories,
                         proposed_calories=current_calories
                     )
@@ -287,7 +395,7 @@ class PlanValidator:
                 else:
                     try:
                         weight_loss = InputValidator.parse_number(goals["weight_loss_kg_per_week"], "weight_loss_kg_per_week")
-                        result = self.validate_weight_loss_rate(
+                        result = self._validate_weight_loss_rate(
                             target_loss_kg_per_week=weight_loss,
                             current_weight_kg=user_validated["weight_kg"]
                         )
