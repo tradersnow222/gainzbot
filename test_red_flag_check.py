@@ -212,7 +212,7 @@ class TestCheckInScanning:
     """Test structured check-in scanning."""
     
     def test_clean_check_in(self):
-        """Clean check-in has no flags."""
+        """A check-in without the symptom checklist pauses and asks."""
         checker = RedFlagChecker()
         check_in = {
             "notes": "Great workout!",
@@ -220,7 +220,10 @@ class TestCheckInScanning:
             "pain": "None"
         }
         result = checker.scan_check_in(check_in)
-        assert not result.pause_plan
+        assert result.pause_plan
+        assert "?" in result.message
+        assert "checklist" in result.message.lower()
+        assert "no red flags" not in result.message.lower()
     
     def test_red_flag_in_notes(self):
         """Red flag in notes is detected."""
@@ -563,6 +566,163 @@ class TestGeneralRedFlags:
     def test_named_rhabdo_without_other_symptoms(self):
         result = RedFlagChecker().scan_text("worried this is rhabdomyolysis")
         assert "rhabdomyolysis" in result.flags_detected
+
+
+def all_no_checklist(**overrides):
+    """One no for every checklist group, with optional yes overrides."""
+    answers = {
+        aliases[0]: "no" for _flag, aliases in RedFlagChecker.CHECKLIST_GROUPS
+    }
+    answers.update(overrides)
+    return answers
+
+
+class TestSymptomChecklist:
+    """The checklist is the main gate on a check-in."""
+
+    def test_all_no_with_calm_notes_continues(self):
+        result = RedFlagChecker().scan_check_in({
+            "symptom_checklist": all_no_checklist(),
+            "notes": "Easy lift, slept fine, pecs are a bit sore from chest day.",
+        })
+        assert not result.pause_plan
+        assert result.flags_detected == []
+
+    def test_any_yes_flags(self):
+        result = RedFlagChecker().scan_check_in({
+            "checklist": all_no_checklist(chest_pain="yes"),
+        })
+        assert result.pause_plan
+        assert "chest_pain" in result.flags_detected
+        assert "emergency" in result.message.lower()
+
+    def test_self_harm_yes_uses_crisis_wording(self):
+        result = RedFlagChecker().scan_check_in({
+            "symptom_check": all_no_checklist(self_harm_thoughts="Yes"),
+        })
+        blob = result.message + " " + " ".join(result.recommendations)
+        assert result.pause_plan
+        assert "self_harm_thoughts" in result.flags_detected
+        assert "988" in blob
+
+    def test_self_harm_behavior_yes_uses_crisis_wording(self):
+        result = RedFlagChecker().scan_check_in({
+            "symptom_checklist": all_no_checklist(self_harm=True),
+        })
+        blob = result.message + " " + " ".join(result.recommendations)
+        assert "988" in blob
+
+    def test_missing_item_asks(self):
+        answers = all_no_checklist()
+        answers.pop("fainting")
+        result = RedFlagChecker().scan_check_in({"symptom_checklist": answers})
+        assert result.pause_plan
+        assert "?" in result.message or "incomplete" in result.message.lower()
+        assert "no red flags" not in result.message.lower()
+
+    def test_malformed_answer_asks(self):
+        result = RedFlagChecker().scan_check_in({
+            "symptom_checklist": all_no_checklist(blue_lips="maybe"),
+        })
+        assert result.pause_plan
+        assert "no red flags" not in result.message.lower()
+
+    def test_unknown_checklist_key_asks(self):
+        answers = all_no_checklist()
+        answers["chest_pains"] = "no"
+        result = RedFlagChecker().scan_check_in({"symptom_checklist": answers})
+        assert result.pause_plan
+        assert "unknown" in result.message.lower()
+
+    def test_question_list_shape(self):
+        items = [
+            {"question": name, "answer": "no"}
+            for name in all_no_checklist()
+        ]
+        items[0]["answer"] = "yes"
+        result = RedFlagChecker().scan_check_in({"symptoms": items, "notes": "fine"})
+        assert result.pause_plan
+        assert "chest_pain" in result.flags_detected
+
+    def test_yes_wins_over_a_calm_note(self):
+        result = RedFlagChecker().scan_check_in({
+            "symptom_checklist": all_no_checklist(dark_urine="y"),
+            "notes": "Session felt normal.",
+        })
+        assert "rhabdomyolysis" in result.flags_detected
+        assert "emergency" in result.message.lower()
+
+    def test_text_still_flags_when_checklist_is_missing(self):
+        result = RedFlagChecker().scan_check_in({"notes": "real chest pressure tonight"})
+        assert result.pause_plan
+        assert "chest_pain" in result.flags_detected
+        assert "checklist" in result.message.lower()
+
+
+class TestStemBackstop:
+    """Single words and short combinations, including lookalikes."""
+
+    SHOULD_FLAG = [
+        "feels like an elephant sitting on my chest",
+        "my lips went blue after the finisher",
+        "started coughing blood in the locker room",
+        "I want to die",
+        "I don't want to live",
+        "I no longer want to be alive",
+        "I cut myself last night",
+        "kill myself",
+        "my piss is tea colored",
+        "dark urine this morning",
+        "the left side of my face is drooping",
+        "slurred speech on the walk home",
+        "stopped sweating and then I got confused",
+        "no chest tightness, but I did black out",
+        "threw up on purpose to drop weight",
+        "taking laxatives so I can make weight",
+    ]
+
+    SHOULD_NOT = [
+        "chest day, sore pecs, nothing else",
+        "gasping after a PR sprint felt amazing",
+        "I do not want to die",
+        "I did not cut myself",
+        "urine looks normal",
+        "drank a coke with lunch",
+        "dark roast coffee",
+        "pop song while I warm up",
+        "I remember the whole workout",
+        "confused about the next block",
+        "heart of this program is patience",
+    ]
+
+    @pytest.mark.parametrize("text", SHOULD_FLAG)
+    def test_stem_flags(self, text):
+        assert RedFlagChecker().scan_text(text).pause_plan
+
+    @pytest.mark.parametrize("text", SHOULD_NOT)
+    def test_stem_lookalikes_stay_clear(self, text):
+        assert not RedFlagChecker().scan_text(text).pause_plan
+
+    def test_die_statement_is_crisis(self):
+        result = RedFlagChecker().scan_text("honestly I want to die")
+        blob = result.message + " " + " ".join(result.recommendations)
+        assert "988" in blob
+
+    def test_not_wanting_to_live_is_crisis(self):
+        result = RedFlagChecker().scan_text("I don't wanna live anymore")
+        blob = result.message + " " + " ".join(result.recommendations)
+        assert result.pause_plan
+        assert "988" in blob
+
+    def test_negation_does_not_cover_the_next_clause(self):
+        result = RedFlagChecker().scan_text("no blue lips, I fainted")
+        assert "fainting" in result.flags_detected
+        assert "blue_lips" not in result.flags_detected
+
+    def test_dark_urine_alone_is_enough(self):
+        result = RedFlagChecker().scan_text("woke up with dark urine")
+        assert "rhabdomyolysis" in result.flags_detected
+        assert "emergency" in result.message.lower()
 
 
 if __name__ == "__main__":
