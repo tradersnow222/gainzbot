@@ -2,6 +2,7 @@
 """Grouped onboarding. A few short messages, then one yes."""
 
 from datetime import datetime, timedelta, timezone
+import os
 import re
 import unicodedata
 
@@ -487,7 +488,7 @@ def _remember_skip(state):
 
 def apply_reply(state, reply):
     folded = _fold(reply)
-    if state["phase"] == "confirm" and _is_plan_yes(reply):
+    if state["phase"] == "confirm":
         _confirm(state, reply)
         return
     if folded == "skip":
@@ -500,9 +501,12 @@ def apply_reply(state, reply):
 
 
 def _is_plan_yes(reply):
-    from record_confirmation import is_clear_yes
+    from record_confirmation import is_clear_yes, reply_pause
+    from routines import plan_schedule
 
-    return is_clear_yes(reply)
+    if reply_pause(reply) is not None:
+        return False
+    return is_clear_yes(reply) or plan_schedule(reply) is not None
 
 
 def _number(text):
@@ -608,13 +612,18 @@ def _confirm(state, reply):
     if not record.confirmed:
         state["error"] = record.message
         return
-    from routines import start_daily_loop
+    from routines import first_checkin_day, start_daily_loop
 
+    state["error"] = None
     state["record"] = record
     state["confirmed"] = True
     loop = start_daily_loop(reply)
     state["routines_on"] = loop["enabled"]
     state["times"] = loop["times"]
+    days = _profile(state).get("days") or []
+    if days:
+        state["first_checkin"] = first_checkin_day(min(days))
+    clear_pending_profile()
 
 
 def _proposal(state):
@@ -625,11 +634,10 @@ def _proposal(state):
     equipment = answers.get("equipment", "bodyweight")
     return (
         f"{days} days, {minutes} min, {goal}, {equipment}. "
-        "One yes confirms the plan and starts the morning check-in at 7:00, "
+        "One yes confirms the plan and starts the morning check-in at 07:00, "
         "the evening follow-up at 20:00, and the weekly review Sunday at 18:00. "
-        "Routines, each is opt-in, in this same message: "
-        "daily check-in, evening follow-up, weekly review, monthly review, yearly review. "
-        "One reply can change a time. Do not ask for another yes."
+        "Routines, each is opt-in. "
+        "One example: yes, morning 6:30."
     )
 
 
@@ -646,6 +654,36 @@ def _unclear_par_q(state):
     return "Still need a yes or no: " + ", ".join(missing) + "."
 
 
+def pending_profile_path():
+    """Draft answers during intake. Removed once the plan is confirmed."""
+    return os.path.join(os.path.dirname(os.path.abspath(__file__)), "data", "pending_profile.json")
+
+
+def clear_pending_profile(path=None):
+    """Delete the draft. The profile memory and the saved week keep the answers."""
+    target = pending_profile_path() if path is None else path
+    if os.path.isfile(target):
+        os.remove(target)
+        return True
+    return False
+
+
+def _confirmed_line(state):
+    times = state.get("times") or {}
+    enabled = state.get("routines_on") or []
+    parts = []
+    if "daily_checkin" in enabled:
+        parts.append(f"morning at {times.get('daily_checkin', '07:00')}")
+    if "evening_followup" in enabled:
+        parts.append(f"evening at {times.get('evening_followup', '20:00')}")
+    if "weekly_review" in enabled:
+        parts.append(f"weekly {times.get('weekly_review', 'Sun 18:00')}")
+    if not parts:
+        return "Confirmed."
+    line = ", ".join(parts)
+    return "Confirmed. " + line[0].upper() + line[1:] + "."
+
+
 def speak(state):
     """The next bot reply. The first one is question 1 when nothing is known."""
     from seal_secret import DATA_FILE_MESSAGE
@@ -654,7 +692,10 @@ def speak(state):
     if isinstance(error, str) and DATA_FILE_MESSAGE in error:
         return DATA_FILE_MESSAGE
     if state["confirmed"]:
-        return "Confirmed. Morning at 07:00, evening at 20:00, weekly Sunday at 18:00."
+        return _confirmed_line(state)
+    error = state.get("error")
+    if isinstance(error, str) and error:
+        return error
     missing = _first_missing(state)
     if missing is not None:
         state["phase"] = "intake"

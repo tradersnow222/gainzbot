@@ -52,7 +52,8 @@ def test_the_daily_check_in_is_two_messages():
     text = RULES.lower()
     assert "two messages" in text
     assert 'accept "none"' in text
-    assert "4 scores" in text
+    assert "default morning:" in text
+    assert "energy and stress are optional" in text
     assert "second message asks for the yes" in text
     assert "don't train through pain" in text
     today = RULES.lower().split("## today", 1)[1].split("## ", 1)[0]
@@ -63,7 +64,8 @@ def test_the_daily_check_in_is_two_messages():
     lowered = guide.lower()
     assert "accept \"none\"" in lowered
     assert "message 2" in lowered
-    assert "4 scores" in lowered
+    assert "default morning:" in lowered
+    assert "energy and stress are optional" in lowered
     assert lowered.index("scan_check_in") < lowered.index("readiness_screen")
     message2 = lowered.split("## message 2", 1)[1]
     order = [

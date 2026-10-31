@@ -257,6 +257,36 @@ class TestClearYes:
         assert record.confirmed is False
         assert record.quoted_words == reply
 
+    @pytest.mark.parametrize("reply", [
+        "yes, morning 6:30",
+        "yes morning 6:30am",
+        "yes, evening 9pm",
+        "yes but no evening one",
+        "yes, review sunday 7pm",
+    ])
+    def test_a_yes_plus_only_a_schedule_edit_confirms_without_widening_a_bare_yes(self, reply):
+        from routines import plan_schedule
+
+        assert not is_clear_yes(reply)
+        assert is_plan_yes(reply, hash_plan(ADULT_PLAN)) is False
+        assert plan_schedule(reply) is not None
+        record = ConfirmationRecorder().record(
+            ADULT_PLAN, reply, "user", passing_check_in()
+        )
+        assert record.confirmed
+        assert record.quoted_words == reply
+
+    def test_a_schedule_yes_with_a_symptom_stays_a_red_flag(self):
+        reply = "yes, morning 6:30, but my chest hurts"
+        assert not is_clear_yes(reply)
+        scanned = RedFlagChecker().scan_text(reply)
+        assert scanned.pause_plan
+        record = ConfirmationRecorder().record(
+            ADULT_PLAN, reply, "user", passing_check_in()
+        )
+        assert record.confirmed is False
+        assert scanned.message in record.message
+
     def test_a_red_flag_in_the_reply_is_the_pause(self):
         reply = "yes, I have chest pain"
         scanned = RedFlagChecker().scan_text(reply)

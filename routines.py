@@ -2,6 +2,7 @@
 """Opt-in reminder routines. One yes does not turn the others on."""
 
 import re
+import unicodedata
 
 
 OFFERS = (
@@ -130,10 +131,181 @@ def _clock_value(text):
     return None
 
 
+_YES_PREFIXES = (
+    "yes i confirm this plan",
+    "yes i confirm this change",
+    "yes i confirm",
+    "i confirm this plan",
+    "i confirm this change",
+    "i confirm",
+    "sounds good",
+    "lock it in",
+    "lets go",
+    "ok fine",
+    "confirmed",
+    "confirm",
+    "yeah",
+    "yep",
+    "okay",
+    "yes",
+    "ok",
+    "do it",
+)
+_SCHEDULE_CLAUSE = re.compile(
+    r"^(?P<off>no\s+)?"
+    r"(?P<slot>check\sin|follow\sup|morning|evening|weekly|review)"
+    r"(?:\s+(?P<day>sunday|monday|tuesday|wednesday|thursday|friday|saturday))?"
+    r"(?:\s+one)?"
+    r"(?:"
+    r"\s+(?P<hm>\d{1,2}:\d{2})(?:\s*(?P<hmampm>am|pm))?"
+    r"|\s+(?P<h>\d{1,2})\s*(?P<hampm>am|pm)"
+    r")?"
+)
+_SLOT_IDS = {
+    "morning": "daily_checkin",
+    "check in": "daily_checkin",
+    "evening": "evening_followup",
+    "follow up": "evening_followup",
+    "weekly": "weekly_review",
+    "review": "weekly_review",
+}
+
+
+def _schedule_text(reply):
+    """Fold a reply for a schedule yes. Other scripts and other emoji refuse."""
+    from record_confirmation import _ALLOWED_EMOJI, _SKIN_TONE, _VARIATION, _has_format_character
+
+    if not isinstance(reply, str) or not reply.strip():
+        return None
+    if "?" in reply or "？" in reply or "</3" in reply or _has_format_character(reply):
+        return None
+    folded = _VARIATION.sub("", _SKIN_TONE.sub("", reply.lower()))
+    folded = folded.replace("'", "").replace("’", "").replace("-", " ")
+    kept = []
+    for char in folded:
+        if char in _ALLOWED_EMOJI or char.isspace():
+            kept.append(" ")
+            continue
+        if char.isdigit() or char == ":" or ("a" <= char <= "z"):
+            kept.append(char)
+            continue
+        if ord(char) < 128 and unicodedata.category(char).startswith("P"):
+            kept.append(" ")
+            continue
+        return None
+    return " ".join("".join(kept).split())
+
+
+def _split_yes(text):
+    for prefix in _YES_PREFIXES:
+        if text == prefix:
+            return ""
+        if text.startswith(prefix + " "):
+            return text[len(prefix) + 1:]
+    return None
+
+
+def _clause_clock(match):
+    """A clock from one clause. None means no clock. False means a bad clock."""
+    if match.group("hm"):
+        hour_text, minute_text = match.group("hm").split(":")
+        hour, minute = int(hour_text), int(minute_text)
+        marker = match.group("hmampm")
+    elif match.group("h"):
+        hour, minute = int(match.group("h")), 0
+        marker = match.group("hampm")
+    else:
+        return None
+    if minute > 59:
+        return False
+    if marker in {"am", "pm"}:
+        if not 1 <= hour <= 12:
+            return False
+        if marker == "pm" and hour != 12:
+            hour += 12
+        if marker == "am" and hour == 12:
+            hour = 0
+    elif hour > 23:
+        return False
+    return f"{hour:02d}:{minute:02d}"
+
+
+def plan_schedule(reply):
+    """A yes followed only by routine-schedule edits, or None.
+
+    The plan itself is unchanged. Morning, evening, and weekly times can move,
+    and one of those three can be turned off. Any other word refuses.
+    """
+    from record_confirmation import reply_pause
+
+    if reply_pause(reply) is not None:
+        return None
+    text = _schedule_text(reply)
+    if text is None:
+        return None
+    rest = _split_yes(text)
+    if rest is None or not rest:
+        return None
+    enabled = set(LOOP_IDS)
+    times = dict(DEFAULT_LOOP_TIMES)
+    changed = False
+    while rest:
+        rest = re.sub(r"^(?:but|and)\s+", "", rest).strip()
+        if not rest:
+            break
+        match = _SCHEDULE_CLAUSE.match(rest)
+        if match is None:
+            return None
+        slot = _SLOT_IDS[match.group("slot")]
+        clock = _clause_clock(match)
+        if clock is False or (match.group("off") and clock):
+            return None
+        if match.group("off"):
+            enabled.discard(slot)
+            changed = True
+        elif clock:
+            if slot == "weekly_review":
+                day = match.group("day")
+                prefix = day.title() if day else "Sun"
+                times[slot] = f"{prefix} {clock}"
+            else:
+                times[slot] = clock
+            changed = True
+        else:
+            return None
+        rest = rest[match.end():].strip()
+    if not changed or not enabled:
+        return None
+    return {
+        "enabled": [slot for slot in LOOP_IDS if slot in enabled],
+        "times": times,
+    }
+
+
+def first_checkin_day(week_start):
+    """The Saturday on or before a Monday start. That is the first check-in."""
+    from datetime import date, timedelta
+
+    origin = date.fromisoformat(week_start) if isinstance(week_start, str) else week_start
+    back = (origin.weekday() - 5) % 7
+    return (origin - timedelta(days=back)).isoformat()
+
+
 def start_daily_loop(reply):
-    """The plan yes starts morning, evening, and weekly. One reply can change a time later."""
+    """The plan yes starts morning, evening, and weekly. One reply can change a time."""
     from record_confirmation import is_clear_yes
 
+    planned = plan_schedule(reply)
+    if planned is not None:
+        return {
+            "ok": True,
+            "enabled": planned["enabled"],
+            "times": planned["times"],
+            "message": (
+                "Morning check-in, evening follow-up, and weekly review follow that reply. "
+                "Monthly and yearly stay off."
+            ),
+        }
     if not is_clear_yes(reply):
         return {
             "ok": False,

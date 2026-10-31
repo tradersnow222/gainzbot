@@ -10,11 +10,8 @@ from readiness_screen import ReadinessScreen, passing_readiness
 from signals import read_gap_reply
 
 
-_SYMPTOM = "Morning. Any chest pain, dizziness or new pain? no / yes"
-_MORNING = (
-    "Sleep hours and soreness (fine, sore, or very sore)? "
-    "Minutes today, and weight if you track it."
-)
+_SYMPTOM = "Morning. Any chest pain, trouble breathing, dizziness or new pain? no / yes"
+_MORNING = "Hours of sleep, and soreness from 1 to 5?"
 _SECOND = "One more: soreness or sleep, in a word or a number."
 _EVENING = "Did you do it? easy, right, or hard. What did you eat?"
 _NUDGE = "Missed today. I'll pick it up in the morning."
@@ -219,10 +216,23 @@ class DailyLoop:
         """The bot opens with the symptom line. Wearables skip only the other questions."""
         self.notes[day] = {}
         self.phase[day] = "symptom"
+        if not self._has_session(day):
+            self.questions[day] = 0
+            return _SYMPTOM
         extra = self._other_questions(day)
         if extra:
             return f"{_SYMPTOM} {extra}"
         return _SYMPTOM
+
+    def _has_session(self, day):
+        """A rest day or a sport day with no session gets the symptom line only."""
+        profile = self.profile if isinstance(self.profile, dict) else None
+        if not profile:
+            return True
+        days = profile.get("days")
+        if not isinstance(days, list) or not days:
+            return True
+        return day in {str(item) for item in days}
 
     def _other_questions(self, day):
         if self.signals is None or not self.signals.connected():

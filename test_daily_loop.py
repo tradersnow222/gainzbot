@@ -28,6 +28,33 @@ def test_one_yes_starts_the_daily_loop_at_default_times():
     assert change_loop_time("morning 6:30 unless I'm busy", weekly)["daily_checkin"] == "06:30"
 
 
+def test_the_first_check_in_is_the_saturday_before_a_monday_start():
+    from routines import first_checkin_day
+
+    assert first_checkin_day("2026-10-26") == "2026-10-24"
+    assert first_checkin_day("2026-10-24") == "2026-10-24"
+    assert first_checkin_day("2026-10-31") == "2026-10-31"
+
+
+def test_a_rest_day_asks_only_the_symptom_line():
+    from daily_loop import DailyLoop, _MORNING, _SYMPTOM, adult_profile
+
+    profile = adult_profile()
+    profile["days"] = ["2026-10-26", "2026-10-28"]
+    rest = DailyLoop(load=80, minutes=45, profile=profile)
+    opened = rest.open_morning("2026-10-27")
+    assert opened == _SYMPTOM
+    assert "sleep" not in opened.lower()
+    assert rest.questions["2026-10-27"] == 0
+    session = DailyLoop(load=80, minutes=45, profile=profile)
+    asked = session.open_morning("2026-10-26")
+    assert asked.startswith(_SYMPTOM)
+    assert _MORNING in asked
+    assert "soreness from 1 to 5" in asked
+    assert "energy" not in asked.lower()
+    assert "stress" not in asked.lower()
+
+
 def test_a_missed_day_gets_one_nudge_then_the_next_morning():
     loop = DailyLoop()
     nudge = loop.nudge("2026-10-27")
@@ -130,7 +157,8 @@ def test_a_symptom_in_the_morning_pauses_before_the_workout():
     loop = DailyLoop(load=80, minutes=45, profile=adult_profile())
     day = "2026-10-26"
     opened = loop.open_morning(day)
-    assert opened.startswith("Morning. Any chest pain, dizziness or new pain? no / yes")
+    assert opened.startswith("Morning. Any chest pain, trouble breathing, dizziness or new pain? no / yes")
+    assert "soreness from 1 to 5" in opened
     paused = loop.hear(day, "my chest hurts 8 fine 45")
     assert "doctor" in paused.lower()
     assert "easy day" not in paused.lower()

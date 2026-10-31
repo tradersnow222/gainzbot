@@ -97,6 +97,59 @@ def test_question_one_comes_before_any_setup():
         assert "run setup and release_check in the background, or after intake" in text
 
 
+def test_a_yes_with_only_a_schedule_edit_confirms_in_the_same_turn():
+    from datetime import date
+
+    from onboarding import _profile
+    from record_confirmation import is_clear_yes, is_plan_yes
+    from red_flag_check import RedFlagChecker
+    from routines import first_checkin_day
+
+    proposal_bots = None
+    cases = (
+        ("yes, morning 6:30", "06:30", "20:00", "Sun 18:00", True),
+        ("yes morning 6:30am", "06:30", "20:00", "Sun 18:00", True),
+        ("yes, evening 9pm", "07:00", "21:00", "Sun 18:00", True),
+        ("yes but no evening one", "07:00", None, "Sun 18:00", False),
+        ("yes, review sunday 7pm", "07:00", "20:00", "Sunday 19:00", True),
+    )
+    for reply, morning, evening, weekly, evening_on in cases:
+        assert is_clear_yes(reply) is False, reply
+        assert is_plan_yes(reply, "shown-hash") is False, reply
+        state, bots = run_chat(list(HAPPY_PATH[:-1]) + [reply])
+        assert state["confirmed"] is True, reply
+        assert state["record"].confirmed is True, reply
+        assert state["turns"] <= 5, reply
+        assert len(bots) <= 5, reply
+        assert state["answers"]["training_days"] == "3", reply
+        assert state["times"]["daily_checkin"] == morning, reply
+        assert state["times"]["weekly_review"] == weekly, reply
+        assert ("evening_followup" in state["routines_on"]) is evening_on, reply
+        if evening_on:
+            assert state["times"]["evening_followup"] == evening, reply
+            assert "evening" in bots[-1].lower(), reply
+        else:
+            assert "evening" not in bots[-1].lower(), reply
+            assert state["routines_on"] == ["daily_checkin", "weekly_review"], reply
+        assert "?" not in bots[-1], reply
+        assert "confirm" in bots[-1].lower(), reply
+        assert bots[-2].lower().count("yes, morning 6:30") == 1, reply
+        assert bots[-2].lower().count("one example") == 1, reply
+        proposal_bots = bots[-2]
+        days = _profile(state)["days"]
+        assert state["first_checkin"] == first_checkin_day(min(days)), reply
+        assert date.fromisoformat(state["first_checkin"]).weekday() == 5, reply
+    assert proposal_bots.lower().count("yes, morning 6:30") == 1
+    chest = "yes, morning 6:30, but my chest hurts"
+    scanned = RedFlagChecker().scan_text(chest)
+    assert scanned.pause_plan
+    refused, refused_bots = run_chat(list(HAPPY_PATH[:-1]) + [chest])
+    assert refused["confirmed"] is False
+    assert refused["routines_on"] == []
+    assert scanned.message in refused_bots[-1]
+    assert "medical emergency" in refused_bots[-1].lower()
+
+
 def test_happy_path_confirms_in_five_bot_turns_or_fewer():
     state, bots = run_chat(HAPPY_PATH)
     assert state["confirmed"] is True
@@ -303,6 +356,19 @@ def test_all_no_counts_only_when_the_whole_reply_is_that_phrase():
     longest, asked = run_chat(body + ["chest pain at rest yes, rest no"])
     assert longest["par_q"]["chest_pain_at_rest"] is True
     assert "chest pain at rest" not in asked[-1].lower()
+
+
+def test_a_confirmed_plan_deletes_the_pending_profile_draft(tmp_path, monkeypatch):
+    draft = tmp_path / "pending_profile.json"
+    draft.write_text('{"goal": "hold"}\n', encoding="utf-8")
+    monkeypatch.setattr("onboarding.pending_profile_path", lambda: str(draft))
+    refused, bots = run_chat(list(HAPPY_PATH[:-1]) + ["yes, morning 6:30, but my chest hurts"])
+    assert refused["confirmed"] is False
+    assert draft.is_file()
+    assert "medical emergency" in bots[-1].lower()
+    done, _turns = run_chat(HAPPY_PATH)
+    assert done["confirmed"] is True
+    assert not draft.exists()
 
 
 def test_an_unreadable_seal_key_stops_without_a_crash(monkeypatch, tmp_path):
