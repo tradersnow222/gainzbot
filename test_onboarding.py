@@ -1890,6 +1890,19 @@ def test_a_decimal_kg_and_a_pound_weight_convert():
     assert "looks off" not in named_bots[-1].lower()
 
 
+def test_a_pound_answer_to_the_current_weight_prompt_is_stored():
+    from onboarding import _CURRENT_WEIGHT_ASK, _WEIGHT_ASK
+
+    state, bots = run_chat(["want 64 kg", "180 lb"])
+    assert bots[0] == _CURRENT_WEIGHT_ASK
+    assert state["answers"]["target"] == "64 kg"
+    assert state["answers"]["weight"] == "81.6 kg"
+    assert state["answers"]["weight_units"] == "lb"
+    assert state.get("awaiting") != "weight"
+    assert bots[-1] != _WEIGHT_ASK
+    assert "looks off" not in bots[-1].lower()
+
+
 def test_a_symptom_at_the_par_q_step_holds_the_day():
     body = ["hold, male, 80 kg, 180 cm, no injuries", "30", "ok"]
     for reply in ("my chest hurts", "i feel faint", "im dizzy"):
