@@ -1085,3 +1085,42 @@ def test_a_future_dated_pending_file_holds_the_earlier_day(tmp_path):
     assert "Full body A" not in text
     assert loop.phase[day] == "paused"
     assert day not in loop.workouts
+
+
+def test_a_clear_no_with_ordinary_soreness_logs_the_morning(tmp_path):
+    from daily_loop import DailyLoop, _SYMPTOM, adult_profile
+    from log_store import LogStore
+
+    day = "2026-10-26"
+    path = tmp_path / "log.json"
+    loop = DailyLoop(load=80, minutes=45, profile=adult_profile(), log_path=str(path))
+    loop.open_morning(day)
+    reply = "no, feeling good. Kinda sore from yesterday's walk."
+    text = loop.hear(day, reply, {
+        "minor_signal": False,
+        "red_flag": "none",
+        "injury": "none",
+        "note_ok": True,
+    })
+    assert text != _SYMPTOM
+    assert "Still need a clear no" not in text
+    assert loop.phase[day] == "workout"
+    assert day in loop.workouts
+    assert loop.notes[day]["note"] == reply
+    rows = LogStore(path).data["checkins"]
+    assert len(rows) == 1
+    assert rows[0]["note"] == reply
+    assert rows[0]["sleep"] == 7
+    assert rows[0]["soreness"] == 2
+
+
+def test_open_morning_stays_under_three_seconds():
+    import time
+
+    from daily_loop import DailyLoop, adult_profile
+
+    loop = DailyLoop(load=80, minutes=45, profile=adult_profile())
+    started = time.perf_counter()
+    loop.open_morning("2026-10-26")
+    loop.open_morning("2026-10-27")
+    assert time.perf_counter() - started < 3

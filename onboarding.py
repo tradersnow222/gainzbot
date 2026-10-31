@@ -92,6 +92,10 @@ def _injury_and_par_q(state):
     par_q = _group("par_q")
     if par_q and _missing_keys(state, par_q):
         parts.append(par_q["text"])
+    line = _optional_tracker_line(state)
+    if line:
+        parts.append(line)
+        state["tracker_offered"] = True
     if parts:
         return "\n".join(parts)
     return _INJURY_TAP_LINE
@@ -469,6 +473,72 @@ def _current_weight(text):
     return _kg_text(value) + " kg"
 
 
+def _lb_display(text):
+    """The user's pound figure, when it is a body weight we can store."""
+    if not isinstance(text, str):
+        return None
+    cleaned = _without_target_clause(text)
+    cleaned = _strip_lift_loads(cleaned)
+    cleaned = re.sub(
+        r"\b\d+(?:\.\d+)?\s+to\s+\d+(?:\.\d+)?\s*(?:kg|lb|lbs|pounds?)\b",
+        " ",
+        cleaned,
+        flags=re.IGNORECASE,
+    )
+    match = re.search(r"\b(\d+(?:\.\d+)?)\s*(pounds?|lbs|lb)\b", cleaned, flags=re.IGNORECASE)
+    if match is None:
+        return None
+    raw = float(match.group(1))
+    if raw >= 660:
+        return None
+    if not _kg_in_range(_as_kg(raw, "lb")):
+        return None
+    return _kg_text(raw) + " lb"
+
+
+def _ft_in_display(text):
+    """Feet and inches, plus the centimeter value the plan stores."""
+    if not isinstance(text, str):
+        return None
+    raw = text.lower().replace("\u2019", "'").replace("\u2032", "'").replace("\u2033", '"')
+    match = re.search(
+        r"\b(\d)\s*(?:ft|feet|foot|')\s*(\d{1,2})\s*(?:in(?:ches|ch)?|\"|\u201d)?",
+        raw,
+    )
+    if match is None:
+        return None
+    feet = int(match.group(1))
+    inches = int(match.group(2))
+    if feet < 3 or feet > 8 or inches > 11:
+        return None
+    cm = feet * 30.48 + inches * 2.54
+    if cm < 50 or cm > 280:
+        return None
+    return f"{feet} ft {inches} in", f"{int(round(cm))} cm"
+
+
+def _remember_unit_echo(state, reply):
+    """Keep the units the user typed. The plan still stores kg and cm."""
+    answers = state.get("answers")
+    if not isinstance(answers, dict) or not isinstance(reply, str):
+        return
+    pounds = _lb_display(reply)
+    if pounds:
+        answers["weight_display"] = pounds
+    elif re.search(r"\b\d+(?:\.\d+)?\s*kg\b", _fold(reply)):
+        answers.pop("weight_display", None)
+    if re.search(r"\b\d{2,3}\s*cm\b", _fold(reply)):
+        answers.pop("height_display", None)
+        return
+    found = _ft_in_display(reply)
+    if found is None:
+        return
+    display, canonical = found
+    answers["height_display"] = display
+    if answers.get("height") in (None, ""):
+        answers["height"] = canonical
+
+
 def _weight_kg_in(text):
     cleaned = _strip_lift_loads(text)
     cleaned = re.sub(
@@ -626,6 +696,7 @@ def _fill_group(state, group_id):
             state["answers"][key] = value
     if group_id == "training" and "days" not in state["answers"]:
         state["answers"]["days"] = _dates(state["answers"].get("training_days", "3"))
+        state["answers"]["days_named"] = False
     state["answers"]["name"] = state["answers"].get("name", "")
 
 
@@ -966,9 +1037,12 @@ def _parse_profile_fields(state, reply):
     if days:
         answers["training_days"] = days.group(1)
         answers["days"] = _dates(days.group(1), named_days or None)
+        answers["days_named"] = bool(named_days)
     elif named_days:
         answers["training_days"] = str(len(named_days))
         answers["days"] = _dates(len(named_days), named_days)
+        answers["days_named"] = True
+    _remember_unit_echo(state, reply)
     minutes = _paired_session_minutes(reply)
     if minutes:
         answers["minutes"] = minutes
@@ -1061,6 +1135,7 @@ def _drop_target_ask_for_goal(state):
 
 
 _INJURY_TAP_LINE = "Injuries: tap None, Old & healed, or Recent or still painful."
+_TRACKER_LINE = "Trackers are optional: a watch, a scale, a food app, or none."
 _INJURY_WHEN = (
     "Is that an old injury that's healed, or something recent "
     "(last few weeks) or still painful?"
@@ -1230,6 +1305,7 @@ def _apply_edit(state, edit):
     elif kind == "days":
         state["answers"]["training_days"] = value
         state["answers"]["days"] = _dates(value)
+        state["answers"]["days_named"] = False
     elif kind == "height":
         state["answers"]["height"] = value
     state["error"] = None
@@ -2646,9 +2722,10 @@ def _accept_labeled_profile(state, reply, labels):
     """Profile facts after a pass or a note.
 
     injury=none on that labeled profile line is the structured None answer.
-    The words in the line are not matched.
+    The words in the line are not matched. A tap writes only its own field.
     """
-    _parse_profile_fields(state, reply)
+    if not _exact_token(state, reply):
+        _parse_profile_fields(state, reply)
     parsed, reason = validate_labels(labels) if labels is not None else (None, "missing")
     if reason is not None or parsed.get("injury") != "none":
         return
@@ -2930,6 +3007,7 @@ def _merge_profile_payload(state, payload):
     if day_indexes:
         state["answers"]["training_days"] = str(len(day_indexes))
         state["answers"]["days"] = _dates(len(day_indexes), day_indexes)
+        state["answers"]["days_named"] = True
     if state["answers"].get("age") not in (None, ""):
         state["need_age"] = False
     _release_age_phase_if_filled(state)
@@ -3000,6 +3078,30 @@ def _weekly_clock(value):
     return f"{day} {hour:02d}:{minute:02d}"
 
 
+_ROUTINE_TIME_ALIASES = {
+    "daily_checkin": "daily_checkin",
+    "morning": "daily_checkin",
+    "evening_followup": "evening_followup",
+    "evening": "evening_followup",
+    "weekly_review": "weekly_review",
+    "weekly": "weekly_review",
+}
+
+
+def _canonical_routine_times(times):
+    """morning, evening, and weekly are the host names for the stored keys."""
+    if not isinstance(times, dict):
+        return {}
+    canonical = {}
+    for key, value in times.items():
+        if not isinstance(key, str):
+            continue
+        name = _ROUTINE_TIME_ALIASES.get(key.strip().lower())
+        if name:
+            canonical[name] = value
+    return canonical
+
+
 def _overlay_routine_times(state, times):
     """Keep a valid clock. A bad value falls back to that routine's default."""
     from routines import DEFAULT_LOOP_TIMES
@@ -3009,7 +3111,8 @@ def _overlay_routine_times(state, times):
     for key, default in DEFAULT_LOOP_TIMES.items():
         if saved.get(key):
             current[key] = saved[key]
-    if not isinstance(times, dict):
+    times = _canonical_routine_times(times)
+    if not times:
         state["times"] = current
         return
     if "daily_checkin" in times:
@@ -3824,25 +3927,6 @@ def _assumed_all_no(state):
     return preview
 
 
-def _shown_plan_hash(state):
-    """Hash of the unmarked week this profile would confirm. None when it cannot be built."""
-    from plan_builder import PlanBuilder
-    from readiness_screen import ReadinessScreen, passing_readiness
-    from record_confirmation import hash_plan
-    from red_flag_check import is_passing_check_in
-
-    screen = ReadinessScreen().screen_intake(_readiness_intake(state))
-    if not passing_readiness(screen):
-        return None
-    check_in = _check_in(state)
-    if not is_passing_check_in(check_in):
-        return None
-    built = PlanBuilder().propose(_profile(state), check_in, readiness_result=screen)
-    if not built.get("ok"):
-        return None
-    return hash_plan(built["confirm"])
-
-
 def _remember_shown_plan(state, preview=None):
     """Store the hash of the proposal the user is about to see."""
     digest = _shown_plan_hash(state if preview is None else preview)
@@ -3859,8 +3943,32 @@ def _show_proposal(state):
     return text
 
 
+def _optional_tracker_line(state):
+    """One optional tracker line after a profile filled training. Not a new turn."""
+    if state.get("tracker_offered"):
+        return ""
+    if not state.get("from_profile_payload"):
+        return ""
+    answers = state.get("answers") if isinstance(state.get("answers"), dict) else {}
+    if "sources" in answers:
+        return ""
+    for key in ("training_days", "minutes", "equipment", "experience"):
+        if answers.get(key) in (None, ""):
+            return ""
+    return _TRACKER_LINE
+
+
+def _with_tracker_line(state, text):
+    line = _optional_tracker_line(state)
+    if not line:
+        return text
+    state["tracker_offered"] = True
+    return text + "\n" + line
+
+
 def _par_q_and_proposal(state, par_q_text):
     """The PAR-Q step shows the week once the rest of the profile is complete."""
+    par_q_text = _with_tracker_line(state, par_q_text)
     preview = _assumed_all_no(state)
     if preview is not None and _remember_shown_plan(state, preview):
         return par_q_text + "\n" + _proposal(state)
@@ -3995,12 +4103,24 @@ def _event_phrase(event):
     return name.strip()
 
 
+_SHORT_DAYS = ("Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun")
+_FULL_DAYS = (
+    "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday",
+)
+
+
 def _proposal_profile(answers):
-    """Weight, level, sport, and event. Blank fields are left out."""
+    """Weight, level, sport, and event. Blank fields are left out.
+
+    Weight and height use the units the user typed when we still have them.
+    """
     bits = []
-    weight = answers.get("weight")
+    weight = answers.get("weight_display") or answers.get("weight")
     if isinstance(weight, str) and weight.strip():
         bits.append(weight.strip())
+    height = answers.get("height_display")
+    if isinstance(height, str) and height.strip():
+        bits.append(height.strip())
     level = answers.get("experience")
     if isinstance(level, str) and level.strip():
         bits.append(level.strip())
@@ -4013,6 +4133,101 @@ def _proposal_profile(answers):
     if not bits:
         return ""
     return ", ".join(bits) + ". "
+
+
+def _propose_preview(state):
+    """The week the proposal shows. None when it cannot be built. Does not set an error."""
+    from plan_builder import PlanBuilder
+    from readiness_screen import ReadinessScreen, passing_readiness
+    from red_flag_check import is_passing_check_in
+
+    preview = _assumed_all_no(state)
+    source = preview if preview is not None else state
+    screen = ReadinessScreen().screen_intake(_readiness_intake(source))
+    if not passing_readiness(screen):
+        return None
+    check_in = _check_in(source)
+    if not is_passing_check_in(check_in):
+        return None
+    built = PlanBuilder().propose(_profile(source), check_in, readiness_result=screen)
+    if not isinstance(built, dict) or not built.get("ok"):
+        return None
+    return built
+
+
+def _shown_plan_hash(state):
+    """Hash of the unmarked week this profile would confirm. None when it cannot be built."""
+    from record_confirmation import hash_plan
+
+    built = _propose_preview(state)
+    if built is None:
+        return None
+    return hash_plan(built["confirm"])
+
+
+def _session_line(row):
+    if not isinstance(row, dict):
+        return ""
+    raw = row.get("date")
+    try:
+        label = _SHORT_DAYS[date.fromisoformat(str(raw)[:10]).weekday()]
+    except (TypeError, ValueError):
+        label = "Day"
+    name = row.get("name") if isinstance(row.get("name"), str) and row.get("name").strip() else "Session"
+    exercises = row.get("exercises") if isinstance(row.get("exercises"), list) else []
+    if name in {"Easy run", "Long run"} and exercises and isinstance(exercises[0], dict):
+        reps = exercises[0].get("reps") or ""
+        detail = str(reps).strip()
+        return f"{label} {name}: {detail}." if detail else f"{label} {name}."
+    names = []
+    for item in exercises:
+        if isinstance(item, dict) and isinstance(item.get("name"), str) and item["name"].strip():
+            names.append(item["name"].strip())
+    if names:
+        return f"{label} {name}: {', '.join(names)}."
+    return f"{label} {name}."
+
+
+def _week_block(built):
+    if not isinstance(built, dict):
+        return ""
+    lines = [_session_line(row) for row in built.get("sessions") or []]
+    lines = [line for line in lines if line]
+    if not lines:
+        return ""
+    return "\n".join(lines) + "\n"
+
+
+def _nutrition_line(built):
+    plan = built.get("plan") if isinstance(built, dict) else None
+    nutrition = plan.get("nutrition") if isinstance(plan, dict) else None
+    if not isinstance(nutrition, dict):
+        return ""
+    calories = nutrition.get("calories")
+    protein = nutrition.get("protein_g")
+    if calories in (None, "") or protein in (None, ""):
+        return ""
+    return f"Daily: {calories} kcal, {protein} g protein. "
+
+
+def _picked_days_line(answers):
+    if answers.get("days_named"):
+        return ""
+    names = []
+    for item in answers.get("days") or []:
+        try:
+            names.append(_FULL_DAYS[date.fromisoformat(str(item)[:10]).weekday()])
+        except (TypeError, ValueError):
+            continue
+    if not names:
+        return ""
+    if len(names) == 1:
+        listed = names[0]
+    elif len(names) == 2:
+        listed = f"{names[0]} and {names[1]}"
+    else:
+        listed = ", ".join(names[:-1]) + ", and " + names[-1]
+    return f"I picked {listed}. You can change them. "
 
 
 def _proposal(state):
@@ -4031,10 +4246,16 @@ def _proposal(state):
     sport_line = ""
     if running_week(_profile(state)):
         sport_line = "The week includes strength and running: easy runs and a long run. "
+    built = _propose_preview(state)
+    week = _week_block(built)
+    food = _nutrition_line(built)
     return (
         f"{lead}"
         f"{_proposal_profile(answers)}"
         f"{days} days, {minutes} min, {goal}, {equipment}. "
+        f"{_picked_days_line(answers)}"
+        f"{week}"
+        f"{food}"
         f"{start}"
         f"{injury}"
         f"{sport_line}"

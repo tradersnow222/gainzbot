@@ -413,3 +413,20 @@ class TestConfirmation:
         applied = log.apply(edited, record)
         assert applied["applied"] is False
         assert "squat" not in log.working
+
+
+def test_host_confirm_does_not_apply_a_set_change():
+    proposal = {
+        "summary": "Next squat set.",
+        "changes": {"exercise": "squat", "weight": 100, "reps": 5},
+    }
+    recorder = ConfirmationRecorder()
+    log = SetLogger()
+    for reply in ("no, keep it", "sure I guess"):
+        record = recorder.record(proposal, reply, "host_confirm", passing_check_in())
+        assert record.confirmed is False
+        assert recorder.covers(record, proposal) is False
+        applied = log.apply(proposal, record)
+        assert applied["applied"] is False
+        assert applied["changes"] == {}
+        assert "squat" not in log.working

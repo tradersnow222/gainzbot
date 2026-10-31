@@ -94,7 +94,7 @@ def _whole(value: float):
 class MorningCheckIn:
     """Sets the day and proposes a load that stays inside the cap."""
 
-    def check_in(self, entry, planned_load=None, baseline_load=None, confirmed_changes=None, as_of=None, log_path=None) -> Dict:
+    def check_in(self, entry, planned_load=None, baseline_load=None, confirmed_changes=None, as_of=None, log_path=None, note=None) -> Dict:
         """planned_load and baseline_load are ignored. The confirmed history is the baseline."""
         del planned_load, baseline_load
         parsed = self._entry(entry)
@@ -111,7 +111,7 @@ class MorningCheckIn:
             "needs_confirmation": True,
         }
         if log_path is not None:
-            saved = self._save_check_in(log_path, entry, as_of, parsed, day_name)
+            saved = self._save_check_in(log_path, entry, as_of, parsed, day_name, note)
             if not saved["ok"]:
                 return self._bad(saved["message"])
         return {
@@ -122,7 +122,7 @@ class MorningCheckIn:
             "message": f"Today is a {day_name} day. Nothing is applied until it is confirmed.",
         }
 
-    def _save_check_in(self, log_path, entry, as_of, parsed, day_name) -> Dict:
+    def _save_check_in(self, log_path, entry, as_of, parsed, day_name, note=None) -> Dict:
         when = None
         if isinstance(entry, dict) and entry.get("date") is not None:
             when = _parse_day(entry.get("date"))
@@ -141,6 +141,8 @@ class MorningCheckIn:
             "stress": parsed["stress"],
             "day": day_name,
         }
+        if isinstance(note, str) and note.strip():
+            row["note"] = note.strip()
         return LogStore(log_path).append("checkins", row)
 
     def _scaled_load(self, day_name, confirmed_changes, as_of):

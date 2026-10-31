@@ -335,6 +335,15 @@ def is_plan_yes(reply, proposal_hash) -> bool:
     return is_clear_yes(reply)
 
 
+def _host_confirm_allowed(speaker, plan) -> bool:
+    """True only for the first-plan yes inside onboarding.run_chat."""
+    if not isinstance(speaker, str) or speaker.strip().lower() != "host_confirm":
+        return False
+    from onboarding import confirm_phase_active
+
+    return confirm_phase_active() and _first_plan_confirm(plan)
+
+
 def _first_plan_confirm(plan) -> bool:
     """True only when onboarding sealed this object as the first plan.
 
@@ -519,7 +528,10 @@ class ConfirmationRecorder:
                 errors.append(
                     "Stop. A schedule yes is confirmed only inside onboarding.run_chat."
                 )
-        host_confirm = speaker_text.lower() == "host_confirm"
+        # host_confirm skips the yes-word check only for the first plan,
+        # and only while onboarding.run_chat is in the confirm phase.
+        # Anywhere else it is an unknown speaker.
+        host_confirm = _host_confirm_allowed(speaker_text, plan)
         if not isinstance(reply, str) or not reply.strip():
             errors.append("The confirmation has to be the user's own words.")
         elif paused is not None:
@@ -532,7 +544,7 @@ class ConfirmationRecorder:
                 "Vague replies like 'sure I guess', 'looks fine', or 'whatever' do not confirm a plan."
             )
 
-        if speaker_text.lower() not in {"user", "the user", "host_confirm"}:
+        if speaker_text.lower() not in {"user", "the user"} and not host_confirm:
             errors.append("The confirmation has to come from the user.")
 
         if check_in_result is None:

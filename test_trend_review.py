@@ -754,3 +754,15 @@ class TestConfirmationGate:
         proposal = {"summary": "Raise the load.", "changes": {"load": 110}}
         applied = TrendReview().apply(proposal, recorded(proposal, "yes", speaker="coach"))
         assert applied["applied"] is False
+
+    def test_host_confirm_does_not_apply_a_calorie_change(self):
+        proposal = {"summary": "Cut calories.", "changes": {"calories": 1800}}
+        recorder = ConfirmationRecorder()
+        for reply in ("no, keep it", "sure I guess"):
+            record = recorded(proposal, reply, speaker="host_confirm")
+            assert record.confirmed is False
+            assert recorder.covers(record, proposal) is False
+            applied = TrendReview().apply(proposal, record)
+            assert applied["applied"] is False
+            assert applied["changes"] == {}
+            assert applied["changes"] != {"calories": 1800}

@@ -604,7 +604,12 @@ def _run_lengths(experience, minutes, weeks, returning=False):
 
 
 def _run_roles(days):
-    """Long run on Saturday, else the last day. No heavy legs the session before it."""
+    """Long run on Saturday, else the last day. No heavy legs the session before it.
+
+    A run stays off the session after Lower when another day can take it.
+    Saturday stays a long run instead of Lower, so a weekend run is not
+    stacked on that lower day.
+    """
     long_i = next((index for index, day in enumerate(days) if day.weekday() == 5), len(days) - 1)
     roles = ["strength"] * len(days)
     roles[long_i] = "long"
@@ -613,6 +618,34 @@ def _run_roles(days):
     easy_at = next((index for index, role in enumerate(roles) if role == "strength"), None)
     if easy_at is not None:
         roles[easy_at] = "easy"
+    elif len(roles) >= 2 and roles[long_i - 1] == "upper":
+        roles[long_i - 1] = "easy"
+    return _shift_run_after_lower(roles)
+
+
+def _shift_run_after_lower(roles):
+    """Move a run off the session after Lower when a free strength day exists."""
+    count = len(roles)
+    lower = [
+        index for index, role in enumerate(roles)
+        if role == "strength" and _split_name(count, index) == "Lower"
+    ]
+    forbidden = {index + 1 for index in lower if index + 1 < count}
+    for index in list(forbidden):
+        if roles[index] not in {"easy", "long"}:
+            continue
+        swap = next(
+            (
+                other for other, role in enumerate(roles)
+                if role == "strength"
+                and other not in forbidden
+                and _split_name(count, other) != "Lower"
+            ),
+            None,
+        )
+        if swap is None:
+            continue
+        roles[index], roles[swap] = roles[swap], roles[index]
     return roles
 
 
@@ -629,9 +662,9 @@ def _run_block(name, run_minutes):
 def running_week(profile, today=None):
     """Easy run, long run, and strength roles, or None for a normal strength week.
 
-    A running sport or a running event schedules those sessions only when an
-    event is on record or the injury is already marked old. A fresh ankle,
-    calf, achilles, shin, knee, or hip keeps the week off running.
+    A running sport schedules an easy run and a long run even when the event
+    has no date. A fresh ankle, calf, achilles, shin, knee, or hip keeps the
+    week off running. An old one still runs, shorter at first.
     """
     if not isinstance(profile, dict):
         return None
@@ -642,8 +675,6 @@ def running_week(profile, today=None):
     if not _wants_running(sport, event):
         return None
     if _no_running(_injury_text(injuries)) and not injury_old:
-        return None
-    if event is None and not injury_old:
         return None
     parsed = []
     for item in profile.get("days") or []:
