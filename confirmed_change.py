@@ -3,9 +3,10 @@
 Read the last confirmed load or calorie change.
 
 Fail closed. A missing history, a history that is not a list, an unreadable
-date, or a wrong key means no load or calorie change. Dates are compared in
-UTC. Seven days means seven times 24 hours, so 6 days and 22.5 hours is not
-enough. Caller baselines and planned values are not read here.
+date, a date with no clock time, or a wrong key means no load or calorie
+change. Dates are compared in UTC. Seven days means seven times 24 hours, so
+6 days and 22.5 hours is not enough. A calendar date is not midnight UTC.
+Caller baselines and planned values are not read here.
 """
 
 from datetime import date, datetime, timedelta, timezone
@@ -45,23 +46,15 @@ def confirmed_history(logs, user):
 
 
 def parse_utc(value) -> Optional[datetime]:
-    """Parse a UTC time. US dates, words like yesterday, and missing values fail."""
+    """Parse a UTC time. A date with no clock time is rejected, not read as midnight."""
     if isinstance(value, datetime):
         if value.tzinfo is None:
             return value.replace(tzinfo=timezone.utc)
         return value.astimezone(timezone.utc)
-    if isinstance(value, date):
-        return datetime(value.year, value.month, value.day, tzinfo=timezone.utc)
-    if not isinstance(value, str):
+    if isinstance(value, date) or not isinstance(value, str):
         return None
     text = value.strip()
-    if _DATE.fullmatch(text):
-        try:
-            day = date.fromisoformat(text)
-        except ValueError:
-            return None
-        return datetime(day.year, day.month, day.day, tzinfo=timezone.utc)
-    if not _STAMP.fullmatch(text):
+    if _DATE.fullmatch(text) or not _STAMP.fullmatch(text):
         return None
     iso = text[:-1] + "+00:00" if text.endswith("Z") else text
     try:

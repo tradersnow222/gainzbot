@@ -43,6 +43,20 @@ def _parse_date(value) -> Optional[date]:
     return None
 
 
+def _window_day(value) -> Optional[date]:
+    """A review may end on a calendar day. That day is not a confirmed-change time."""
+    if isinstance(value, datetime):
+        return None
+    if isinstance(value, date):
+        return value
+    if isinstance(value, str) and len(value.strip()) == 10:
+        try:
+            return date.fromisoformat(value.strip())
+        except ValueError:
+            return None
+    return None
+
+
 def _number(value) -> Optional[float]:
     try:
         return InputValidator.parse_number(value, "value", allow_zero=True)
@@ -66,8 +80,12 @@ class TrendReview:
         if as_of is not None:
             as_of_dt = parse_utc(as_of)
             if as_of_dt is None:
-                return self._empty("No change proposed.")
-            end = as_of_dt.date()
+                end = _window_day(as_of)
+                if end is None:
+                    return self._empty("No change proposed.")
+                as_of_dt = datetime(end.year, end.month, end.day, tzinfo=timezone.utc)
+            else:
+                end = as_of_dt.date()
         else:
             as_of_dt = None
             end = None

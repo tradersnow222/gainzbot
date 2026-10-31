@@ -5,6 +5,7 @@ from datetime import date, timedelta
 
 import pytest
 
+from confirmed_change import parse_utc
 from plan_check import PlanValidator
 from record_confirmation import ConfirmationRecorder
 from red_flag_check import RedFlagChecker, is_passing_check_in
@@ -377,7 +378,7 @@ class TestSafetyCaps:
         next_day = dates[-1] + timedelta(days=1)
         dates2, logs2 = self._steady_load((next_day - timedelta(days=6)).isoformat(), 7, 110)
         logs2["confirmed_changes"] = [{
-            "date": dates[-1].isoformat(),
+            "date": dates[-1].isoformat() + "T00:00:00Z",
             "changes": {"load": 110},
             "confirmed": True,
         }]
@@ -390,7 +391,7 @@ class TestSafetyCaps:
         day = date(2026, 10, 29)
         dates, logs = self._steady_load((day - timedelta(days=6)).isoformat(), 7, 110)
         logs["confirmed_changes"] = [{
-            "date": (day - timedelta(days=7)).isoformat(),
+            "date": (day - timedelta(days=7)).isoformat() + "T00:00:00Z",
             "changes": {"load": 110},
             "confirmed": True,
         }]
@@ -432,7 +433,7 @@ class TestSafetyCaps:
                 "weights": weights,
                 "intake": intake,
                 "confirmed_changes": [{
-                    "date": first_dates[-1].isoformat(),
+                    "date": first_dates[-1].isoformat() + "T00:00:00Z",
                     "changes": {"calories": 2400},
                     "confirmed": True,
                 }],
@@ -458,7 +459,7 @@ class TestSafetyCaps:
                 "weights": weights,
                 "intake": intake,
                 "confirmed_changes": [{
-                    "date": (end - timedelta(days=7)).isoformat(),
+                    "date": (end - timedelta(days=7)).isoformat() + "T00:00:00Z",
                     "changes": {"calories": 2400},
                     "confirmed": True,
                 }],
@@ -586,6 +587,55 @@ class TestSafetyCaps:
         result = TrendReview().review(logs, user, 7, as_of)
         assert all(item["changes"].get("load", 0) <= 100 for item in result["proposals"])
         assert all("load" not in item["changes"] for item in result["proposals"])
+
+    def test_parse_utc_rejects_a_date_with_no_clock_time(self):
+        assert parse_utc("2026-10-20") is None
+        assert parse_utc(date(2026, 10, 20)) is None
+        parsed = parse_utc("2026-10-21T06:30:00Z")
+        assert parsed is not None
+        assert parsed.hour == 6 and parsed.minute == 30
+
+    def test_a_date_only_history_does_not_raise(self):
+        # 11:30 PM PT on 2026-10-20 is 2026-10-21T06:30:00Z. Reading the
+        # calendar date as midnight UTC would treat that change as about
+        # 5 days 18 hours older than it is.
+        as_of = "2026-10-27T00:00:00Z"
+        dates = days("2026-10-21", 7)
+        logs = {
+            "sessions": [
+                {"date": day.isoformat(), "planned": True, "completed": True}
+                for day in dates
+            ],
+            "loads": [{"date": day.isoformat(), "load": 100} for day in dates],
+            "confirmed_changes": [{
+                "date": "2026-10-20",
+                "confirmed": True,
+                "changes": {"load": 100},
+            }],
+        }
+        result = TrendReview().review(logs, self._adult(), 7, as_of)
+        assert all("load" not in item["changes"] for item in result["proposals"])
+
+    def test_eleven_thirty_pm_pt_does_not_raise_after_about_five_days(self):
+        as_of = "2026-10-27T00:00:00Z"
+        dates = days("2026-10-21", 8)
+        logs = {
+            "sessions": [
+                {"date": day.isoformat(), "planned": True, "completed": True}
+                for day in dates
+            ],
+            "loads": [{"date": day.isoformat(), "load": 40} for day in dates],
+            "confirmed_changes": [{
+                "date": "2026-10-21T06:30:00Z",
+                "confirmed": True,
+                "changes": {"load": 100},
+            }],
+        }
+        early = TrendReview().review(logs, self._adult(), 7, as_of)
+        assert all("load" not in item["changes"] for item in early["proposals"])
+        later = TrendReview().review(logs, self._adult(), 7, "2026-10-28T06:30:00Z")
+        load = next(item["changes"]["load"] for item in later["proposals"] if "load" in item["changes"])
+        assert load == 110
 
     def test_six_days_and_22_5_hours_does_not_pass(self):
         as_of = "2026-10-29T00:30:00Z"
