@@ -75,7 +75,7 @@ class Dashboard:
             return self._empty(NOT_ENOUGH, window_days)
         start = end - timedelta(days=window_days - 1)
         window = [row for row in rows if start <= row["date"] <= end]
-        if not window:
+        if len(window) < 2:
             return self._empty(NOT_ENOUGH, window_days)
 
         calorie_target, calorie_note = self._calorie_target(user, targets)
@@ -280,6 +280,9 @@ class Dashboard:
         return calories, ""
 
     def _protein_target(self, user, targets):
+        age = self._age(user)
+        if age is not None and age < PlanValidator.ADULT_AGE:
+            return None, "No protein target is set under 18."
         if "weight_kg" not in user or not isinstance(targets, dict) or "protein_g" not in targets:
             return None, ""
         try:

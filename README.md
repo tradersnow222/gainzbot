@@ -184,7 +184,7 @@ pytest test_record_confirmation.py -v  # 23 tests
 
 Builds chart data for one window: 7, 28, 90, or 365 days. The spec is chart-first. The charts are weight, calories vs target, protein vs target, adherence, and personal records.
 
-The builder only reads logs. It does not change the plan. A calorie target is left off the chart when age or sex is missing, when the user is under 18, or when the target is below the floor. A protein target outside 1.6 to 2.2 g/kg is left off too. Too little data returns "not enough data yet" and empty charts.
+The builder only reads logs. It does not change the plan. A calorie target is left off the chart when age or sex is missing, when the user is under 18, or when the target is below the floor (1,500 for men, 1,200 for women). Under 18, no protein target is set. A protein target outside 1.6 to 2.2 g/kg is left off too. One log is not enough: the message stays "not enough data yet" until there are at least two.
 
 **Usage:**
 ```python
@@ -198,5 +198,5 @@ for chart in result["charts"]:
 
 **Testing:**
 ```bash
-pytest test_dashboard.py -v  # 16 tests
+pytest test_dashboard.py -v  # 19 tests
 ```
