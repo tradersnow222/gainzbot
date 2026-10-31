@@ -128,13 +128,23 @@ _WEEKDAYS = (
 )
 _LEADING_NO = re.compile(r"^\s*(no|nope)\b\s*[,.]?\s*", re.IGNORECASE)
 _LEADING_NUMBER = re.compile(r"(\d+)\s*[,.]?\s*")
-_NOTE_RISK = re.compile(
-    r"\bbut\b|\bpain\b|\bhurts?\b|\bchest\b|\bdizz|\btight\b|\bbreath|\bfaint|"
-    r"\bsymptoms?\b|\bnumb|\bswollen\b|\bswell\b|\bpop(?:ped)?\b|\bsnap(?:ped)?\b|"
-    r"[()?？]|[^\x00-\x7f]",
-    re.IGNORECASE,
-)
 _SKIP_SPORTS = {"general training", "lifting", "gym", "weights", "none", "no"}
+# A leftover remark is kept only when every token is on this list.
+# A symptom, a hedge, or any other word re-asks. It does not send a session.
+_REMARK_WORDS = frozenset({
+    "yep", "yeah", "yes", "yup", "ok", "okay",
+    "thanks", "thank", "hi", "hello", "hey",
+    "going", "doing", "gonna", "plan", "plans", "planned",
+    "parkrun", "run", "running", "race", "racing",
+    "at", "am", "pm", "today", "tomorrow", "tonight",
+    "morning", "afternoon", "evening",
+    "breakfast", "lunch", "dinner", "snack", "food", "eat", "eating", "ate",
+    "meal", "coffee", "tea", "eggs", "toast", "oats", "oatmeal", "yogurt",
+    "chicken", "rice", "salad", "protein", "shake", "banana", "apple",
+    "milk", "water", "juice",
+    "a", "an", "the", "to", "for", "my", "i", "im", "on", "in", "and",
+    "then", "of", "with", "some", "it", "just", "after", "before", "this",
+})
 
 
 def _weekday_name(day):
@@ -171,11 +181,50 @@ def _split_scored_no(reply):
     return prefix, note
 
 
-def _plain_remark(note):
-    """True when the leftover is not an ambiguous safety answer."""
-    if not note:
-        return True
-    return _NOTE_RISK.search(note) is None
+def _remark_allowed(note):
+    """True when the leftover is only an allowlisted plan, time, food, or greeting.
+
+    The whole remark has to match. A question mark, a symptom, or any other
+    word does not. Numbers are only clock pieces, up to 59.
+    """
+    if not isinstance(note, str) or not note.strip():
+        return False
+    if "?" in note or "？" in note:
+        return False
+    text = note.strip().lower().replace("'", "").replace("\u2019", "")
+    text = re.sub(r"\b\d{1,2}:\d{2}\b", " ", text)
+    tokens = re.findall(r"[a-z]+|\d+", text)
+    if not tokens:
+        return False
+    for token in tokens:
+        if token.isdigit():
+            if int(token) > 59:
+                return False
+            continue
+        if token not in _REMARK_WORDS:
+            return False
+    return True
+
+
+def _remark_pause(note):
+    """scan_text and reply_pause on the remark alone. A leading no is not in it."""
+    from record_confirmation import reply_pause
+
+    if not isinstance(note, str) or not note.strip():
+        return None
+    paused = reply_pause(note)
+    scanned = RedFlagChecker().scan_text(note)
+    real = [
+        flag for flag in (scanned.flags_detected or [])
+        if flag != "needs_clarification"
+    ]
+    if not real:
+        return None
+    if paused is not None:
+        return _pause_text(paused)
+    if scanned.pause_plan:
+        return _pause_text(scanned)
+    return None
 
 
 def _shown_number(value):
@@ -293,12 +342,19 @@ class DailyLoop:
         self.workouts = {}
         self.questions = {}
         self.pending = {}
+        self.hold_text = {}
 
     def open_morning(self, day):
-        """The bot opens with the symptom line. Wearables skip only the other questions."""
+        """The bot opens with the symptom line. Wearables skip only the other questions.
+
+        A pause or an onboarding hold already in force for today stays. Opening
+        the morning again does not clear it or start a session.
+        """
         held = _onboarding_hold()
         if held:
             return held
+        if self.phase.get(day) == "paused":
+            return self.hold_text.get(day) or _SYMPTOM
         self.notes[day] = {}
         self.phase[day] = "symptom"
         if self._rest_day(day):
@@ -444,11 +500,10 @@ class DailyLoop:
             split = _split_scored_no(reply)
             if split:
                 prefix, note = split
-                held = self._symptom_hold(reply)
+                held = _remark_pause(note)
                 if held:
-                    self.phase[day] = "paused"
-                    return held
-                if not _plain_remark(note):
+                    return self._remember_pause(day, held)
+                if not _remark_allowed(note):
                     self.phase[day] = "symptom"
                     return _SYMPTOM
                 self.notes[day]["note"] = note
@@ -459,8 +514,7 @@ class DailyLoop:
             self.notes[day]["reply"] = (self.notes[day].get("reply") or "") + " " + reply
             paused = self._text_pause(reply)
             if paused:
-                self.phase[day] = "paused"
-                return paused
+                return self._remember_pause(day, paused)
             self.notes[day].update(read_gap_reply(pending["gaps"], reply))
             self._use_hr_answer(day, f"{day}T08:00:00Z")
             for key in pending["personal"]:
@@ -471,8 +525,7 @@ class DailyLoop:
             self.notes[day]["reply"] = (self.notes[day].get("reply") or "") + " " + reply
             paused = self._text_pause(reply)
             if paused:
-                self.phase[day] = "paused"
-                return paused
+                return self._remember_pause(day, paused)
             self.notes[day].update(parse_morning(reply))
             return self._workout(day)
         if phase == "evening":
@@ -500,10 +553,15 @@ class DailyLoop:
         """Not a clear no. scan_check_in runs, then one gentle re-ask. No workout."""
         held = self._symptom_hold(reply)
         if held:
-            self.phase[day] = "paused"
-            return held
+            return self._remember_pause(day, held)
         self.phase[day] = "symptom"
         return _SYMPTOM
+
+    def _remember_pause(self, day, text):
+        """Keep the pause. A later open_morning on this day returns the same line."""
+        self.phase[day] = "paused"
+        self.hold_text[day] = text
+        return text
 
     def _text_pause(self, reply):
         scanned = RedFlagChecker().scan_text(reply if isinstance(reply, str) else "")
@@ -614,18 +672,15 @@ class DailyLoop:
         reply = self.notes.get(day, {}).get("reply") or ""
         result = self._checklist(reply)
         if not is_passing_check_in(result):
-            self.phase[day] = "paused"
-            return _pause_text(result)
+            return self._remember_pause(day, _pause_text(result))
         if not isinstance(self.profile, dict):
-            self.phase[day] = "paused"
-            return "Readiness has to pass before training."
+            return self._remember_pause(day, "Readiness has to pass before training.")
         screen = ReadinessScreen().screen_intake(_readiness_intake(self.profile))
         if not passing_readiness(screen):
-            self.phase[day] = "paused"
             for reason in screen.reasons or []:
                 if isinstance(reason, str) and reason.startswith("Unknown key:"):
-                    return reason
-            return "Readiness has to pass before training."
+                    return self._remember_pause(day, reason)
+            return self._remember_pause(day, "Readiness has to pass before training.")
         return None
 
     def _week_file(self):
@@ -758,8 +813,7 @@ class DailyLoop:
     def _evening(self, day, reply):
         paused = self._text_pause(reply)
         if paused:
-            self.phase[day] = "paused"
-            return paused
+            return self._remember_pause(day, paused)
         parsed = parse_evening(reply)
         if parsed.get("ate") == "" and self.notes[day].get("ate"):
             parsed = {key: value for key, value in parsed.items() if key != "ate"}

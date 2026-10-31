@@ -668,3 +668,84 @@ def test_monday_still_sends_full_body_a(tmp_path):
     assert loop.workouts[monday]["name"] == "Full body A"
     assert loop.notes[monday]["sleep"] == 7
     assert loop.notes[monday]["soreness"] == 2
+
+
+def test_a_scored_no_remark_is_scanned_alone_and_allowlisted(tmp_path):
+    from daily_loop import _SYMPTOM
+
+    remarks = (
+        "slurred speech",
+        "face drooping",
+        "palpitations",
+        "heart racing",
+        "coughing blood",
+        "wheezing",
+        "lightheaded",
+        "vomited",
+        "vision blurry",
+        "tingling arm",
+        "cant feel my feet",
+        "cracked rib",
+        "knee buckled",
+        "sprained ankle",
+        "fever",
+        "covid",
+        "pregnant",
+        "chestpain",
+        "cp",
+        "sob",
+        "d1zzy",
+        "actually yes",
+        "not great",
+    )
+    for day in ("2026-11-02", "2026-10-31"):
+        for prefix in ("no 7 2", "no, 7, 2."):
+            for remark in remarks:
+                loop = _live_loop(tmp_path)
+                loop.open_morning(day)
+                text = loop.hear(day, f"{prefix} {remark}")
+                assert day not in loop.workouts, (day, prefix, remark, text)
+                assert loop.phase[day] != "workout", (day, prefix, remark, text)
+                assert "Full body" not in text
+                assert not text.startswith("Rest day")
+    saturday = "2026-10-31"
+    clear = _live_loop(tmp_path)
+    clear.open_morning(saturday)
+    text = clear.hear(saturday, "no, 7, 2. yep doing parkrun at 9")
+    assert text != _SYMPTOM
+    assert clear.phase[saturday] == "workout"
+    assert clear.notes[saturday]["note"] == "yep doing parkrun at 9"
+    assert text.startswith("Rest day. Enjoy parkrun, keep it conversational.")
+
+
+def test_open_morning_does_not_reset_a_pause_or_a_hold(tmp_path):
+    from daily_loop import DailyLoop, adult_profile
+    from onboarding import hold_is_active, run_chat
+
+    monday = "2026-11-02"
+    loop = _live_loop(tmp_path)
+    loop.open_morning(monday)
+    paused = loop.hear(monday, "no 7 2 slurred speech")
+    assert loop.phase[monday] == "paused"
+    assert monday not in loop.workouts
+    again = loop.open_morning(monday)
+    assert again == paused
+    assert loop.phase[monday] == "paused"
+    assert monday not in loop.workouts
+    assert "slurred" in (loop.notes[monday].get("reply") or "")
+    third = loop.open_morning(monday)
+    assert third == paused
+    assert monday not in loop.workouts
+    held_state, held_bots = run_chat(["hello", "my chest hurts"])
+    assert held_state["phase"] == "symptom"
+    assert hold_is_active()
+    fresh = DailyLoop(load=80, minutes=45, profile=adult_profile())
+    opened = fresh.open_morning(monday)
+    repeated = fresh.open_morning(monday)
+    assert opened == repeated
+    assert opened == held_bots[-1]
+    assert monday not in fresh.phase
+    assert monday not in fresh.workouts
+    stayed = fresh.hear(monday, "no, 7, 2")
+    assert stayed == opened
+    assert monday not in fresh.workouts

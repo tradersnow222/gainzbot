@@ -484,7 +484,7 @@ def _target_from_want(folded):
             return ("need_weight", shown)
         return "ask"
     if value < current * 0.6 - 1e-6 or value > current * 1.4 + 1e-6:
-        return "ask"
+        return ("far", _kg_text(current) + " kg")
     return shown
 
 
@@ -897,6 +897,9 @@ def _parse_explicit(state, reply):
     if isinstance(target, tuple) and target[0] == "need_weight":
         answers["target"] = target[1]
         need_weight = True
+    elif isinstance(target, tuple) and target[0] == "far":
+        answers.pop("target", None)
+        _note_far_target(state, target[1])
     elif target == "ask" and state.get("phase") != "age":
         state["awaiting"] = "target"
         if state.get("error") in (None, ""):
@@ -913,7 +916,11 @@ def _parse_explicit(state, reply):
             if state.get("awaiting") == "target":
                 state["awaiting"] = None
     elif weight is not None and "weight" not in answers:
-        if _weight_fits_target(answers.get("target"), weight):
+        stored_target = answers.get("target")
+        # A target already checked against this current weight is kept.
+        # The current weight is not thrown out because it sits outside the
+        # target's own 60 to 140 percent band.
+        if _weight_fits_target(stored_target, weight) or _target_near_weight(stored_target, weight):
             answers["weight"] = weight
             need_weight = False
             if state.get("awaiting") == "weight":
@@ -954,10 +961,8 @@ def _parse_explicit(state, reply):
     if stated == "none":
         if "injuries" not in answers:
             answers["injuries"] = "none"
-    elif _untimed_named_injury(reply):
-        state["pending_injury"] = _named_injury_label(folded)
-        state["awaiting"] = "injury_when"
-        state["error"] = _INJURY_WHEN
+    elif _untimed_named_injury(reply) or _untimed_pain_phrase(reply):
+        _ask_injury_when(state, reply)
     elif stated is not None and answers.get("injuries") in (None, "", "none"):
         if not _acute_marker(reply):
             answers["injuries"] = stated
@@ -1013,6 +1018,32 @@ _AGE_ASK = "How old are you? Please type the number."
 _WEIGHT_ASK = "That weight looks off. What's your weight in kg?"
 _CURRENT_WEIGHT_ASK = "What's your current weight in kg?"
 _TARGET_ASK = "What's your target weight in kg?"
+
+
+def _far_target_line(current_text):
+    """The one warning when a goal weight is far from the current weight."""
+    return f"That target looks far from {current_text}. What goal weight do you want?"
+
+
+def _note_far_target(state, current_text):
+    """Say the far-target line once. The next out-of-range answer asks the goal."""
+    if state.get("target_far_once"):
+        _drop_target_ask_for_goal(state)
+        return
+    state["target_far_once"] = True
+    state["awaiting"] = "target"
+    state["error"] = _far_target_line(current_text)
+
+
+def _drop_target_ask_for_goal(state):
+    """Keep the current weight. Stop asking for a target and ask the goal."""
+    state["answers"].pop("target", None)
+    state["awaiting"] = None
+    state.pop("target_far_once", None)
+    state["phase"] = "intake"
+    state["asked"] = "goal"
+    goal = _group("goal")
+    state["error"] = goal["text"] if goal else _TARGET_ASK
 _INJURY_WHEN = (
     "Is that an old injury that's healed, or something recent "
     "(last few weeks) or still painful?"
@@ -1084,6 +1115,17 @@ def _weight_fits_target(target, weight):
     low = float(target_kg) * 0.6 - 1e-6
     high = float(target_kg) * 1.4 + 1e-6
     return low <= float(weight_kg) <= high
+
+
+def _target_near_weight(target, weight):
+    """True when the target sits within 60 to 140 percent of the current weight."""
+    target_kg = _number(target)
+    weight_kg = _number(weight)
+    if target_kg is None or weight_kg is None or float(weight_kg) <= 0:
+        return True
+    low = float(weight_kg) * 0.6 - 1e-6
+    high = float(weight_kg) * 1.4 + 1e-6
+    return low <= float(target_kg) <= high
 
 
 def _non_latin_letter(reply):
@@ -1378,19 +1420,57 @@ def _take_age_number(state, reply):
     return True
 
 
+def _reply_target_kg(reply):
+    """A bare kg number, or the number after want or target. None when absent."""
+    soft = _soft(reply)
+    bare = re.fullmatch(r"(\d+(?:\.\d+)?)(?:\s*kg)?", soft)
+    if bare:
+        return float(bare.group(1))
+    found = re.search(
+        r"\b(?:want|target)\s+(\d+(?:\.\d+)?)(?:\s*(kg|lb|lbs|pounds?))?",
+        soft,
+    )
+    if found is None:
+        return None
+    return _as_kg(found.group(1), found.group(2))
+
+
 def _take_target_number(state, reply):
-    """The reply after a target ask. A days or minutes phrase is not a weight."""
-    match = re.fullmatch(r"(\d+(?:\.\d+)?)(?:\s*kg)?", _soft(reply))
-    if match is None or not _kg_in_range(float(match.group(1))):
+    """The reply after a target ask. A days or minutes phrase is not a weight.
+
+    A target far from the current weight is warned about once. The next
+    out-of-range answer keeps the current weight and asks for the goal.
+    """
+    value = _reply_target_kg(reply)
+    current = _number(state["answers"].get("weight"))
+    out_of_range = False
+    if value is None:
+        out_of_range = bool(state.get("target_far_once"))
+    elif not _kg_in_range(value):
+        out_of_range = True
+    elif current is not None and (
+        value < float(current) * 0.6 - 1e-6 or value > float(current) * 1.4 + 1e-6
+    ):
+        out_of_range = True
+    if value is None and not out_of_range:
         state["awaiting"] = "target"
         state["error"] = _TARGET_ASK
         return
-    shown = match.group(1)
-    if shown.endswith(".0"):
-        shown = shown[:-2]
-    state["answers"]["target"] = shown + " kg"
+    if out_of_range:
+        if state.get("target_far_once"):
+            _drop_target_ask_for_goal(state)
+            return
+        shown = _kg_text(current) + " kg" if current is not None else ""
+        if shown:
+            _note_far_target(state, shown)
+        else:
+            state["awaiting"] = "target"
+            state["error"] = _TARGET_ASK
+        return
+    state["answers"]["target"] = _kg_text(value) + " kg"
     state["awaiting"] = None
     state["error"] = None
+    state.pop("target_far_once", None)
 
 
 def _take_weight_number(state, reply):
@@ -1573,15 +1653,158 @@ def _strip_named_injury(reply):
     return matched, text
 
 
-def _past_marker(reply):
-    """An explicit old-injury marker. 'N months ago' counts only when N is at least 3."""
-    folded = _fold(reply) if isinstance(reply, str) else ""
-    if _PAST_MARKER.search(folded):
+# A whole reply stores the injury as old only when it is one of these phrases.
+# Optional punctuation is already folded away. A question mark is not.
+_OLD_REPLY = re.compile(
+    r"(?:old|its old|old one|healed|its healed|fully healed|old and healed|"
+    r"years ago|\d+ years ago|\d+ year ago|long time ago|fine now|all good now|"
+    r"recovered|fully recovered)"
+)
+_PAST_SPAN = (
+    r"\bold and healed\b",
+    r"\bfully healed\b",
+    r"\bits healed\b",
+    r"\bfully recovered\b",
+    r"\ball good now\b",
+    r"\bfine now\b",
+    r"\blong time ago\b",
+    r"\bits old\b",
+    r"\bold one\b",
+    r"\b\d+\s+years?\s+ago\b",
+    r"\byears?\s+ago\b",
+    r"\b\d+\s+months?\s+ago\b",
+    r"\blast\s+year\b",
+    r"\bin\s+20\d{2}\b",
+    r"\bhealed\b",
+    r"\brecovered\b",
+    r"\bold\b",
+)
+_NEGATION_WORDS = frozenset({
+    "not", "no", "never", "isnt", "hasnt", "havent", "didnt", "dont",
+    "wasnt", "werent", "without", "nope",
+})
+_PAIN_OR_QUALIFIER = re.compile(
+    r"\b(?:hurts?|hurt(?:ing)?|sore|aches?|aching|stiff|flare|"
+    r"bothers?|bothering|reinjur\w*|tweaks?|tweaked|"
+    r"pains?|painful|mostly|almost)\b"
+    r"|\bacting\s+up\b"
+)
+_PAIN_PHRASES = (
+    (re.compile(r"\bmy knee hurts\b", re.IGNORECASE), "knee"),
+    (re.compile(r"\bknee hurts\b", re.IGNORECASE), "knee"),
+    (re.compile(r"\bknee pain\b", re.IGNORECASE), "knee"),
+    (re.compile(r"(?<!lower )(?<!low )back pain\b", re.IGNORECASE), "back"),
+    (re.compile(r"\bachilles tend(?:i|o)nitis\b", re.IGNORECASE), "achilles"),
+)
+
+
+def _injury_fold(reply):
+    """Fold, and treat a curly apostrophe the same as a straight one."""
+    if not isinstance(reply, str):
+        return ""
+    return _fold(reply.replace("\u2019", "'").replace("\u2018", "'"))
+
+
+def _asks_question(reply):
+    return isinstance(reply, str) and ("?" in reply or "？" in reply)
+
+
+def _past_spans(folded):
+    """Allowlisted past phrases, longest first, without overlap.
+
+    'N months ago' counts only when N is at least 3.
+    """
+    occupied = []
+    spans = []
+    for pattern in _PAST_SPAN:
+        for match in re.finditer(pattern, folded):
+            if any(not (match.end() <= start or match.start() >= end) for start, end in occupied):
+                continue
+            text = match.group(0)
+            if "month" in text:
+                number = re.match(r"\d+", text)
+                if number is None or int(number.group(0)) < 3:
+                    continue
+            occupied.append((match.start(), match.end()))
+            spans.append((match.start(), match.end()))
+    return spans
+
+
+def _negated_before(folded, start):
+    """True when a negation sits within the three words before this phrase."""
+    words = folded[:start].split()
+    return any(word in _NEGATION_WORDS for word in words[-3:])
+
+
+def _valid_past(reply):
+    """An allowlisted past phrase, with no nearby negation and no pain word.
+
+    The phrase has to be one of the old-injury lines. A question mark, a
+    negation within three words, or a pain or qualifier word anywhere in
+    the message means it is not a past marker.
+    """
+    if _asks_question(reply):
+        return False
+    folded = _injury_fold(reply)
+    if not folded or _PAIN_OR_QUALIFIER.search(folded):
+        return False
+    return any(not _negated_before(folded, start) for start, _end in _past_spans(folded))
+
+
+def _rejected_past(reply):
+    """A past-looking phrase that fails the allowlist. It does not skip the hold."""
+    if _valid_past(reply):
+        return False
+    folded = _injury_fold(reply)
+    spans = _past_spans(folded)
+    if not spans:
+        return False
+    if _PAIN_OR_QUALIFIER.search(folded):
         return True
-    for match in re.finditer(r"\b(\d+)\s+months?\s+ago\b", folded):
-        if int(match.group(1)) >= 3:
-            return True
-    return False
+    return all(_negated_before(folded, start) for start, _end in spans)
+
+
+def _old_injury_reply(reply):
+    """True only when the whole reply is an allowlisted old-injury answer."""
+    if _asks_question(reply):
+        return False
+    folded = _injury_fold(reply)
+    if not folded:
+        return False
+    return _OLD_REPLY.fullmatch(folded) is not None
+
+
+def _past_marker(reply):
+    """Backward-compatible name. Only an allowlisted past phrase counts."""
+    return _valid_past(reply)
+
+
+def _pain_phrase_label(folded):
+    found = []
+    for pattern, label in _PAIN_PHRASES:
+        if pattern.search(folded) and label not in found:
+            found.append(label)
+    return ", ".join(found)
+
+
+def _pending_injury_label(reply):
+    folded = _fold(reply) if isinstance(reply, str) else ""
+    labels = []
+    for label in (_named_injury_label(folded), _pain_phrase_label(folded)):
+        for part in label.split(","):
+            part = part.strip()
+            if part and part not in labels:
+                labels.append(part)
+    return ", ".join(labels)
+
+
+def _injury_rest(reply):
+    text = reply if isinstance(reply, str) else ""
+    for phrase, _label in _NAMED_INJURIES:
+        text = re.sub(rf"\b{re.escape(phrase)}\b", " ", text, flags=re.IGNORECASE)
+    for pattern, _label in _PAIN_PHRASES:
+        text = pattern.sub(" ", text)
+    return text
 
 
 def _acute_marker(reply):
@@ -1607,11 +1830,21 @@ def _injury_context(folded):
 
 
 def _untimed_named_injury(reply):
-    """A named injury with no past marker and no acute wording."""
+    """A named injury with no allowlisted past phrase and no acute wording."""
     folded = _fold(reply) if isinstance(reply, str) else ""
     if not _named_injury_present(folded):
         return False
-    if _past_marker(reply) or _acute_marker(reply):
+    if _valid_past(reply) or _acute_marker(reply) or _rejected_past(reply):
+        return False
+    return True
+
+
+def _untimed_pain_phrase(reply):
+    """Knee, back, or achilles pain with no time marker. It asks, it does not store."""
+    folded = _fold(reply) if isinstance(reply, str) else ""
+    if not _pain_phrase_label(folded):
+        return False
+    if _valid_past(reply) or _acute_marker(reply) or _rejected_past(reply):
         return False
     return True
 
@@ -1636,9 +1869,11 @@ def _pain_happening_now(folded):
 def _symptom_hold(reply):
     """Scan first. Hold a current symptom.
 
-    A named injury skips the hold only with an explicit past marker and no
-    acute wording anywhere. No time marker does not hold: the caller asks
-    whether it is old or recent. Acute wording holds for every area.
+    A named injury skips the hold only when the past marker is an allowlisted
+    phrase, with no negation within three words and no pain or qualifier
+    word in the message. A negated or painful past phrase holds. No time
+    marker does not hold: the caller asks whether it is old or recent.
+    Acute wording holds for every area.
     """
     from record_confirmation import reply_pause
 
@@ -1652,15 +1887,15 @@ def _symptom_hold(reply):
         return _plain_pause()
     if _acute_marker(reply) and _injury_context(folded):
         return paused if paused is not None else _plain_pause()
-    if _named_injury_present(folded) and _past_marker(reply):
-        _matched, rest = _strip_named_injury(reply)
-        rest_pause = reply_pause(rest)
+    if _named_injury_present(folded) and _valid_past(reply):
+        rest_pause = reply_pause(_injury_rest(reply))
         if rest_pause is None:
             return None
         return rest_pause
-    if _untimed_named_injury(reply):
-        _matched, rest = _strip_named_injury(reply)
-        return reply_pause(rest)
+    if (_named_injury_present(folded) or _pain_phrase_label(folded)) and _rejected_past(reply):
+        return paused if paused is not None else _plain_pause()
+    if _untimed_named_injury(reply) or _untimed_pain_phrase(reply):
+        return reply_pause(_injury_rest(reply))
     if paused is None:
         return None
     return paused
@@ -1702,7 +1937,7 @@ def _store_named_injury(state, reply):
 
 
 def _ask_injury_when(state, reply):
-    state["pending_injury"] = _named_injury_label(_fold(reply))
+    state["pending_injury"] = _pending_injury_label(reply)
     state["awaiting"] = "injury_when"
     state["confirmed"] = False
     state["record"] = None
@@ -1712,15 +1947,8 @@ def _ask_injury_when(state, reply):
 
 
 def _injury_when_kind(reply):
-    """'store' for old or healed. Anything recent, painful, or unclear holds."""
-    folded = _fold(reply) if isinstance(reply, str) else ""
-    from record_confirmation import reply_pause
-
-    if _acute_marker(reply) or reply_pause(reply) is not None:
-        return "hold"
-    if re.search(r"\b(?:recent|painful)\b", folded):
-        return "hold"
-    if re.search(r"\b(?:old|healed)\b", folded):
+    """'store' only for an allowlisted whole reply. Anything else holds."""
+    if _old_injury_reply(reply):
         return "store"
     return "hold"
 
@@ -1837,7 +2065,7 @@ def apply_reply(state, reply):
         _take_injury_answer(state, reply)
         return
     folded = _fold(reply)
-    if phase == "confirm" and _untimed_named_injury(reply):
+    if phase == "confirm" and (_untimed_named_injury(reply) or _untimed_pain_phrase(reply)):
         _ask_injury_when(state, reply)
         return
     if phase == "confirm" and _handle_confirm(state, reply):
@@ -2235,11 +2463,20 @@ def _handle_blocked(state, reply):
 
 
 def _schedule_aside(reply):
-    """A clock or a list of weekdays. It does not ask for the age again."""
+    """A clock or a list of weekdays. It does not ask for the age again.
+
+    'yes at 7', 'at 6 am', and '10 am' are times. A bare 'at 7' is not.
+    """
     if not isinstance(reply, str):
         return False
-    raw = " ".join(reply.strip().lower().split())
+    raw = " ".join(reply.strip().lower().split()).strip(".,!;")
     if re.fullmatch(r"\d{1,2}:\d{2}(?:\s*(?:am|pm))?", raw):
+        return True
+    if re.fullmatch(r"yes,?\s+at\s+(?:[1-9]|1[0-2])", raw):
+        return True
+    if re.fullmatch(r"at\s+(?:[1-9]|1[0-2])\s*(?:am|pm)", raw):
+        return True
+    if re.fullmatch(r"(?:[1-9]|1[0-2])\s*(?:am|pm)", raw):
         return True
     folded = _fold(reply)
     tokens = folded.split()
@@ -2261,7 +2498,7 @@ def _handle_confirm(state, reply):
     and the plan is shown again.
     """
     folded = _fold(reply)
-    if _named_injury_present(folded) and _past_marker(reply) and not _acute_marker(reply):
+    if _named_injury_present(folded) and _valid_past(reply) and not _acute_marker(reply):
         _store_named_injury(state, reply)
         state["error"] = None
         state["awaiting"] = None

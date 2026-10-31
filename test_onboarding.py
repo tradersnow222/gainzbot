@@ -1700,7 +1700,7 @@ def test_want_days_is_not_a_target_weight():
     ordered, ordered_bots = run_chat(["current 90 kg, want 200"])
     assert ordered["answers"].get("target") in (None, "")
     assert ordered["answers"]["weight"] == "90 kg"
-    assert ordered_bots[-1] == _TARGET_ASK
+    assert ordered_bots[-1] == "That target looks far from 90 kg. What goal weight do you want?"
     close, _close_bots = run_chat(["current 90 kg, want 100"])
     assert close["answers"]["target"] == "100 kg"
     pounds, _pounds_bots = run_chat(["current 90 kg, want 200 lb"])
@@ -1897,6 +1897,79 @@ def test_a_clearly_old_injury_at_confirm_stores_and_reproposes():
     assert done["answers"]["injuries"] == "knee"
 
 
+def test_only_an_allowlisted_reply_stores_an_injury_as_old():
+    from onboarding import _INJURY_WHEN, hold_is_active
+
+    training = "general training, 3 days 45 min, dumbbells, beginner, none"
+    blocked = (
+        "not healed",
+        "hasnt healed",
+        "no its not old",
+        "old?",
+        "its old but it hurts",
+        "old but sore",
+        "old but acting up",
+        "old but tweaked it again",
+        "old reinjured last week",
+        "mostly healed",
+        "almost healed",
+    )
+    for answer in blocked:
+        state, bots = run_chat([
+            "hello",
+            "cut, male, 60 kg, 170 cm, torn acl",
+            answer,
+            "25",
+            training,
+            "all no",
+            "yes",
+        ])
+        assert state["confirmed"] is False, answer
+        assert "one yes confirms the plan" not in bots[-1].lower(), answer
+        _drop_hold()
+    one, one_bots = run_chat([
+        "hello",
+        "cut, male, 60 kg, 170 cm, torn acl, not healed",
+        "25",
+        training,
+        "all no",
+        "yes",
+    ])
+    assert one["confirmed"] is False
+    assert one["phase"] == "symptom"
+    assert one["answers"].get("injuries") in (None, "")
+    assert hold_is_active()
+    assert "one yes confirms the plan" not in one_bots[-1].lower()
+    _drop_hold()
+    for phrase in ("my knee hurts", "knee pain", "back pain", "achilles tendinitis"):
+        asked, asked_bots = run_chat([f"hold, male, 80 kg, 180 cm, {phrase}"])
+        assert asked["answers"].get("injuries") in (None, ""), phrase
+        assert asked["phase"] != "symptom", phrase
+        assert hold_is_active() is False, phrase
+        assert asked_bots[-1] == _INJURY_WHEN, phrase
+        _drop_hold()
+    stored, stored_bots = run_chat([
+        "hold, male, 80 kg, 180 cm, knee pain",
+        "its old",
+        "30",
+        "ok",
+        "all no",
+        "yes",
+    ])
+    assert stored["confirmed"] is True
+    assert stored["answers"]["injuries"] == "knee"
+    assert "I kept weight off your knee." in "\n".join(stored_bots)
+    painful, _pain_bots = run_chat([
+        "hold, male, 80 kg, 180 cm, my knee hurts",
+        "it hurts",
+    ])
+    assert painful["confirmed"] is False
+    assert painful["phase"] == "symptom"
+    assert painful["answers"].get("injuries") in (None, "")
+    assert hold_is_active()
+    _drop_hold()
+
+
 def test_joined_age_cues_and_times_at_confirm():
     from onboarding import _AGE_ASK
 
@@ -1933,6 +2006,21 @@ def test_joined_age_cues_and_times_at_confirm():
     at_six, at_bots = run_chat(list(_AGE_25) + ["at 6 am"])
     assert at_six["answers"]["age"] == "25"
     assert at_six["confirmed"] is False
+    assert at_six["phase"] == "confirm"
+    assert at_bots[-1].startswith("Plan for age 25.")
+    assert _AGE_ASK not in at_bots[-1]
+    yes_at, yes_bots = run_chat(list(_AGE_25) + ["yes at 7"])
+    assert yes_at["confirmed"] is False
+    assert yes_at["phase"] == "confirm"
+    assert yes_at["answers"]["age"] == "25"
+    assert yes_bots[-1].startswith("Plan for age 25.")
+    assert _AGE_ASK not in yes_bots[-1]
+    ten, ten_bots = run_chat(list(_AGE_25) + ["10 am"])
+    assert ten["confirmed"] is False
+    assert ten["phase"] == "confirm"
+    assert ten["answers"]["age"] == "25"
+    assert ten_bots[-1].startswith("Plan for age 25.")
+    assert _AGE_ASK not in ten_bots[-1]
 
 
 def test_a_later_weight_is_bounded_against_the_target_and_a_lift_is_not_body_weight():
@@ -1954,3 +2042,21 @@ def test_a_later_weight_is_bounded_against_the_target_and_a_lift_is_not_body_wei
     assert lifted["answers"]["target"] == "64 kg"
     assert lifted_bots[-1] == _CURRENT_WEIGHT_ASK
     assert "looks off" not in lifted_bots[-1].lower()
+    kept, kept_bots = run_chat(["80 kg, want 48 kg"])
+    assert kept["answers"]["weight"] == "80 kg"
+    assert kept["answers"]["target"] == "48 kg"
+    assert "far from" not in kept_bots[-1].lower()
+    assert "looks off" not in kept_bots[-1].lower()
+    far, far_bots = run_chat(["80 kg, want 40 kg"])
+    assert far["answers"]["weight"] == "80 kg"
+    assert far["answers"].get("target") in (None, "")
+    assert far_bots[-1] == "That target looks far from 80 kg. What goal weight do you want?"
+    second, second_bots = run_chat(["80 kg, want 40 kg", "30 kg"])
+    assert second["answers"]["weight"] == "80 kg"
+    assert second["answers"].get("target") in (None, "")
+    assert second_bots[-1].startswith("Goal, weight, target")
+    assert "far from" not in second_bots[-1].lower()
+    third, third_bots = run_chat(["80 kg, want 40 kg", "want 20 kg"])
+    assert third["answers"]["weight"] == "80 kg"
+    assert third["answers"].get("target") in (None, "")
+    assert third_bots[-1].startswith("Goal, weight, target")
