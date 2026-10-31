@@ -28,7 +28,7 @@ List every red-flag item, then ask the 4 scores in the same message:
 
 Ask sleep hours, soreness from 1 to 5, energy from 1 to 5, and stress from 1 to 5.
 
-Accept "none". That means record every checklist item as no. Then still call `red_flag_check.scan_check_in`. Do not skip the call. "accepts none" counts only when the full red-flag list was shown in that same message. A partial, vague or skipped reply pauses and goes to readiness_screen.
+Accept "none". That means record every checklist item as no. Then still call `red_flag_check.scan_check_in`. Do not skip the call. "accepts none" counts only when the full red-flag list was shown in that same message. A partial, vague or skipped reply means ask again, and don't continue until scan_check_in passes.
 
 If the check pauses, stop. Pass on that check's own recommendation, including urgent care or emergency services. Don't train through pain.
 

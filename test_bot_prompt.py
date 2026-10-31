@@ -135,12 +135,24 @@ def test_first_run_clones_the_repo_and_uses_that_path():
     assert "do not fall back to main" in PROMPT.lower()
     assert "do not fall back to main" in QUICKSTART.lower()
     existing = "git -C /workspace/gainzbot describe --tags --exact-match"
+    porcelain = "git -C /workspace/gainzbot status --porcelain"
+    fetch = "git -C /workspace/gainzbot fetch --depth 1 origin tag <newer-tag>"
+    checkout = "git -C /workspace/gainzbot checkout <newer-tag>"
     assert existing in PROMPT
     assert existing in QUICKSTART
     assert existing in README
-    for text in (PROMPT.lower(), QUICKSTART.lower(), README.lower()):
-        assert "if it isn't a git repo or the tag doesn't match, stop and ask the user" in text
-        assert "never delete, move or overwrite" in text
+    for text in (PROMPT, QUICKSTART, README):
+        assert porcelain in text
+        assert fetch in text
+        assert checkout in text
+        lowered = text.lower()
+        assert "if it isn't a git repo or the tag doesn't match, stop and ask the user" in lowered
+        assert "never delete, move or overwrite" in lowered
+        assert "any local edits mean stop and ask" in lowered
+        assert "never discard them" in lowered
+        assert "to upgrade an existing install to a newer tag" in lowered
+        assert "do not delete `/workspace/gainzbot/data/`" in lowered
+        assert "git clean -x" in lowered
     assert "every file path in `template/template.json` is relative to the repo root" in QUICKSTART.lower()
     assert TEMPLATE["release_tag"] == "v0.1.0"
     assert "the second message runs readiness_screen, then check_in, then plan_check, then shows the proposal, then asks for the yes" in PROMPT.lower()

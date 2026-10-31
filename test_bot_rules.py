@@ -91,7 +91,7 @@ def test_accepts_none_only_after_the_full_red_flag_list():
     prompt = Path("BOT_PROMPT.md").read_text(encoding="utf-8").lower()
     guide = Path("template/daily-checkin.md").read_text(encoding="utf-8").lower()
     counted = '"accepts none" counts only when the full red-flag list was shown in that same message'
-    paused = "a partial, vague or skipped reply pauses and goes to readiness_screen"
+    paused = "a partial, vague or skipped reply means ask again, and don't continue until scan_check_in passes"
     for text in (RULES.lower(), prompt, guide):
         assert counted in text
         assert paused in text
