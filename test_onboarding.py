@@ -202,6 +202,7 @@ _AGE_25 = (
         "hold, male, 80 kg, 180 cm, general training, 3 days 45 min, bodyweight, beginner"
     ),
     "25",
+    "none",
     "all_no",
 )
 
@@ -839,7 +840,50 @@ def test_make_it_4_days_at_confirm_updates_the_profile_and_reproposes():
     assert len(done["record"].plan_hash) > 0
 
 
-def test_happy_path_confirms_in_five_bot_turns_or_fewer():
+def test_a_pass_after_a_follow_up_does_not_confirm():
+    prof = (
+        "hold, male, 80 kg, 180 cm, general training, 3 days 45 min, bodyweight, beginner, no injuries"
+    )
+    passed = _labels()
+    base = ["hello", (prof, passed), "30", "none", "all_no", "yes but im 15"]
+    for extra in (("yes", passed), ("ok", passed), ("sounds good", passed), ("lets go", passed), "yes", "ok"):
+        _drop_hold()
+        state, _bots = run_chat(base + [extra])
+        assert state["confirmed"] is False, extra
+    _drop_hold()
+    invalid = {
+        "minor_signal": False,
+        "red_flag": "none",
+        "injury": "maybe",
+        "note_ok": False,
+    }
+    state, _bots = run_chat(["hello", (prof, passed), "30", "none", "all_no", ("yes but im 15", invalid), ("yes", passed)])
+    assert state["confirmed"] is False
+
+
+def test_clear_age_keeps_the_profile_facts_from_the_same_message():
+    from onboarding import _AGE_ASK
+
+    labels = _labels(minor_signal=True)
+    state, bots = run_chat([
+        "hello",
+        (
+            "hold, male, 80 kg, 180 cm, general training, 3 days 45 min, bodyweight, beginner",
+            labels,
+        ),
+    ])
+    assert state["confirmed"] is False
+    assert state["phase"] == "age"
+    assert bots[-1] == _AGE_ASK
+    assert state["answers"]["goal"] == "hold"
+    assert state["answers"]["sex"] == "male"
+    assert state["answers"]["weight"] == "80 kg"
+    assert state["answers"]["height"] == "180 cm"
+    assert state["answers"].get("age") in (None, "")
+    assert state["answers"].get("injuries") in (None, "")
+
+
+def test_happy_path_confirms_in_six_bot_turns_or_fewer():
     state, bots = run_chat(HAPPY_PATH)
     assert state["confirmed"] is True
     assert state["record"].confirmed is True
@@ -848,7 +892,7 @@ def test_happy_path_confirms_in_five_bot_turns_or_fewer():
     assert state["times"]["evening_followup"] == "20:00"
     assert state["times"]["weekly_review"] == "Sun 18:00"
     assert state["turns"] == len(bots)
-    assert len(bots) <= 5
+    assert len(bots) <= 6
     assert bots[0] == question_one()
     assert sum("one yes confirms the plan" in turn.lower() for turn in bots) == 1
     assert "each is opt-in" in bots[-2].lower()
@@ -861,13 +905,14 @@ def test_answers_in_any_order_are_kept_and_only_the_gap_is_asked():
     state, bots = run_chat([training])
     assert state["answers"]["sport"] == "running"
     assert state["answers"]["equipment"] == "dumbbells"
-    assert state["answers"]["injuries"] == "none"
+    assert state["answers"].get("injuries") in (None, "")
     assert "weight" in bots[0].lower()
     assert "par-q" not in bots[0].lower()
     done, later = run_chat([
         training,
         _marked("hold, male, 80 kg, 180 cm"),
         "30",
+        "none",
         "all_no",
         "yes",
     ])
@@ -882,7 +927,7 @@ def test_everything_at_once_skips_questions_already_answered():
     )
     asked, asked_bots = run_chat([blob])
     assert asked["answers"].get("age") in (None, "")
-    assert asked["answers"]["injuries"] == "none"
+    assert asked["answers"].get("injuries") in (None, "")
     assert asked_bots[-1] == "How old are you? Please type the number."
     state, bots = run_chat([blob, "30", "yes"])
     assert state["confirmed"] is False
@@ -895,7 +940,7 @@ def test_everything_at_once_skips_questions_already_answered():
     assert state["answers"]["training_days"] == "3"
     assert state["par_q"] == {}
     assert "one yes confirms the plan" not in bots[-1].lower()
-    done, later = run_chat([blob, "30", "all_no", "yes"])
+    done, later = run_chat([blob, "30", "none", "all_no", "yes"])
     assert done["confirmed"] is True
     assert len(done["par_q"]) == len(PAR_Q)
     assert all(value is False for value in done["par_q"].values())
@@ -980,6 +1025,7 @@ def test_par_q_answers_are_kept_and_a_mixed_reply_asks_only_the_gap():
     body = [
         _marked("hold, male, 80 kg, 180 cm, general training, 3 days 45 min, bodyweight, beginner"),
         "30",
+        "none",
     ]
     skipped, skip_bots = run_chat(body + ["skip", "yes"])
     assert skipped["confirmed"] is False
@@ -1102,7 +1148,7 @@ def test_all_no_counts_only_when_the_whole_reply_is_that_phrase():
         assert state["confirmed"] is False, reply
         assert state["par_q"] == {}, reply
         _drop_hold()
-    button, _button_bots = run_chat(body + ["all_no", "yes"])
+    button, _button_bots = run_chat(body + ["none", "all_no", "yes"])
     assert button["confirmed"] is True
     assert len(button["par_q"]) == len(PAR_Q)
     assert all(value is False for value in button["par_q"].values())
@@ -1241,9 +1287,10 @@ def test_the_round3_transcript_asks_age_then_confirms(monkeypatch):
         "30 min, mon wed fri. I also run a parkrun 5k most saturdays. I wear an oura ring"
     )
     replies = [
-        "hey! a friend said you could help me get in shape",
+        _marked("hey! a friend said you could help me get in shape"),
         _marked(profile),
         "41",
+        "none",
         "all_no",
         "yes, morning 6:15",
     ]
@@ -1464,6 +1511,7 @@ def test_a_minor_cue_after_the_age_clears_the_adult_age():
         "hello",
         _marked("cut, male, 60 kg, 170 cm, general training, 3 days 45 min, dumbbells, beginner"),
         "25",
+        "none",
         "all_no",
     ]
     cues = (
@@ -1517,6 +1565,9 @@ def _drop_hold():
     if os.path.exists(path):
         os.remove(path)
     onboarding._memory_hold = None
+    from safety_pending import clear_pending
+
+    clear_pending(os.path.dirname(path), "onboarding")
 
 
 def test_an_acute_structural_injury_holds_and_a_later_chat_stays_held():

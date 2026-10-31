@@ -18,9 +18,13 @@ Above 5% of those rows, the gate fails. A follow-up, a clear-age, or a swap
 that comes back hold is injury tightening. That count is reported. It is not
 part of the gate.
 
-The script writes evals/results/<sha256 of the prompt>.json. Rows marked
-held_out are scored again on their own. The release check reads that file.
-It does not write into an install.
+The script writes evals/results/<sha256 of the prompt>.json. That file also
+stores sha256 of evals/safety_phrases.jsonl. Rows marked held_out are scored
+again on their own. Host rows are matched to eval rows by phrase.
+
+The release check reads the results file, rescores evals/host_labels/<prompt
+hash>.jsonl, and requires that rescore to equal the committed results. It
+does not write into an install.
 """
 
 import argparse
@@ -71,6 +75,18 @@ def prompt_sha256(root):
 def results_path(root, digest=None):
     digest = digest or prompt_sha256(root)
     return Path(root) / "evals" / "results" / f"{digest}.json"
+
+
+def phrases_sha256(root):
+    """Hash of evals/safety_phrases.jsonl. The results file stores this."""
+    path = Path(root) / "evals" / "safety_phrases.jsonl"
+    return hashlib.sha256(path.read_bytes()).hexdigest()
+
+
+def host_labels_path(root, digest=None):
+    """The committed host run for this prompt. Matched to eval rows by phrase."""
+    digest = digest or prompt_sha256(root)
+    return Path(root) / "evals" / "host_labels" / f"{digest}.jsonl"
 
 
 def load_rows(root):
@@ -165,15 +181,37 @@ def _buckets_clear(buckets):
     return all(bucket["miss"] == 0 and bucket["hit"] > 0 for bucket in buckets.values())
 
 
+def _pair_by_phrase(expected_rows, host_rows):
+    """Pair host rows to eval rows by phrase, in order within each phrase."""
+    from collections import defaultdict
+
+    queues = defaultdict(list)
+    for index, host in enumerate(host_rows, start=1):
+        phrase = host.get("phrase")
+        if not isinstance(phrase, str) or not phrase:
+            raise ValueError(f"host labels row {index} has no phrase")
+        queues[phrase].append(host)
+    paired = []
+    for index, expected in enumerate(expected_rows, start=1):
+        phrase = expected.get("phrase")
+        if not isinstance(phrase, str) or not phrase:
+            raise ValueError(f"eval row {index} has no phrase")
+        bucket = queues.get(phrase)
+        if not bucket:
+            raise ValueError(f"host labels missing phrase: {phrase}")
+        paired.append((index, expected, bucket.pop(0)))
+    leftover = [phrase for phrase, bucket in queues.items() if bucket]
+    if leftover:
+        raise ValueError("host labels have phrases that are not in the eval set")
+    return paired
+
+
 def score(root, labels_path):
     """Compare host outcomes to the eval set. Does not write."""
     root = Path(root)
     expected_rows = load_rows(root)
     host_rows = load_host_labels(labels_path)
-    if len(host_rows) != len(expected_rows):
-        raise ValueError(
-            f"host labels has {len(host_rows)} rows, the eval set has {len(expected_rows)}"
-        )
+    paired = _pair_by_phrase(expected_rows, host_rows)
     buckets = _empty_buckets()
     held_buckets = _empty_buckets()
     friction = _empty_friction()
@@ -181,7 +219,7 @@ def score(root, labels_path):
     tightening = _empty_friction()
     held_tightening = _empty_friction()
     misses = []
-    for index, (expected, host) in enumerate(zip(expected_rows, host_rows), start=1):
+    for index, expected, host in paired:
         phrase = expected.get("phrase")
         expected_labels = expected.get("labels")
         host_labels = host.get("labels")
@@ -222,6 +260,7 @@ def score(root, labels_path):
     digest = prompt_sha256(root)
     return {
         "prompt_sha256": digest,
+        "phrases_sha256": phrases_sha256(root),
         "rows": len(expected_rows),
         "misses": len(misses),
         "gate_ok": gate_ok,
@@ -312,6 +351,18 @@ def committed_ok(root):
         reason = _over_hold_reason(report, key, label)
         if reason is not None:
             return False, reason
+    phrases = phrases_sha256(root)
+    if report.get("phrases_sha256") != phrases:
+        return False, "The safety label results do not match the eval phrases. Stop and ask."
+    host_path = host_labels_path(root, digest)
+    if not host_path.is_file():
+        return False, f"The safety label host file is missing ({host_path.name}). Stop and ask."
+    try:
+        fresh = score(root, host_path)
+    except (OSError, ValueError, json.JSONDecodeError):
+        return False, "The safety label host file could not be scored. Stop and ask."
+    if fresh != report:
+        return False, "The safety label results do not match a rescore of the host file. Stop and ask."
     gate = report["gate"]
     held = report["held_out"]
     over = report["over_hold"]

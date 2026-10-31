@@ -467,6 +467,9 @@ class DailyLoop:
             if blocked:
                 return blocked
             return saved
+        pending = self._pending(day)
+        if pending:
+            return self._pending_open(day, pending)
         self.notes[day] = {}
         self.phase[day] = "symptom"
         if self._rest_day(day):
@@ -611,6 +614,9 @@ class DailyLoop:
         if hard_stop(reply):
             self.notes.setdefault(day, {})["reply"] = reply
             return self._remember_pause(day, _safety_line(reply))
+        pending_reply = self._gate_pending(day, reply, labels)
+        if pending_reply is not None:
+            return pending_reply
         gated = self._labels_before_workout(day, reply, labels)
         if gated is not None:
             return gated
@@ -692,12 +698,17 @@ class DailyLoop:
         if action == "hold":
             return self._remember_pause(day, _label_hold_text(reply, labels))
         if action == "clear_age":
+            self._write_pending(day, "age_check")
             self.phase[day] = "symptom"
             return "How old are you? Please type the number."
         if action == "follow_up":
             self._set_unclear(day, self._unclear_count(day) + 1)
+            self._write_pending(day, "follow_up")
             self.phase[day] = "symptom"
             return _SYMPTOM
+        if action == "swap":
+            self._remember_old_injury(day, reply)
+            return self._after_symptom(day, reply)
         if action == "note" and isinstance(reply, str):
             self.notes.setdefault(day, {})["note"] = reply
         self.phase[day] = "symptom"
@@ -709,10 +720,12 @@ class DailyLoop:
         if action == "hold":
             return self._remember_pause(day, _label_hold_text(note, labels))
         if action == "clear_age":
+            self._write_pending(day, "age_check")
             self.phase[day] = "symptom"
             return "How old are you? Please type the number."
         if action == "follow_up":
             self._set_unclear(day, self._unclear_count(day) + 1)
+            self._write_pending(day, "follow_up")
             self.phase[day] = "symptom"
             return _SYMPTOM
         words = re.findall(r"[a-z]+", _fold(note))
@@ -724,6 +737,7 @@ class DailyLoop:
             return self._after_symptom(day, prefix)
         if action == "swap":
             self.notes.setdefault(day, {})["injury"] = note
+            self._remember_old_injury(day, note)
             return self._after_symptom(day, prefix)
         if action == "pass":
             return self._after_symptom(day, prefix)
@@ -804,6 +818,7 @@ class DailyLoop:
         self.phase[day] = "paused"
         self.hold_text[day] = text
         self._write_pause(day, text)
+        self._write_pending(day, "hold", message=text)
         return text
 
     def _text_pause(self, reply):
@@ -968,6 +983,16 @@ class DailyLoop:
         return None
 
     def _workout(self, day):
+        pending = self._pending(day)
+        if isinstance(pending, dict):
+            if pending.get("kind") == "age_check":
+                return "How old are you? Please type the number."
+            if pending.get("kind") == "hold":
+                text = pending.get("message") or self._saved_pause(day)
+                if isinstance(text, str) and text.strip():
+                    return text
+                return "Rest today. Come back tomorrow, or after you see a doctor."
+            return self._phase_prompt(self.phase.get(day))
         blocked = self._before_training(day)
         if blocked:
             return blocked
@@ -1003,6 +1028,7 @@ class DailyLoop:
             else:
                 session_minutes = available
                 lead = f"{name}."
+            exercises = self._with_old_injury(day, exercises)
             names = []
             for item in exercises:
                 if isinstance(item, dict) and isinstance(item.get("name"), str):
@@ -1060,6 +1086,127 @@ class DailyLoop:
         self.phase[day] = "workout"
         return text
 
+    def _safety_directory(self):
+        return os.path.dirname(os.path.abspath(self._pause_file()))
+
+    def _pending(self, day):
+        from safety_pending import read_pending
+
+        return read_pending(self._safety_directory(), day, "daily")
+
+    def _write_pending(self, day, kind, **extra):
+        from safety_pending import write_pending
+
+        return write_pending(self._safety_directory(), kind, day, "daily", **extra)
+
+    def _clear_pending(self):
+        from safety_pending import clear_pending
+
+        return clear_pending(self._safety_directory(), "daily")
+
+    def _remember_old_injury(self, day, text):
+        if isinstance(text, str) and text.strip():
+            self.notes.setdefault(day, {})["old_injury"] = text
+
+    def _pending_open(self, day, pending):
+        """Opening the morning does not prescribe over a pending record."""
+        kind = pending.get("kind")
+        if kind == "hold":
+            self.phase[day] = "paused"
+            text = pending.get("message") or self._saved_pause(day)
+            if not isinstance(text, str) or not text.strip():
+                text = "Rest today. Come back tomorrow, or after you see a doctor."
+            self.hold_text[day] = text
+            return text
+        if kind == "age_check":
+            return "How old are you? Please type the number."
+        return self._phase_prompt(self.phase.get(day) or "symptom")
+
+    def _gate_pending(self, day, reply, labels):
+        """Structured input only. Anything else does not prescribe or log."""
+        from safety_pending import resolves_follow_up, typed_age
+
+        pending = self._pending(day)
+        if not isinstance(pending, dict):
+            return None
+        kind = pending.get("kind")
+        if kind == "hold":
+            self.phase[day] = "paused"
+            text = pending.get("message") or self._saved_pause(day) or self.hold_text.get(day)
+            if not isinstance(text, str) or not text.strip():
+                text = "Rest today. Come back tomorrow, or after you see a doctor."
+            return text
+        if kind == "age_check":
+            number = typed_age(reply) if labels is None else None
+            if number is None or number < 13 or number > 100:
+                return "How old are you? Please type the number."
+            if number < 18:
+                return self._remember_pause(
+                    day, "Rest today. Come back tomorrow, or after you see a doctor."
+                )
+            self._clear_pending()
+            return self._phase_prompt(self.phase.get(day))
+        if kind == "follow_up":
+            button = None
+            if labels is None:
+                from onboarding import _injury_button
+
+                button = _injury_button(reply)
+            if resolves_follow_up(labels, button=button):
+                self._clear_pending()
+                self._set_unclear(day, 0)
+                return self._resolve_follow_up(day, reply, labels, button)
+            return self._remember_pause(
+                day, "Rest today. Come back tomorrow, or after you see a doctor."
+            )
+        return self._remember_pause(
+            day, "Rest today. Come back tomorrow, or after you see a doctor."
+        )
+
+    def _resolve_follow_up(self, day, reply, labels, button):
+        """Store the structured answer. This turn does not prescribe or log."""
+        if button == "current":
+            return self._remember_pause(
+                day, "Rest today. Come back tomorrow, or after you see a doctor."
+            )
+        if button == "old":
+            self._remember_old_injury(day, reply)
+            return self._phase_prompt(self.phase.get(day))
+        action = label_action(labels, 0)
+        if action == "clear_age":
+            self._write_pending(day, "age_check")
+            return "How old are you? Please type the number."
+        if action == "hold":
+            return self._remember_pause(day, _label_hold_text(reply, labels))
+        if action == "swap":
+            self._remember_old_injury(day, reply)
+            return self._phase_prompt(self.phase.get(day))
+        return self._phase_prompt(self.phase.get(day))
+
+    def _with_old_injury(self, day, exercises):
+        """injury=old swaps the lifts that load the area named in the reply."""
+        text = (self.notes.get(day) or {}).get("old_injury")
+        if not isinstance(text, str) or not text.strip():
+            return exercises
+        from plan_builder import _blocks_exercise, _injury_replacements
+
+        kept = []
+        for item in exercises:
+            name = item.get("name") if isinstance(item, dict) else item
+            if isinstance(name, str) and _blocks_exercise(name, text):
+                continue
+            kept.append(item)
+        for extra in _injury_replacements(text):
+            already = False
+            for item in kept:
+                current = item.get("name") if isinstance(item, dict) else item
+                if current == extra:
+                    already = True
+                    break
+            if not already:
+                kept.append({"name": extra, "sets": 3, "reps": "8-12"})
+        return kept
+
     def _labels_before_workout(self, day, reply, labels):
         """Label action before any workout. Free text in later phases needs labels."""
         phase = self.phase.get(day)
@@ -1068,7 +1215,10 @@ class DailyLoop:
             if action == "hold":
                 return self._remember_pause(day, _label_hold_text(reply, labels))
             if action == "clear_age":
+                self._write_pending(day, "age_check")
                 return "How old are you? Please type the number."
+            if action == "swap":
+                self._remember_old_injury(day, reply)
             if action not in {"note", "pass", "swap"}:
                 count = self._unclear_count(day)
                 if count >= 1:
@@ -1076,6 +1226,7 @@ class DailyLoop:
                         day, "Rest today. Come back tomorrow, or after you see a doctor."
                     )
                 self._set_unclear(day, count + 1)
+                self._write_pending(day, "follow_up")
                 return self._phase_prompt(phase)
         elif phase in {"morning2", "signals"} and not _score_exact(reply):
             count = self._unclear_count(day)
@@ -1084,6 +1235,7 @@ class DailyLoop:
                     day, "Rest today. Come back tomorrow, or after you see a doctor."
                 )
             self._set_unclear(day, count + 1)
+            self._write_pending(day, "follow_up")
             return self._phase_prompt(phase)
         elif phase == "evening" and not _evening_exact(reply):
             count = self._unclear_count(day)
@@ -1092,8 +1244,19 @@ class DailyLoop:
                     day, "Rest today. Come back tomorrow, or after you see a doctor."
                 )
             self._set_unclear(day, count + 1)
+            self._write_pending(day, "follow_up")
             self.phase[day] = "evening"
             return _EVENING
+        elif phase == "symptom" and labels is None and not symptom_is_clear(reply) and not _split_scored_no(reply):
+            count = self._unclear_count(day)
+            if count >= 1:
+                return self._remember_pause(
+                    day, "Rest today. Come back tomorrow, or after you see a doctor."
+                )
+            self._set_unclear(day, count + 1)
+            self._write_pending(day, "follow_up")
+            self.phase[day] = "symptom"
+            return _SYMPTOM
         return None
 
     def _phase_prompt(self, phase):
@@ -1109,9 +1272,13 @@ class DailyLoop:
             if action == "hold":
                 return self._remember_pause(day, _label_hold_text(reply, labels))
             if action == "clear_age":
+                self._write_pending(day, "age_check")
                 return "How old are you? Please type the number."
+            if action == "swap":
+                self._remember_old_injury(day, reply)
             if action not in {"note", "pass", "swap"}:
                 self._set_unclear(day, self._unclear_count(day) + 1)
+                self._write_pending(day, "follow_up")
                 self.phase[day] = "evening"
                 return _EVENING
         elif not _evening_exact(reply):

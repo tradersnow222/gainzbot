@@ -55,6 +55,7 @@ _PASS_LABELS = {
 }
 
 # The profile line carries host labels. "all_no" is the PAR-Q button, not typed text.
+# Injuries are a tap. The profile sentence does not fill them.
 HAPPY_PATH = (
     "hello",
     (
@@ -62,6 +63,7 @@ HAPPY_PATH = (
         _PASS_LABELS,
     ),
     "30",
+    "none",
     "all_no",
     "yes",
 )
@@ -1405,6 +1407,58 @@ def _clear_age(state):
     _clear_proposal(state)
 
 
+def _safety_directory():
+    return os.path.dirname(os.path.abspath(onboarding_state_path()))
+
+
+def _read_safety():
+    from safety_pending import read_pending
+
+    return read_pending(_safety_directory(), _local_today(), "onboarding")
+
+
+def _write_safety(kind, **extra):
+    from safety_pending import write_pending
+
+    return write_pending(_safety_directory(), kind, _local_today(), "onboarding", **extra)
+
+
+def _clear_safety():
+    from safety_pending import clear_pending
+
+    return clear_pending(_safety_directory(), "onboarding")
+
+
+def _follow_up_open(state=None):
+    """True when a follow-up is still waiting on a structured answer."""
+    if isinstance(state, dict) and state.get("safety_followup"):
+        return True
+    pending = _read_safety()
+    return isinstance(pending, dict) and pending.get("kind") == "follow_up"
+
+
+def _adopt_pending(state):
+    """A record already on disk applies to a new conversation the same day."""
+    pending = _read_safety()
+    if not isinstance(pending, dict):
+        return state
+    kind = pending.get("kind")
+    if kind == "follow_up":
+        state["safety_followup"] = True
+        state["label_unclear"] = 1
+    elif kind == "age_check":
+        state["phase"] = "age"
+        state["need_age"] = True
+        state["answers"].pop("age", None)
+        state["error"] = _AGE_ASK
+    elif kind == "hold" and state.get("phase") != "symptom":
+        state["phase"] = "symptom"
+        state["confirmed"] = False
+        message = pending.get("message")
+        state["error"] = message if isinstance(message, str) and message.strip() else _REST_LINE
+    return state
+
+
 def submit_age(state, age):
     """Store a typed age. 13 to 100 only. Under 18 means no plan.
 
@@ -1416,12 +1470,16 @@ def submit_age(state, age):
         state["awaiting"] = None
         state["need_age"] = True
         state["error"] = _AGE_ASK
+        if (_read_safety() or {}).get("kind") == "age_check":
+            _write_safety("age_check")
         return True
     number = age
     state["answers"]["age"] = str(number)
     state["awaiting"] = None
     state["need_age"] = False
     _apply_age_readiness(state)
+    if (_read_safety() or {}).get("kind") == "age_check":
+        _clear_safety()
     if state.get("error"):
         if number < 18 or _first_missing(state) is None:
             state["phase"] = "blocked"
@@ -2424,6 +2482,7 @@ def _ask_label_followup(state, reply, labels):
         return
     state["label_unclear"] = count + 1
     state["safety_followup"] = True
+    _write_safety("follow_up")
     _clear_proposal(state)
     parsed, reason = validate_labels(labels) if labels is not None else (None, "missing")
     if reason is None:
@@ -2454,6 +2513,7 @@ def _apply_label_decision(state, reply, labels):
             _hold_symptom(state, reply, _plain_pause())
         return True
     if action == "clear_age":
+        _parse_profile_fields(state, reply)
         parsed, reason = validate_labels(labels)
         injury = parsed["injury"] if reason is None else "none"
         if injury != "none":
@@ -2464,16 +2524,22 @@ def _apply_label_decision(state, reply, labels):
         state["awaiting"] = None
         state["error"] = _AGE_ASK
         state["label_unclear"] = 0
+        state["safety_followup"] = False
+        _write_safety("age_check")
         return True
     if action == "swap":
         _parse_profile_fields(state, reply)
         _store_old_from_text(state, reply)
         state["safety_followup"] = False
+        _clear_safety()
         state["error"] = None
         if state.get("phase") != "confirm":
             state["phase"] = "intake"
         return True
     if action in {"note", "pass"}:
+        if _follow_up_open(state):
+            _hold_symptom(state, reply, _plain_pause())
+            return True
         state["label_unclear"] = 0
         state["safety_followup"] = False
         if action == "note" and isinstance(reply, str):
@@ -2484,16 +2550,8 @@ def _apply_label_decision(state, reply, labels):
 
 
 def _accept_labeled_profile(state, reply, labels):
-    """Profile facts after a pass or a note. Injury none comes from the label."""
+    """Profile facts after a pass or a note. Injuries stay a separate tap."""
     _parse_profile_fields(state, reply)
-    parsed, reason = validate_labels(labels) if labels is not None else (None, "missing")
-    if reason is not None or parsed.get("injury") != "none":
-        return
-    if "injuries" in state.get("answers", {}):
-        return
-    folded = _fold(reply) if isinstance(reply, str) else ""
-    if _profile_line(folded) or state.get("asked") == "training":
-        state["answers"]["injuries"] = "none"
 
 
 def _take_injury_choice(state, reply, labels):
@@ -2536,6 +2594,9 @@ def _take_injury_choice(state, reply, labels):
 
 def _take_exact(state, reply):
     """An exact tap or enum. This does not read PAR-Q or an injury sentence."""
+    if _follow_up_open(state):
+        _hold_symptom(state, reply, _plain_pause())
+        return
     state["label_unclear"] = 0
     state["safety_followup"] = False
     if _leg_emoji_only(reply):
@@ -2574,12 +2635,77 @@ def _take_exact(state, reply):
         _review_confirm_edit(state, reply)
 
 
+def _consume_pending(state, reply, labels):
+    """True when a pending record used this reply. Confirm stays closed.
+
+    A follow-up clears only for an Old/Recent tap or a valid red_flag, minor,
+    or injury old/current label. A pass, a note, or a missing label is the
+    second unclear and holds. The turn that clears the follow-up does not
+    confirm. An age check clears only for a typed int.
+    """
+    from safety_pending import resolves_follow_up, typed_age
+
+    pending = _read_safety()
+    kind = pending.get("kind") if isinstance(pending, dict) else None
+    # "Which area?" is its own tap. A knee/back answer is not a failed follow-up.
+    if (
+        state.get("awaiting") == "injury"
+        and labels is None
+        and _exact_area(reply)
+        and kind not in {"hold", "age_check"}
+    ):
+        _clear_safety()
+        state["safety_followup"] = False
+        state["confirmed"] = False
+        _take_injury_answer(state, reply)
+        return True
+    if kind not in {"follow_up", "age_check", "hold"}:
+        if state.get("safety_followup") or state.get("awaiting") == "injury_when":
+            kind = "follow_up"
+        else:
+            return False
+    state["confirmed"] = False
+    if kind == "hold":
+        if hold_is_active():
+            _adopt_hold(state)
+            _handle_symptom(state, reply)
+        else:
+            _hold_symptom(state, reply, _plain_pause())
+        return True
+    if kind == "age_check":
+        number = typed_age(reply) if labels is None else None
+        if number is None:
+            state["phase"] = "age"
+            state["awaiting"] = None
+            state["need_age"] = True
+            state["error"] = _AGE_ASK
+            return True
+        submit_age(state, number)
+        state["confirmed"] = False
+        return True
+    button = _injury_button(reply) if labels is None else None
+    if resolves_follow_up(labels, button=button):
+        _clear_safety()
+        state["safety_followup"] = False
+        state["cleared_follow_up"] = True
+        if labels is None and button in {"old", "current"}:
+            _take_injury_choice(state, reply, None)
+        else:
+            _apply_label_decision(state, reply, labels)
+        state["confirmed"] = False
+        return True
+    _hold_symptom(state, reply, _plain_pause())
+    return True
+
+
 def apply_reply(state, reply, labels=None):
     """One user reply. Hard-stop first, then host labels, then a structured slot.
 
     Labels are the argument. They are never read out of reply.
+    A pending follow-up, age check, or hold blocks confirm.
     """
     state["error"] = None
+    state["cleared_follow_up"] = False
     text = reply if isinstance(reply, str) else ""
     if hold_is_active():
         _adopt_hold(state)
@@ -2587,6 +2713,8 @@ def apply_reply(state, reply, labels=None):
         return
     if hard_stop(text):
         _hold_symptom(state, text, _emergency_pause(text))
+        return
+    if _consume_pending(state, text, labels):
         return
     if state.get("awaiting") == "injury_when":
         _take_injury_choice(state, text, labels)
@@ -2932,6 +3060,7 @@ def _end_onboarding_for_today(state, paused):
     if not _persist_hold(state):
         return True
     state["error"] = state["hold_message"]
+    _write_safety("hold", message=state["hold_message"])
     return True
 
 
@@ -3226,6 +3355,10 @@ def _confirm(state, reply):
         state["confirmed"] = False
         state["record"] = None
         return
+    if state.get("cleared_follow_up") or state.get("safety_followup") or _read_safety():
+        state["confirmed"] = False
+        state["record"] = None
+        return
     if _first_missing(state) is not None:
         return
     screen = ReadinessScreen().screen_intake(_readiness_intake(state))
@@ -3284,6 +3417,7 @@ def _confirm(state, reply):
     if days:
         state["first_checkin"] = first_checkin_day(min(days), now=_now())
     clear_pending_profile()
+    _clear_safety()
 
 
 def _proposal(state):
@@ -3489,7 +3623,13 @@ def run_chat(replies):
     Confirm helpers run only while this loop is on a confirm-phase reply.
     An int at the age step is submit_age. A tuple is (text, labels).
     Labels are never parsed out of the text.
+    A follow-up or an age check from an earlier attempt is not this attempt.
+    A hold still is. Inside this attempt the pending file blocks confirm.
     """
+    if not hold_is_active():
+        pending = _read_safety()
+        if isinstance(pending, dict) and pending.get("kind") in {"follow_up", "age_check"}:
+            _clear_safety()
     state = _state_for_attempt()
     bots = []
     for reply in replies:

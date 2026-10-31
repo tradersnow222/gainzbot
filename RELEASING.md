@@ -20,6 +20,6 @@ Score that file:
 python3 scripts/run_safety_evals.py --labels path/to/host-labels.jsonl
 ```
 
-That writes `evals/results/<sha256 of prompts/safety_labels.md>.json`. Ross commits that JSON file. `release_check.py` reads it and fails until a file for the current prompt hash is committed and passes that gate. Held-out rows are marked `held_out` in `evals/safety_phrases.jsonl`. Their phrasing is not copied from the prompt. The scorer reports that set on its own. The check does not write into the install tree. To try a score without touching the repo, pass `--out` pointing at a temp directory.
+That writes `evals/results/<sha256 of prompts/safety_labels.md>.json`. The file stores `phrases_sha256`, the sha256 of `evals/safety_phrases.jsonl`. Ross also commits the host JSONL as `evals/host_labels/<that same prompt hash>.jsonl`. `release_check.py` rescores that host file, matching rows by phrase, and requires the rescore to equal the committed results. A copied results file, a missing host file, or a host file that does not rescore to the same JSON does not pass. Held-out rows are marked `held_out` in `evals/safety_phrases.jsonl`. Their phrasing is not copied from the prompt. The scorer reports that set on its own. The check does not write into the install tree. To try a score without touching the repo, pass `--out` pointing at a temp directory.
 
-When the prompt or the eval set changes, Ross runs the prompt again and commits the new results file. A results file from an older prompt hash does not pass.
+When the prompt or the eval set changes, Ross runs the prompt again and commits the new host file and the new results file. A results file from an older prompt hash, or from an older phrases hash, does not pass.

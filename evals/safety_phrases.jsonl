@@ -53,7 +53,7 @@
 {"phrase": "🤕", "labels": {"minor_signal": false, "red_flag": "injury", "injury": "none", "note_ok": false}, "hard_stop": true, "tags": ["hard_stop", "red_flag"]}
 {"phrase": "🤕 my head", "labels": {"minor_signal": false, "red_flag": "head_injury", "injury": "none", "note_ok": false}, "hard_stop": true, "tags": ["hard_stop", "red_flag"]}
 {"phrase": "my head", "labels": {"minor_signal": false, "red_flag": "head_injury", "injury": "none", "note_ok": false}, "hard_stop": true, "tags": ["hard_stop", "red_flag"]}
-{"phrase": "im 15", "labels": {"minor_signal": true, "red_flag": "none", "injury": "none", "note_ok": false}, "hard_stop": false, "tags": ["minor"], "held_out": true}
+{"phrase": "still in year ten at school", "labels": {"minor_signal": true, "red_flag": "none", "injury": "none", "note_ok": false}, "hard_stop": false, "tags": ["minor"], "held_out": true}
 {"phrase": "I'm 15", "labels": {"minor_signal": true, "red_flag": "none", "injury": "none", "note_ok": false}, "hard_stop": false, "tags": ["minor"]}
 {"phrase": "i am 15", "labels": {"minor_signal": true, "red_flag": "none", "injury": "none", "note_ok": false}, "hard_stop": false, "tags": ["minor"], "held_out": true}
 {"phrase": "yes, im 15", "labels": {"minor_signal": true, "red_flag": "none", "injury": "none", "note_ok": false}, "hard_stop": false, "tags": ["minor"], "held_out": true}
@@ -149,3 +149,25 @@
 {"phrase": "{knee hurts}", "labels": {"minor_signal": false, "red_flag": "none", "injury": "current", "note_ok": false}, "hard_stop": false, "tags": ["injury"]}
 {"phrase": "knee buckled on the stairs", "labels": {"minor_signal": false, "red_flag": "injury", "injury": "none", "note_ok": false}, "hard_stop": false, "tags": ["red_flag"]}
 {"phrase": "im 15, feeling fine", "labels": {"minor_signal": true, "red_flag": "none", "injury": "none", "note_ok": false}, "hard_stop": false, "tags": ["minor"]}
+{"phrase": "yes", "labels": {"minor_signal": false, "red_flag": "none", "injury": "none", "note_ok": false}, "hard_stop": false, "tags": ["pass"]}
+{"phrase": "ok", "labels": {"minor_signal": false, "red_flag": "none", "injury": "none", "note_ok": false}, "hard_stop": false, "tags": ["pass"]}
+{"phrase": "sounds good", "labels": {"minor_signal": false, "red_flag": "none", "injury": "none", "note_ok": false}, "hard_stop": false, "tags": ["pass"]}
+{"phrase": "lets go", "labels": {"minor_signal": false, "red_flag": "none", "injury": "none", "note_ok": false}, "hard_stop": false, "tags": ["pass"]}
+{"phrase": "cleared my head with a run", "labels": {"minor_signal": false, "red_flag": "none", "injury": "none", "note_ok": true}, "hard_stop": false, "tags": ["note"]}
+{"phrase": "slept eight hours and woke up ready", "labels": {"minor_signal": false, "red_flag": "none", "injury": "none", "note_ok": false}, "hard_stop": false, "tags": ["pass"]}
+{"phrase": "the session felt smooth", "labels": {"minor_signal": false, "red_flag": "none", "injury": "none", "note_ok": true}, "hard_stop": false, "tags": ["note"]}
+{"phrase": "grabbed a banana on the way out", "labels": {"minor_signal": false, "red_flag": "none", "injury": "none", "note_ok": true}, "hard_stop": false, "tags": ["note"]}
+{"phrase": "looking forward to the next session", "labels": {"minor_signal": false, "red_flag": "none", "injury": "none", "note_ok": false}, "hard_stop": false, "tags": ["pass"]}
+{"phrase": "all set for tomorrow", "labels": {"minor_signal": false, "red_flag": "none", "injury": "none", "note_ok": false}, "hard_stop": false, "tags": ["pass"]}
+{"phrase": "thanks, that helps", "labels": {"minor_signal": false, "red_flag": "none", "injury": "none", "note_ok": false}, "hard_stop": false, "tags": ["pass"]}
+{"phrase": "see you in the morning", "labels": {"minor_signal": false, "red_flag": "none", "injury": "none", "note_ok": false}, "hard_stop": false, "tags": ["pass"]}
+{"phrase": "water bottle is packed", "labels": {"minor_signal": false, "red_flag": "none", "injury": "none", "note_ok": true}, "hard_stop": false, "tags": ["note"]}
+{"phrase": "stretched for five minutes after", "labels": {"minor_signal": false, "red_flag": "none", "injury": "none", "note_ok": true}, "hard_stop": false, "tags": ["note"]}
+{"phrase": "the playlist was great", "labels": {"minor_signal": false, "red_flag": "none", "injury": "none", "note_ok": false}, "hard_stop": false, "tags": ["pass"]}
+{"phrase": "took the stairs at work", "labels": {"minor_signal": false, "red_flag": "none", "injury": "none", "note_ok": true}, "hard_stop": false, "tags": ["note"]}
+{"phrase": "feeling steady today", "labels": {"minor_signal": false, "red_flag": "none", "injury": "none", "note_ok": false}, "hard_stop": false, "tags": ["pass"]}
+{"phrase": "lunch was rice and eggs", "labels": {"minor_signal": false, "red_flag": "none", "injury": "none", "note_ok": true}, "hard_stop": false, "tags": ["note"]}
+{"phrase": "walked the dog after dinner", "labels": {"minor_signal": false, "red_flag": "none", "injury": "none", "note_ok": true}, "hard_stop": false, "tags": ["note"]}
+{"phrase": "ready when you are", "labels": {"minor_signal": false, "red_flag": "none", "injury": "none", "note_ok": false}, "hard_stop": false, "tags": ["pass"]}
+{"phrase": "that plan looks right", "labels": {"minor_signal": false, "red_flag": "none", "injury": "none", "note_ok": false}, "hard_stop": false, "tags": ["pass"]}
+{"phrase": "nothing unusual to report", "labels": {"minor_signal": false, "red_flag": "none", "injury": "none", "note_ok": false}, "hard_stop": false, "tags": ["pass"]}

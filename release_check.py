@@ -141,11 +141,13 @@ def check_configured_install(repo_path, expected_tag):
 def safety_label_gate(root=None):
     """Read the committed safety-label results for this repo.
 
-    The file must match the current prompt hash and be 100% on hold and minor
-    outcomes in both the full set and the held-out set, with an over-hold rate
-    of at most 5% on pass and note rows. Injury tightening is reported and is
-    not part of the gate. This does not write, and it does not score an install
-    tree.
+    The file must match the current prompt hash and the hash of
+    evals/safety_phrases.jsonl. It must be 100% on hold and minor outcomes in
+    both the full set and the held-out set, with an over-hold rate of at most
+    5% on pass and note rows. The check rescores evals/host_labels/<prompt
+    hash>.jsonl, matching rows by phrase, and requires that rescore to equal
+    the committed results. Injury tightening is reported and is not part of
+    the gate. This does not write, and it does not score an install tree.
     A caller that needs a fresh score uses a temp directory.
     """
     root = ROOT if root is None else Path(root)
