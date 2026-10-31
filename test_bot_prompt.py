@@ -116,6 +116,52 @@ def test_a_red_flag_passes_on_the_check_recommendation():
     assert "caller-supplied" not in PROMPT.lower()
 
 
+def test_first_run_clones_the_repo_and_uses_that_path():
+    assert "https://github.com/tradersnow222/gainzbot" in PROMPT
+    assert "https://github.com/tradersnow222/gainzbot" in QUICKSTART
+    assert "/workspace/gainzbot" in PROMPT
+    assert "/workspace/gainzbot" in QUICKSTART
+    import_line = "import red_flag_check, readiness_screen, plan_check, record_confirmation"
+    assert import_line in PROMPT
+    assert import_line in QUICKSTART
+    assert "if the clone or the import fails, stop" in PROMPT.lower()
+    assert "/workspace/gainzbot/data/used_confirmations.json" in PROMPT
+    assert "/workspace/gainzbot/data/log.json" in PROMPT
+    assert TEMPLATE["repo_url"] == "https://github.com/tradersnow222/gainzbot"
+    assert TEMPLATE["repo_path"] == "/workspace/gainzbot"
+    assert TEMPLATE["used_list_path"] == "/workspace/gainzbot/data/used_confirmations.json"
+    assert TEMPLATE["log_path"] == "/workspace/gainzbot/data/log.json"
+    assert "Log this meal: usual breakfast." in TEMPLATE["starter_prompts"]
+    guides = TEMPLATE["guides"]
+    for name in (
+        "saved-logs.md",
+        "first-plan.md",
+        "onboarding.md",
+        "daily-checkin.md",
+        "routines.md",
+        "dashboard.md",
+        "usual-meals.md",
+    ):
+        assert name in guides.values()
+        assert name in PROMPT
+        rel = next(value for value in guides.values() if value == name)
+        assert not rel.startswith("/")
+        assert ".." not in rel.split("/")
+    for skill in TEMPLATE["skills"]:
+        rel = TEMPLATE["skill_files"][skill]
+        assert not rel.startswith("/")
+        assert ".." not in rel.split("/")
+        text = (ROOT / "template" / rel).read_text(encoding="utf-8")
+        assert "/workspace/gainzbot" in text
+        assert skill in text
+        assert "\u2014" not in text
+    assert "do not ask the profile one question at a time" in PROMPT.lower()
+    assert "accept none" in PROMPT.lower() or "accepts none" in PROMPT.lower()
+    assert "remember_usual" in PROMPT
+    assert "plan_builder.py" in PROMPT
+    assert "each is opt-in" in PROMPT.lower()
+
+
 def test_the_docs_do_not_call_the_checks_tamper_proof():
     texts = (PROMPT, QUICKSTART, GETTING_STARTED, PROFILE, json.dumps(TEMPLATE))
     for text in texts:
