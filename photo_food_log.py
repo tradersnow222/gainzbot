@@ -5,8 +5,10 @@ Log food from a photo estimate or a remembered usual meal.
 The Grok vision prompt asks for items, calories, and protein. This script
 does not call the model. store_estimate logs a meal only after
 record_confirmation covers that exact estimate. Each confirmation logs
-one meal. The check is the record id, and those ids are saved, so a copy
-or a restart cannot log that same yes again. A new yes can log the meal.
+one meal. The check is the record id, and those ids are saved to a
+required path, so a copy or a restart cannot log that same yes again.
+If that file is missing after the first log, nothing else is stored.
+A new yes can log the meal when the file is still there.
 A single item over 3000 kcal or over 300 g protein is rejected for a
 re-check, and a day stops at 10000 kcal. Missing age and under 18 set no
 protein target. usual breakfast needs a confirmation. Logging a meal does
@@ -62,15 +64,18 @@ class FoodLog:
     def __init__(self, used_path=None):
         self.entries: List[Dict] = []
         self.usuals: Dict[str, Dict] = {}
-        self.used_path = None if used_path is None else os.fspath(used_path)
         self.used_ids: List[str] = []
         self._used_error = None
-        if used_path is not None:
-            loaded = self._read_used(used_path)
-            if isinstance(loaded, str):
-                self._used_error = loaded
-            else:
-                self.used_ids = loaded
+        if used_path is None:
+            self.used_path = None
+            self._used_error = "A used confirmation list path is required."
+            return
+        self.used_path = os.fspath(used_path)
+        loaded = self._read_used(self.used_path)
+        if isinstance(loaded, str):
+            self._used_error = loaded
+        else:
+            self.used_ids = loaded
 
     def remember_usual(self, name, items, calories, protein_g) -> Dict:
         key = self._usual_name(name)
@@ -102,8 +107,9 @@ class FoodLog:
             "calories": meal["calories"],
             "protein_g": meal["protein_g"],
         }
-        if self._used_error:
-            return self._no(self._used_error)
+        error = self._check_used()
+        if error:
+            return self._no(error)
         if not self._covers_fresh(confirmation, plan):
             if self._already_used(confirmation):
                 return self._no("That confirmation was already used for one log.")
@@ -126,8 +132,9 @@ class FoodLog:
         )
         if not parsed["ok"]:
             return parsed
-        if self._used_error:
-            return self._no(self._used_error)
+        error = self._check_used()
+        if error:
+            return self._no(error)
         if not self._covers_fresh(confirmation, estimate):
             if self._already_used(confirmation):
                 return self._no("That confirmation was already used for one log.")
@@ -295,15 +302,29 @@ class FoodLog:
         record_id = self._record_id(confirmation)
         return record_id is not None and record_id in self.used_ids
 
+    def _marker(self, path: str) -> str:
+        return path + ".started"
+
+    def _check_used(self) -> Optional[str]:
+        if self.used_path is None:
+            return "A used confirmation list path is required."
+        if self._used_error:
+            return self._used_error
+        if not os.path.exists(self.used_path) and os.path.exists(self._marker(self.used_path)):
+            self._used_error = "The used confirmation list is missing."
+            return self._used_error
+        return None
+
     def _remember(self, confirmation) -> Dict:
         record_id = self._record_id(confirmation)
         if record_id is None:
             return self._no("That confirmation has no record id.")
-        self.used_ids.append(record_id)
         if self.used_path is None:
-            return {"ok": True}
+            return self._no("A used confirmation list path is required.")
+        self.used_ids.append(record_id)
         try:
             self._write_used(self.used_path, self.used_ids)
+            self._write_marker(self.used_path)
         except OSError:
             self.used_ids.pop()
             return self._no("The used confirmation list could not be saved.")
@@ -311,6 +332,8 @@ class FoodLog:
 
     def _read_used(self, path):
         if not os.path.exists(path):
+            if os.path.exists(self._marker(path)):
+                return "The used confirmation list is missing."
             return []
         try:
             with open(path, encoding="utf-8") as handle:
@@ -330,6 +353,15 @@ class FoodLog:
             json.dump(used_ids, handle)
             handle.write("\n")
         os.replace(temporary, path)
+
+    def _write_marker(self, path: str) -> None:
+        marker = self._marker(path)
+        if os.path.exists(marker):
+            return
+        temporary = marker + ".tmp"
+        with open(temporary, "w", encoding="utf-8") as handle:
+            handle.write("used\n")
+        os.replace(temporary, marker)
 
     def _protein_target(self, user, targets):
         age = self._age(user)
