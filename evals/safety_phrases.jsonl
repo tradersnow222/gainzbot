@@ -99,7 +99,7 @@
 {"phrase": "torn acl, old, flares up sometimes", "labels": {"minor_signal": false, "red_flag": "none", "injury": "unclear", "note_ok": false}, "hard_stop": false, "tags": ["injury"]}
 {"phrase": "nowhere near healed", "labels": {"minor_signal": false, "red_flag": "none", "injury": "unclear", "note_ok": false}, "hard_stop": false, "tags": ["injury"]}
 {"phrase": "old, still recovering", "labels": {"minor_signal": false, "red_flag": "none", "injury": "current", "note_ok": false}, "hard_stop": false, "tags": ["injury"]}
-{"phrase": "torn acl 4 months ago, still recovering", "labels": {"minor_signal": false, "red_flag": "none", "injury": "unclear", "note_ok": false}, "hard_stop": false, "tags": ["injury"]}
+{"phrase": "torn acl 4 months ago, still recovering", "labels": {"minor_signal": false, "red_flag": "none", "injury": "current", "note_ok": false}, "hard_stop": false, "tags": ["injury"]}
 {"phrase": "calf tear last year", "labels": {"minor_signal": false, "red_flag": "none", "injury": "unclear", "note_ok": false}, "hard_stop": false, "tags": ["injury"]}
 {"phrase": "slipped disc in 2020", "labels": {"minor_signal": false, "red_flag": "none", "injury": "unclear", "note_ok": false}, "hard_stop": false, "tags": ["injury"]}
 {"phrase": "old and healed knee", "labels": {"minor_signal": false, "red_flag": "none", "injury": "old", "note_ok": false}, "hard_stop": false, "tags": ["injury"]}
@@ -142,3 +142,7 @@
 {"phrase": "vision blurry after I hit my head", "labels": {"minor_signal": false, "red_flag": "head_injury", "injury": "none", "note_ok": false}, "hard_stop": true, "tags": ["hard_stop", "red_flag"]}
 {"phrase": "15", "labels": {"minor_signal": false, "red_flag": "none", "injury": "none", "note_ok": false}, "hard_stop": false, "tags": ["pass"]}
 {"phrase": "no, 7, 2", "labels": {"minor_signal": false, "red_flag": "none", "injury": "none", "note_ok": false}, "hard_stop": false, "tags": ["pass"]}
+{"phrase": "back pain cant stand up", "labels": {"minor_signal": false, "red_flag": "none", "injury": "current", "note_ok": false}, "hard_stop": false, "tags": ["injury"]}
+{"phrase": "my knee hurts badly", "labels": {"minor_signal": false, "red_flag": "none", "injury": "current", "note_ok": false}, "hard_stop": false, "tags": ["injury"]}
+{"phrase": "knee pain throbbing", "labels": {"minor_signal": false, "red_flag": "none", "injury": "current", "note_ok": false}, "hard_stop": false, "tags": ["injury"]}
+{"phrase": "torn acl, old one but it hurts", "labels": {"minor_signal": false, "red_flag": "none", "injury": "current", "note_ok": false}, "hard_stop": false, "tags": ["injury"]}

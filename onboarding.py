@@ -1425,13 +1425,16 @@ def submit_age(state, age):
     if state.get("error"):
         if number < 18 or _first_missing(state) is None:
             state["phase"] = "blocked"
+            _resume_pending_injury(state)
             return True
         state["error"] = None
         state["readiness"] = None
         state["phase"] = "intake"
+        _resume_pending_injury(state)
         return True
     state["hold_message"] = None
     state["phase"] = "confirm"
+    _resume_pending_injury(state)
     return True
 
 
@@ -2062,8 +2065,31 @@ def _store_named_injury(state, reply):
     return True
 
 
+def _keep_pending_injury(state, reply):
+    """Remember the injury on this message. Do not leave a stored none in its place."""
+    label = _pending_injury_label(reply)
+    if label:
+        state["pending_injury"] = label
+    elif not state.get("pending_injury"):
+        state["pending_injury"] = "injury"
+    if state.get("answers", {}).get("injuries") == "none":
+        state["answers"].pop("injuries", None)
+
+
+def _resume_pending_injury(state):
+    """After a typed age, an old or unclear injury still needs the button."""
+    if not state.get("ask_injury_after_age"):
+        return
+    if state.get("phase") in {"age", "blocked", "symptom"}:
+        return
+    state["ask_injury_after_age"] = False
+    _ask_injury_when(state, "")
+
+
 def _ask_injury_when(state, reply):
-    state["pending_injury"] = _pending_injury_label(reply)
+    label = _pending_injury_label(reply)
+    if label:
+        state["pending_injury"] = label
     state["awaiting"] = "injury_when"
     state["confirmed"] = False
     state["record"] = None
@@ -2355,6 +2381,8 @@ def _apply_label_decision(state, reply, labels):
         return True
     if action == "hold":
         parsed, reason = validate_labels(labels)
+        if reason is None and parsed["injury"] != "none":
+            _keep_pending_injury(state, reply)
         flag = parsed["red_flag"] if reason is None else "none"
         if flag in {"chest_pain", "cardiac_symptoms", "breathing_difficulty", "fainting"}:
             _hold_symptom(state, reply, _emergency_pause(reply))
@@ -2362,6 +2390,11 @@ def _apply_label_decision(state, reply, labels):
             _hold_symptom(state, reply, _plain_pause())
         return True
     if action == "clear_age":
+        parsed, reason = validate_labels(labels)
+        injury = parsed["injury"] if reason is None else "none"
+        if injury != "none":
+            _keep_pending_injury(state, reply)
+            state["ask_injury_after_age"] = True
         _clear_age(state)
         state["phase"] = "age"
         state["awaiting"] = None

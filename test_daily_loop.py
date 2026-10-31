@@ -815,6 +815,52 @@ def test_a_bare_yes_or_yep_remark_is_not_a_note(tmp_path):
     assert clear.notes[saturday]["note"] == "yep doing parkrun at 9"
 
 
+def test_an_evening_reply_after_a_saved_pause_does_not_crash(tmp_path):
+    monday = "2026-11-02"
+    first = _live_loop(tmp_path)
+    first.open_morning(monday)
+    paused = first.hear(monday, "no 7 2 slurred speech")
+    assert first.phase[monday] == "paused"
+    second = _live_loop(tmp_path)
+    assert monday not in second.notes
+    second.open_evening(monday)
+    text = second.hear(monday, "yes easy oats")
+    assert isinstance(text, str)
+    assert text
+    assert second.notes[monday]["did_it"] is True
+
+
+def test_a_saved_pause_does_not_hide_an_unreadable_data_file(monkeypatch, tmp_path):
+    import os
+
+    from seal_secret import DATA_FILE_MESSAGE
+
+    monday = "2026-11-02"
+    first = _live_loop(tmp_path)
+    first.open_morning(monday)
+    paused = first.hear(monday, "no 7 2 slurred speech")
+    assert first.phase[monday] == "paused"
+    assert DATA_FILE_MESSAGE not in paused
+    path = tmp_path / "seal.key"
+    path.write_bytes(b"k" * 32)
+    monkeypatch.setattr("seal_secret._key_path", lambda: str(path))
+    real_open = open
+
+    def guarded(file, *args, **kwargs):
+        target = file if isinstance(file, (str, bytes)) else getattr(file, "name", None)
+        if target is not None and os.path.abspath(str(target)) == os.path.abspath(path):
+            raise PermissionError("blocked")
+        return real_open(file, *args, **kwargs)
+
+    monkeypatch.setattr("builtins.open", guarded)
+    second = _live_loop(tmp_path)
+    opened = second.open_morning(monday)
+    assert opened == DATA_FILE_MESSAGE
+    assert opened != paused
+    heard = second.hear(monday, "yes easy oats")
+    assert heard == DATA_FILE_MESSAGE
+
+
 def test_a_pause_loads_on_a_new_daily_loop(tmp_path):
     monday = "2026-11-02"
     first = _live_loop(tmp_path)

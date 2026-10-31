@@ -20,6 +20,16 @@ _EVENING = "Did you do it? easy, right, or hard. What did you eat?"
 _NUDGE = "Missed today. I'll pick it up in the morning."
 
 
+def _data_file_message():
+    """The unreadable-key line, when a saved pause would otherwise hide it."""
+    from seal_secret import DATA_FILE_MESSAGE, _key_path, _read_installed
+
+    path = _key_path()
+    if os.path.isfile(path) and _read_installed(path) is None:
+        return DATA_FILE_MESSAGE
+    return None
+
+
 def _onboarding_hold():
     """The onboarding symptom hold, when one still blocks today."""
     from onboarding import active_hold_message
@@ -406,11 +416,17 @@ class DailyLoop:
         if held:
             return held
         if self.phase.get(day) == "paused":
+            blocked = _data_file_message()
+            if blocked:
+                return blocked
             return self.hold_text.get(day) or self._saved_pause(day) or _SYMPTOM
         saved = self._saved_pause(day)
         if saved:
             self.phase[day] = "paused"
             self.hold_text[day] = saved
+            blocked = _data_file_message()
+            if blocked:
+                return blocked
             return saved
         self.notes[day] = {}
         self.phase[day] = "symptom"
@@ -549,6 +565,10 @@ class DailyLoop:
         held = _onboarding_hold()
         if held:
             return held
+        if self.phase.get(day) == "paused" or self._saved_pause(day):
+            blocked = _data_file_message()
+            if blocked:
+                return blocked
         if hard_stop(reply):
             self.notes.setdefault(day, {})["reply"] = reply
             return self._remember_pause(day, _safety_line(reply))
@@ -564,16 +584,18 @@ class DailyLoop:
             return self._free_text_hold(day, reply, labels)
         if phase == "signals":
             pending = self.pending.get(day, {"gaps": [], "personal": []})
-            self.notes[day]["reply"] = (self.notes[day].get("reply") or "") + " " + reply
-            self.notes[day].update(read_gap_reply(pending["gaps"], reply))
+            notes = self.notes.setdefault(day, {})
+            notes["reply"] = (notes.get("reply") or "") + " " + reply
+            notes.update(read_gap_reply(pending["gaps"], reply))
             self._use_hr_answer(day, f"{day}T08:00:00Z")
             for key in pending["personal"]:
                 self.signals.settle(key)
             self._seed(day, f"{day}T08:00:00Z")
             return self._workout(day)
         if phase == "morning2":
-            self.notes[day]["reply"] = (self.notes[day].get("reply") or "") + " " + reply
-            self.notes[day].update(parse_morning(reply))
+            notes = self.notes.setdefault(day, {})
+            notes["reply"] = (notes.get("reply") or "") + " " + reply
+            notes.update(parse_morning(reply))
             return self._workout(day)
         if phase == "evening":
             return self._evening(day, reply, labels)
@@ -656,10 +678,10 @@ class DailyLoop:
             self.phase[day] = "symptom"
             return _SYMPTOM
         if action == "note":
-            self.notes[day]["note"] = note
+            self.notes.setdefault(day, {})["note"] = note
             return self._after_symptom(day, prefix)
         if action == "swap":
-            self.notes[day]["injury"] = note
+            self.notes.setdefault(day, {})["injury"] = note
             return self._after_symptom(day, prefix)
         if action == "pass":
             return self._after_symptom(day, prefix)
@@ -758,7 +780,7 @@ class DailyLoop:
         as_of = f"{day}T08:00:00Z"
         pending = self.pending.get(day)
         if pending is None:
-            self.notes[day].update(parse_morning(reply))
+            self.notes.setdefault(day, {}).update(parse_morning(reply))
             if self._needs_more(day):
                 if _fold(reply) in {"no", "nope"} or self._rest_day(day):
                     self._fill_defaults(day, as_of)
@@ -766,7 +788,7 @@ class DailyLoop:
                     self.phase[day] = "morning2"
                     return _SECOND
             return self._workout(day)
-        self.notes[day].update(read_gap_reply(pending["gaps"], reply))
+        self.notes.setdefault(day, {}).update(read_gap_reply(pending["gaps"], reply))
         self._use_hr_answer(day, as_of)
         abnormal = set(self.signals.abnormal(as_of)) if self.signals is not None else set()
         unanswered = [
@@ -800,7 +822,7 @@ class DailyLoop:
         book = self.signals
         if book is None:
             return
-        notes = self.notes[day]
+        notes = self.notes.setdefault(day, {})
         if "sleep" not in notes:
             sleep = book.fresh_value("sleep", as_of)
             if sleep is not None:
@@ -815,7 +837,7 @@ class DailyLoop:
     def _fill_defaults(self, day, as_of):
         """Wearable sleep when it is fresh, otherwise sleep 7 and soreness 2."""
         self._seed(day, as_of)
-        notes = self.notes[day]
+        notes = self.notes.setdefault(day, {})
         if "sleep" not in notes:
             notes["sleep"] = 7
         if "soreness" not in notes:
@@ -851,12 +873,19 @@ class DailyLoop:
         reply = self.notes.get(day, {}).get("reply") or ""
         result = self._checklist(reply)
         if not is_passing_check_in(result):
-            return self._remember_pause(day, _pause_text(result))
+            text = _pause_text(result)
+            from seal_secret import DATA_FILE_MESSAGE
+
+            if DATA_FILE_MESSAGE in text:
+                return DATA_FILE_MESSAGE
+            return self._remember_pause(day, text)
         if not isinstance(self.profile, dict):
             return self._remember_pause(day, "Readiness has to pass before training.")
         screen = ReadinessScreen().screen_intake(_readiness_intake(self.profile))
         if not passing_readiness(screen):
             for reason in screen.reasons or []:
+                if isinstance(reason, str) and "can't be read" in reason:
+                    return reason
                 if isinstance(reason, str) and reason.startswith("Unknown key:"):
                     return self._remember_pause(day, reason)
             return self._remember_pause(day, "Readiness has to pass before training.")
@@ -916,7 +945,7 @@ class DailyLoop:
         if session:
             name = session.get("name") or "Session"
             exercises = session.get("exercises") if isinstance(session.get("exercises"), list) else []
-            available = session.get("minutes", self.notes[day].get("minutes", self.minutes))
+            available = session.get("minutes", self.notes.setdefault(day, {}).get("minutes", self.minutes))
             session_load = session.get("load", self.load)
             proposed = changes.get("load")
             load = session_load
@@ -964,7 +993,7 @@ class DailyLoop:
             return text
         else:
             load = changes.get("load", self.load)
-            available = self.notes[day].get("minutes", self.minutes)
+            available = self.notes.setdefault(day, {}).get("minutes", self.minutes)
             if day_name == "easy":
                 session_minutes = max(15, int(round(available * 0.7)))
                 lead = "Easy day."
@@ -1000,10 +1029,11 @@ class DailyLoop:
                 self._set_unclear(day, self._unclear_count(day) + 1)
                 self.phase[day] = "evening"
                 return _EVENING
+        notes = self.notes.setdefault(day, {})
         parsed = parse_evening(reply)
-        if parsed.get("ate") == "" and self.notes[day].get("ate"):
+        if parsed.get("ate") == "" and notes.get("ate"):
             parsed = {key: value for key, value in parsed.items() if key != "ate"}
-        self.notes[day].update(parsed)
+        notes.update(parsed)
         if parsed.get("did_it") is None:
             self.phase[day] = "evening"
             return "Did you do the workout?"

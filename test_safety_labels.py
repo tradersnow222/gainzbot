@@ -25,6 +25,8 @@ def _oracle(minor, flag, injury, note):
     """First match wins. Independent of label_action."""
     if flag != "none":
         return "hold"
+    if minor and injury == "current":
+        return "hold"
     if minor:
         return "clear_age"
     if injury == "current":
@@ -183,6 +185,7 @@ def test_a_second_unclear_free_text_holds_and_a_minor_beats_an_injury():
 
     fresh = _blank()
     fresh["answers"]["age"] = "30"
+    fresh["answers"]["injuries"] = "none"
     apply_reply(
         fresh,
         "knee pain, im 15",
@@ -193,9 +196,29 @@ def test_a_second_unclear_free_text_holds_and_a_minor_beats_an_injury():
             "note_ok": False,
         },
     )
-    assert fresh["answers"].get("age") in (None, "")
-    assert fresh["phase"] == "age"
-    assert fresh["error"] == _AGE_ASK
+    assert fresh["phase"] == "symptom"
+    assert fresh.get("pending_injury")
+    assert fresh["answers"].get("injuries") != "none"
+    _drop_hold()
+
+    kept = _blank()
+    kept["answers"]["age"] = "30"
+    kept["answers"]["injuries"] = "none"
+    apply_reply(
+        kept,
+        "knee pain, im 15",
+        {
+            "minor_signal": True,
+            "red_flag": "none",
+            "injury": "unclear",
+            "note_ok": False,
+        },
+    )
+    assert kept["answers"].get("age") in (None, "")
+    assert kept["phase"] == "age"
+    assert kept["error"] == _AGE_ASK
+    assert kept.get("pending_injury")
+    assert kept["answers"].get("injuries") != "none"
 
     flagged = _blank()
     apply_reply(
@@ -250,6 +273,31 @@ def test_a_second_unclear_free_text_holds_and_a_minor_beats_an_injury():
     assert submit_age(adult, 30) is True
     assert adult["answers"]["age"] == "30"
     assert adult["phase"] != "blocked"
+
+
+def test_current_injury_phrases_hold():
+    """These rows are current injuries. The engine holds. They are not phrase rules."""
+    wanted = {
+        "back pain cant stand up",
+        "my knee hurts badly",
+        "knee pain throbbing",
+        "torn acl, old one but it hurts",
+    }
+    rows = [
+        json.loads(line)
+        for line in (ROOT / "evals" / "safety_phrases.jsonl").read_text(encoding="utf-8").splitlines()
+        if line.strip()
+    ]
+    found = {row["phrase"]: row for row in rows if row.get("phrase") in wanted}
+    assert set(found) == wanted
+    table = safety_labels.prompt_table()
+    for phrase, row in found.items():
+        predicted, _stopped = safety_labels.classify_from_table(phrase, table)
+        assert predicted["injury"] == "current", phrase
+        assert predicted == row["labels"], phrase
+        assert row["hard_stop"] is False
+        assert safety_labels.label_action(predicted) == "hold", phrase
+        assert safety_labels.message_action(phrase, predicted) == "hold", phrase
 
 
 def test_the_prompt_table_is_what_the_eval_reads():

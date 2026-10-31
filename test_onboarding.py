@@ -2154,18 +2154,18 @@ def test_an_age_cue_beside_an_injury_clears_age_before_the_injury_branch():
     training = ["hello", _PROFILE, "25"]
     confirm = training + [_TRAINING, "all no"]
     for phrase in phrases:
-        at_training, training_bots = run_chat(training + [_marked(phrase, minor_signal=True, injury="current")])
+        at_training, training_bots = run_chat(training + [_marked(phrase, minor_signal=True, injury="unclear")])
         assert at_training["confirmed"] is False, phrase
         assert at_training["answers"].get("age") in (None, ""), phrase
         assert training_bots[-1] == _AGE_ASK, phrase
         assert "one yes confirms the plan" not in training_bots[-1].lower(), phrase
-        at_confirm, confirm_bots = run_chat(confirm + [_marked(phrase, minor_signal=True, injury="current")])
+        at_confirm, confirm_bots = run_chat(confirm + [_marked(phrase, minor_signal=True, injury="unclear")])
         assert at_confirm["confirmed"] is False, phrase
         assert at_confirm["answers"].get("age") in (None, ""), phrase
         assert confirm_bots[-1] == _AGE_ASK, phrase
         assert "one yes confirms the plan" not in confirm_bots[-1].lower(), phrase
     later, later_bots = run_chat(confirm + [
-        _marked("my knee hurts, im 15", minor_signal=True, injury="current"),
+        _marked("my knee hurts, im 15", minor_signal=True, injury="unclear"),
         "old",
         "yes",
         "yes",
@@ -2174,6 +2174,60 @@ def test_an_age_cue_beside_an_injury_clears_age_before_the_injury_branch():
     assert later["answers"].get("age") != "25"
     assert later_bots[-1] == _AGE_ASK
     assert "one yes confirms the plan" not in later_bots[-1].lower()
+
+
+def test_a_minor_signal_with_an_injury_keeps_it_and_does_not_confirm_none():
+    from onboarding import _AGE_ASK, _INJURY_WHEN, hold_is_active
+
+    training = "general training, 3 days 45 min, dumbbells, beginner, none"
+    prefix = [
+        "hello",
+        "cut, male, 60 kg, 170 cm, no injuries",
+        "25",
+        training,
+        "all no",
+    ]
+    unclear = prefix + [_marked("my knee hurts, im 15", minor_signal=True, injury="unclear")]
+    asked, asked_bots = run_chat(unclear)
+    assert asked["confirmed"] is False
+    assert asked["answers"].get("age") in (None, "")
+    assert asked_bots[-1] == _AGE_ASK
+    assert asked.get("pending_injury")
+    assert asked["answers"].get("injuries") != "none"
+    aged, aged_bots = run_chat(unclear + ["25", "yes"])
+    assert aged["confirmed"] is False
+    assert aged["answers"].get("injuries") != "none"
+    assert aged_bots[-2] == _INJURY_WHEN
+    assert "one yes confirms the plan" not in aged_bots[-1].lower()
+    _drop_hold()
+
+    current = prefix + [
+        _marked("my knee hurts, im 15", minor_signal=True, injury="current"),
+        "25",
+        "yes",
+    ]
+    held, held_bots = run_chat(current)
+    assert held["confirmed"] is False
+    assert held["phase"] == "symptom"
+    assert held.get("pending_injury")
+    assert held["answers"].get("injuries") != "none"
+    assert hold_is_active()
+    after = "\n".join(held_bots[len(prefix):]).lower()
+    assert "one yes confirms the plan" not in after
+    _drop_hold()
+
+    flagged = prefix + [
+        _marked("my knee hurts, im 15", minor_signal=True, red_flag="chest_pain", injury="old"),
+        "25",
+        "yes",
+    ]
+    stopped, stopped_bots = run_chat(flagged)
+    assert stopped["confirmed"] is False
+    assert stopped["phase"] == "symptom"
+    assert stopped["answers"].get("injuries") != "none"
+    after = "\n".join(stopped_bots[len(prefix):]).lower()
+    assert "one yes confirms the plan" not in after
+    _drop_hold()
 
 
 def test_a_single_message_past_stores_only_an_exact_allowlist_remainder():

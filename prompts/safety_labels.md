@@ -12,7 +12,7 @@ minor_signal is true when a minor phrase matches, or the person states an age fr
 
 red_flag is the first matching kind. sharp followed by up to three words and then pain counts as sharp pain.
 
-When red_flag is none, set injury this way. A current word plus an old phrase or an injury noun is unclear. A current word alone is current. old and healed or fully healed is old, unless an injury noun is also present, which is unclear. years ago plus an injury noun is unclear. years ago alone is not an injury. An injury noun alone, or the word healed without fully healed or old and healed, is unclear.
+When red_flag is none, set injury this way. A current word is current, even when the message also says old or names an injury. old and healed or fully healed is old, unless an injury noun is also present, which is unclear. years ago plus an injury noun is unclear. years ago alone is not an injury. An injury noun alone, or the word healed without fully healed or old and healed, is unclear.
 
 note_ok is true only when red_flag is none, minor_signal is false, injury is none, and a note phrase matches.
 
@@ -161,7 +161,9 @@ The host runs this prompt and passes the object to the engine. The engine does n
     "swollen",
     "on crutches",
     "this morning",
-    "hours ago"
+    "hours ago",
+    "cant stand up",
+    "throbbing"
   ],
   "injury_unclear": [
     "pain",

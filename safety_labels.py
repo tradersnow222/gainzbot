@@ -195,6 +195,9 @@ def label_action(payload, unclear_count=0):
         return "hold" if count >= 1 else "follow_up"
     if labels["red_flag"] != "none":
         return "hold"
+    # A current injury or a red flag holds even when the same message is a minor.
+    if labels["minor_signal"] and labels["injury"] == "current":
+        return "hold"
     if labels["minor_signal"]:
         return "clear_age"
     injury = labels["injury"]
@@ -363,6 +366,8 @@ def prompt_table():
             "on crutches",
             "this morning",
             "hours ago",
+            "cant stand up",
+            "throbbing",
         ],
         "injury_unclear": [
             "pain",
@@ -463,8 +468,8 @@ def _flag_hit(folded, phrase):
 def classify_from_table(reply, table):
     """Apply a prompt keyword table to the reply as quoted data.
 
-    Hard-stop and red-flag words win. An injury noun with no clear timing is unclear.
-    Old and current together are unclear. A note is only a clean leftover.
+    Hard-stop and red-flag words win. A current word is current even beside old wording.
+    An injury noun with no clear timing is unclear. A note is only a clean leftover.
     """
     raw = reply if isinstance(reply, str) else ""
     quoted = quoted_data(raw)
@@ -517,9 +522,7 @@ def classify_from_table(reply, table):
         if isinstance(healed, str) and _has_phrase(folded, healed) and not clean_old:
             named = True
         timed_old = _any_phrase(folded, timed_phrases)
-        if current and (timed_old or named or clean_old):
-            labels["injury"] = "unclear"
-        elif current:
+        if current:
             labels["injury"] = "current"
         elif clean_old and named:
             labels["injury"] = "unclear"
