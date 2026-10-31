@@ -1886,7 +1886,7 @@ def test_a_decimal_kg_and_a_pound_weight_convert():
     named, named_bots = run_chat(["want 64 kg"])
     assert named["answers"].get("weight") in (None, "")
     assert named["answers"]["target"] == "64 kg"
-    assert named_bots[-1] == "What's your current weight in kg?"
+    assert named_bots[-1] == "What's your current weight (kg or lb)?"
     assert "looks off" not in named_bots[-1].lower()
 
 

@@ -1107,8 +1107,8 @@ def _mask_clocks(reply):
 
 
 _AGE_ASK = "How old are you? Please type the number."
-_WEIGHT_ASK = "That weight looks off. What's your weight in kg?"
-_CURRENT_WEIGHT_ASK = "What's your current weight in kg?"
+_WEIGHT_ASK = "That weight looks off. What's your weight (kg or lb)?"
+_CURRENT_WEIGHT_ASK = "What's your current weight (kg or lb)?"
 _TARGET_ASK = "What's your target weight in kg?"
 
 
@@ -2924,7 +2924,7 @@ def _consume_pending(state, reply, labels):
 
 _GAP_WORDS = {
     "goal": "your goal (cut, lose, gain, or hold)",
-    "weight": "your weight in kg",
+    "weight": "your weight (kg or lb)",
     "height": "your height in cm",
     "age": "your age as a number",
     "sex": "sex",
