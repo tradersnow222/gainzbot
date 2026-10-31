@@ -12,6 +12,8 @@ git clone --depth 1 --branch v0.1.0 https://github.com/tradersnow222/gainzbot /w
 
 That tag is v0.1.0. If the tag is missing, stop. Do not fall back to main.
 
+If `/workspace/gainzbot` already exists, check that `git -C /workspace/gainzbot describe --tags --exact-match` equals v0.1.0. If it isn't a git repo or the tag doesn't match, stop and ask the user. Never delete, move or overwrite that folder.
+
 From that folder, check that the scripts run:
 
 ```bash
@@ -34,7 +36,7 @@ In Grok, make a new bot and name it Gainzbot.
 
 Paste `BOT_PROMPT.md` into the bot instructions. That file is the coach. It calls the scripts in this order: red flag, readiness, plan check, then a recorded yes.
 
-Copy the starter prompts from `template/template.json`.
+Copy the starter prompts from `template/template.json`. Every file path in `template/template.json` is relative to the repo root.
 
 Paste `template/getting-started.md` in as the getting-started skill. The first chat follows `template/onboarding.md` and does not ask the profile one question at a time.
 

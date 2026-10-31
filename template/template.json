@@ -2,8 +2,8 @@
   "name": "Gainzbot",
   "description": "A fitness and nutrition coach that checks the plan before it changes anything.",
   "instructions_file": "BOT_PROMPT.md",
-  "getting_started": "getting-started.md",
-  "memory": "profile.md",
+  "getting_started": "template/getting-started.md",
+  "memory": "template/profile.md",
   "repo_url": "https://github.com/tradersnow222/gainzbot",
   "release_tag": "v0.1.0",
   "repo_path": "/workspace/gainzbot",
@@ -28,24 +28,24 @@
     "trend_review"
   ],
   "skill_files": {
-    "red_flag_check": "skills/red_flag_check.md",
-    "readiness_screen": "skills/readiness_screen.md",
-    "plan_check": "skills/plan_check.md",
-    "record_confirmation": "skills/record_confirmation.md",
-    "dashboard": "skills/dashboard.md",
-    "morning_checkin": "skills/morning_checkin.md",
-    "photo_food_log": "skills/photo_food_log.md",
-    "set_logger": "skills/set_logger.md",
-    "wearable_import": "skills/wearable_import.md",
-    "trend_review": "skills/trend_review.md"
+    "red_flag_check": "template/skills/red_flag_check.md",
+    "readiness_screen": "template/skills/readiness_screen.md",
+    "plan_check": "template/skills/plan_check.md",
+    "record_confirmation": "template/skills/record_confirmation.md",
+    "dashboard": "template/skills/dashboard.md",
+    "morning_checkin": "template/skills/morning_checkin.md",
+    "photo_food_log": "template/skills/photo_food_log.md",
+    "set_logger": "template/skills/set_logger.md",
+    "wearable_import": "template/skills/wearable_import.md",
+    "trend_review": "template/skills/trend_review.md"
   },
   "guides": {
-    "saved_logs": "saved-logs.md",
-    "first_plan": "first-plan.md",
-    "onboarding": "onboarding.md",
-    "daily_checkin": "daily-checkin.md",
-    "routines": "routines.md",
-    "dashboard": "dashboard.md",
-    "usual_meals": "usual-meals.md"
+    "saved_logs": "template/saved-logs.md",
+    "first_plan": "template/first-plan.md",
+    "onboarding": "template/onboarding.md",
+    "daily_checkin": "template/daily-checkin.md",
+    "routines": "template/routines.md",
+    "dashboard": "template/dashboard.md",
+    "usual_meals": "template/usual-meals.md"
   }
 }
