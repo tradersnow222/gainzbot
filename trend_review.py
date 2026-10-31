@@ -159,6 +159,16 @@ class TrendReview:
             "window_days": window_days,
         }
 
+    def review_saved(self, path, user=None, window_days=28, as_of=None) -> Dict:
+        """Read the on-disk log. A bad file proposes nothing."""
+        from log_store import LogStore
+
+        store = LogStore(path)
+        logs = store.as_trend()
+        if store.error or logs is None:
+            return self._empty("No change proposed.")
+        return self.review(logs, user, window_days, as_of)
+
     def apply(self, proposal, confirmation=None) -> Dict:
         """Apply a proposal only when record_confirmation covers that version."""
         if not isinstance(proposal, dict) or "changes" not in proposal:
