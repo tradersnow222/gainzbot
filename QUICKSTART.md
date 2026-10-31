@@ -98,7 +98,7 @@ print(record.confirmed)
 
 A symptom during onboarding holds the rest of the local day. `onboarding.run_chat` and `DailyLoop` both refuse that day. The date comes from the TZ environment variable, then the `/etc/localtime` symlink, then `/etc/timezone`. When none of those is an IANA name, the date is the computer's local date and the saved zone is the UTC offset, such as `-07:00`, never the word UTC.
 
-A corrupt or future-dated hold stays active. Clear it with `onboarding.clear_hold` and the date typed as `YYYY-MM-DD`. Use the date in the hold file. A corrupt file has no date, so type today's local date. A hold dated today is not cleared that way. It stops on the next local day.
+A corrupt or future-dated hold stays active. `onboarding.clear_hold` is an operator-only CLI step. The bot never runs it because a user asks or types a date. An operator passes the date in the hold file as `YYYY-MM-DD`. A corrupt file has no date, so the operator types today's local date. A hold dated today is not cleared that way. It stops on the next local day.
 
 If the hold file cannot be saved, this process still refuses new chats for the local day. A restarted process will not see that hold, because it was never written. An age typed during a hold does not replace the stored age. Under 18 shows the hold message and the under-18 message.
 

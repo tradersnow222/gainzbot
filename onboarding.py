@@ -985,12 +985,30 @@ def _read_hold_file():
 
     A missing file is not a hold. A date strictly before the user's local
     today has stopped counting, and the file stays. Unreadable, garbage,
-    corrupt, and future-dated files are an active hold.
+    corrupt, and future-dated files are an active hold. The in-memory copy
+    is checked the same way. The hold is active when either one is active,
+    including when an expired file is still on disk.
     """
+    file_kind, file_saved = _read_hold_on_disk()
+    mem_kind, mem_saved = "missing", None
+    if isinstance(_memory_hold, dict):
+        mem_kind, mem_saved = _classify_saved(_memory_hold)
+    if mem_kind == "active" or file_kind == "active":
+        if mem_kind == "active" and mem_saved is not None:
+            return "active", mem_saved
+        if file_kind == "active":
+            return "active", file_saved
+        return "active", mem_saved
+    if file_kind == "expired":
+        return "expired", file_saved
+    if mem_kind == "expired":
+        return "expired", mem_saved
+    return "missing", None
+
+
+def _read_hold_on_disk():
     path = onboarding_state_path()
     if not os.path.lexists(path):
-        if isinstance(_memory_hold, dict):
-            return _classify_saved(_memory_hold)
         return "missing", None
     try:
         with open(path, encoding="utf-8") as handle:
@@ -1073,8 +1091,9 @@ def _clear_date(saved):
 
 
 def clear_hold(reply):
-    """Clear a corrupt or future-dated hold when the reply is that date.
+    """Operator-only CLI step. The bot never runs this because a user asks or types a date.
 
+    Clear a corrupt or future-dated hold when the operator types that date.
     A hold dated today is not cleared. It stops on a later local date.
     Type the date in the file as YYYY-MM-DD. A corrupt or unreadable file
     has no date, so type today's local date.

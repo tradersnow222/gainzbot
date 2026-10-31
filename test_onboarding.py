@@ -562,6 +562,36 @@ def test_a_failed_hold_write_returns_an_error_and_does_not_continue(monkeypatch)
     assert "one yes confirms the plan" not in " ".join(again_bots).lower()
 
 
+def test_a_read_only_data_dir_with_an_expired_hold_still_refuses():
+    import json
+    import os
+
+    import onboarding
+
+    path = onboarding.onboarding_state_path()
+    directory = os.path.dirname(path)
+    os.makedirs(directory, exist_ok=True)
+    expired = {
+        "hold": {"date": "2000-01-01", "message": "old"},
+    }
+    with open(path, "w", encoding="utf-8") as handle:
+        json.dump(expired, handle)
+        handle.write("\n")
+    os.chmod(directory, 0o555)
+    try:
+        state, bots = run_chat(list(_AGE_25) + ["my chest hurts"])
+        assert state["confirmed"] is False
+        assert "hold could not be saved" in bots[-1].lower()
+        kept = json.loads(open(path, encoding="utf-8").read())
+        assert kept["hold"]["date"] == "2000-01-01"
+        again, again_bots = run_chat(["yes"])
+        assert again["confirmed"] is False
+        assert again["phase"] == "symptom"
+        assert "one yes confirms the plan" not in " ".join(again_bots).lower()
+    finally:
+        os.chmod(directory, 0o755)
+
+
 def test_four_fifty_nine_pm_pdt_to_five_pm_stays_held(monkeypatch):
     import json
     import os
