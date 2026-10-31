@@ -7,10 +7,10 @@
 {"phrase": "tightness in my chest during intervals", "labels": {"minor_signal": false, "red_flag": "chest_pain", "injury": "none", "note_ok": false}, "hard_stop": false}
 {"phrase": "pain in my chest", "labels": {"minor_signal": false, "red_flag": "chest_pain", "injury": "none", "note_ok": false}, "hard_stop": false}
 {"phrase": "my chest hurts when I run", "labels": {"minor_signal": false, "red_flag": "chest_pain", "injury": "none", "note_ok": false}, "hard_stop": false}
-{"phrase": "I can’t breathe", "labels": {"minor_signal": false, "red_flag": "breathing_difficulty", "injury": "none", "note_ok": false}, "hard_stop": false}
+{"phrase": "I can\u2019t breathe", "labels": {"minor_signal": false, "red_flag": "breathing_difficulty", "injury": "none", "note_ok": false}, "hard_stop": false}
 {"phrase": "I cant breathe", "labels": {"minor_signal": false, "red_flag": "breathing_difficulty", "injury": "none", "note_ok": false}, "hard_stop": false}
-{"phrase": "I canʼt breathe", "labels": {"minor_signal": false, "red_flag": "breathing_difficulty", "injury": "none", "note_ok": false}, "hard_stop": false}
-{"phrase": "I can＇t breathe", "labels": {"minor_signal": false, "red_flag": "breathing_difficulty", "injury": "none", "note_ok": false}, "hard_stop": false}
+{"phrase": "I can\u02bct breathe", "labels": {"minor_signal": false, "red_flag": "breathing_difficulty", "injury": "none", "note_ok": false}, "hard_stop": false}
+{"phrase": "I can\uff07t breathe", "labels": {"minor_signal": false, "red_flag": "breathing_difficulty", "injury": "none", "note_ok": false}, "hard_stop": false}
 {"phrase": "left arm went numb on the treadmill", "labels": {"minor_signal": false, "red_flag": "numbness", "injury": "none", "note_ok": false}, "hard_stop": false}
 {"phrase": "I felt faint and almost passed out", "labels": {"minor_signal": false, "red_flag": "fainting", "injury": "none", "note_ok": false}, "hard_stop": false}
 {"phrase": "my heart is fluttering weird", "labels": {"minor_signal": false, "red_flag": "palpitations", "injury": "none", "note_ok": false}, "hard_stop": false}
@@ -50,10 +50,10 @@
 {"phrase": "i feel faint", "labels": {"minor_signal": false, "red_flag": "fainting", "injury": "none", "note_ok": false}, "hard_stop": false}
 {"phrase": "no no 8 fine 45 (actually chest tight)", "labels": {"minor_signal": false, "red_flag": "chest_pain", "injury": "none", "note_ok": false}, "hard_stop": false}
 {"phrase": "no idea, chest pain", "labels": {"minor_signal": false, "red_flag": "chest_pain", "injury": "none", "note_ok": false}, "hard_stop": false}
-{"phrase": "🤕", "labels": {"minor_signal": false, "red_flag": "head_injury", "injury": "none", "note_ok": false}, "hard_stop": false}
-{"phrase": "🤕 my head", "labels": {"minor_signal": false, "red_flag": "head_injury", "injury": "none", "note_ok": false}, "hard_stop": false}
+{"phrase": "\ud83e\udd15", "labels": {"minor_signal": false, "red_flag": "head_injury", "injury": "none", "note_ok": false}, "hard_stop": false}
+{"phrase": "\ud83e\udd15 my head", "labels": {"minor_signal": false, "red_flag": "head_injury", "injury": "none", "note_ok": false}, "hard_stop": false}
 {"phrase": "my head", "labels": {"minor_signal": false, "red_flag": "none", "injury": "unclear", "note_ok": false}, "hard_stop": false}
-{"phrase": "im 15", "labels": {"minor_signal": true, "red_flag": "none", "injury": "none", "note_ok": false}, "hard_stop": false}
+{"phrase": "still in year ten at school", "labels": {"minor_signal": true, "red_flag": "none", "injury": "none", "note_ok": false}, "hard_stop": false}
 {"phrase": "I'm 15", "labels": {"minor_signal": true, "red_flag": "none", "injury": "none", "note_ok": false}, "hard_stop": false}
 {"phrase": "i am 15", "labels": {"minor_signal": true, "red_flag": "none", "injury": "none", "note_ok": false}, "hard_stop": false}
 {"phrase": "yes, im 15", "labels": {"minor_signal": true, "red_flag": "none", "injury": "none", "note_ok": false}, "hard_stop": false}
@@ -65,7 +65,7 @@
 {"phrase": "im 17 not 25", "labels": {"minor_signal": true, "red_flag": "none", "injury": "none", "note_ok": false}, "hard_stop": false}
 {"phrase": "my age is 15", "labels": {"minor_signal": true, "red_flag": "none", "injury": "none", "note_ok": false}, "hard_stop": false}
 {"phrase": "15yo", "labels": {"minor_signal": true, "red_flag": "none", "injury": "none", "note_ok": false}, "hard_stop": false}
-{"phrase": "15歳", "labels": {"minor_signal": true, "red_flag": "none", "injury": "none", "note_ok": false}, "hard_stop": false}
+{"phrase": "15\u6b73", "labels": {"minor_signal": true, "red_flag": "none", "injury": "none", "note_ok": false}, "hard_stop": false}
 {"phrase": "minor", "labels": {"minor_signal": true, "red_flag": "none", "injury": "none", "note_ok": false}, "hard_stop": false}
 {"phrase": "i'm a minor", "labels": {"minor_signal": true, "red_flag": "none", "injury": "none", "note_ok": false}, "hard_stop": false}
 {"phrase": "I'm a teen", "labels": {"minor_signal": true, "red_flag": "none", "injury": "none", "note_ok": false}, "hard_stop": false}
@@ -149,3 +149,25 @@
 {"phrase": "{knee hurts}", "labels": {"minor_signal": false, "red_flag": "none", "injury": "current", "note_ok": false}, "hard_stop": false}
 {"phrase": "knee buckled on the stairs", "labels": {"minor_signal": false, "red_flag": "injury", "injury": "none", "note_ok": false}, "hard_stop": false}
 {"phrase": "im 15, feeling fine", "labels": {"minor_signal": true, "red_flag": "none", "injury": "none", "note_ok": false}, "hard_stop": false}
+{"phrase": "yes", "labels": {"minor_signal": false, "red_flag": "none", "injury": "none", "note_ok": true}, "hard_stop": false}
+{"phrase": "ok", "labels": {"minor_signal": false, "red_flag": "none", "injury": "none", "note_ok": true}, "hard_stop": false}
+{"phrase": "sounds good", "labels": {"minor_signal": false, "red_flag": "none", "injury": "none", "note_ok": true}, "hard_stop": false}
+{"phrase": "lets go", "labels": {"minor_signal": false, "red_flag": "none", "injury": "none", "note_ok": true}, "hard_stop": false}
+{"phrase": "cleared my head with a run", "labels": {"minor_signal": false, "red_flag": "none", "injury": "none", "note_ok": true}, "hard_stop": false}
+{"phrase": "slept eight hours and woke up ready", "labels": {"minor_signal": false, "red_flag": "none", "injury": "none", "note_ok": true}, "hard_stop": false}
+{"phrase": "the session felt smooth", "labels": {"minor_signal": false, "red_flag": "none", "injury": "none", "note_ok": true}, "hard_stop": false}
+{"phrase": "grabbed a banana on the way out", "labels": {"minor_signal": false, "red_flag": "none", "injury": "none", "note_ok": true}, "hard_stop": false}
+{"phrase": "looking forward to the next session", "labels": {"minor_signal": false, "red_flag": "none", "injury": "none", "note_ok": true}, "hard_stop": false}
+{"phrase": "all set for tomorrow", "labels": {"minor_signal": false, "red_flag": "none", "injury": "none", "note_ok": true}, "hard_stop": false}
+{"phrase": "thanks, that helps", "labels": {"minor_signal": false, "red_flag": "none", "injury": "none", "note_ok": true}, "hard_stop": false}
+{"phrase": "see you in the morning", "labels": {"minor_signal": false, "red_flag": "none", "injury": "none", "note_ok": true}, "hard_stop": false}
+{"phrase": "water bottle is packed", "labels": {"minor_signal": false, "red_flag": "none", "injury": "none", "note_ok": true}, "hard_stop": false}
+{"phrase": "stretched for five minutes after", "labels": {"minor_signal": false, "red_flag": "none", "injury": "none", "note_ok": true}, "hard_stop": false}
+{"phrase": "the playlist was great", "labels": {"minor_signal": false, "red_flag": "none", "injury": "none", "note_ok": true}, "hard_stop": false}
+{"phrase": "took the stairs at work", "labels": {"minor_signal": false, "red_flag": "none", "injury": "none", "note_ok": true}, "hard_stop": false}
+{"phrase": "feeling steady today", "labels": {"minor_signal": false, "red_flag": "none", "injury": "none", "note_ok": true}, "hard_stop": false}
+{"phrase": "lunch was rice and eggs", "labels": {"minor_signal": false, "red_flag": "none", "injury": "none", "note_ok": true}, "hard_stop": false}
+{"phrase": "walked the dog after dinner", "labels": {"minor_signal": false, "red_flag": "none", "injury": "none", "note_ok": true}, "hard_stop": false}
+{"phrase": "ready when you are", "labels": {"minor_signal": false, "red_flag": "none", "injury": "none", "note_ok": true}, "hard_stop": false}
+{"phrase": "that plan looks right", "labels": {"minor_signal": false, "red_flag": "none", "injury": "none", "note_ok": true}, "hard_stop": false}
+{"phrase": "nothing unusual to report", "labels": {"minor_signal": false, "red_flag": "none", "injury": "none", "note_ok": true}, "hard_stop": false}
