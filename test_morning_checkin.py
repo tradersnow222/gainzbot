@@ -107,6 +107,20 @@ class TestDayType:
         assert push["proposal"]["changes"]["load"] == 110
         assert push["proposal"]["changes"]["load"] != 121
 
+    def test_sleep_and_sleep_hours_both_work_and_an_unknown_key_names_the_expected_keys(self):
+        scores = {"soreness": 1, "energy": 5, "stress": 1}
+        by_sleep = MorningCheckIn().check_in({"sleep": 8, **scores})
+        by_hours = MorningCheckIn().check_in({"sleep_hours": 8, **scores})
+        assert by_sleep["ok"] is True
+        assert by_hours["ok"] is True
+        assert by_sleep["day"] == by_hours["day"] == "push"
+        unknown = MorningCheckIn().check_in({"hours": 8, **scores})
+        assert unknown["ok"] is False
+        assert unknown["applied"] is False
+        assert "Unknown key: 'hours'" in unknown["message"]
+        for key in ("sleep_hours", "soreness", "energy", "stress"):
+            assert key in unknown["message"]
+
     def test_missing_fields_change_nothing(self):
         result = MorningCheckIn().check_in({"sleep": 8}, 100)
         assert result["ok"] is False

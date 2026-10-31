@@ -2,6 +2,8 @@
 """Bot-led day. The user answers in a word or a number. They do not start the chat."""
 
 from datetime import date, timedelta
+import json
+import os
 import re
 
 from morning_checkin import MorningCheckIn
@@ -202,7 +204,7 @@ class DailyLoop:
     still come from the minutes and goal arguments.
     """
 
-    def __init__(self, load=80, minutes=45, calories=None, confirmed_at=None, goal="hold", signals=None, outreach=None, history=None, profile=None):
+    def __init__(self, load=80, minutes=45, calories=None, confirmed_at=None, goal="hold", signals=None, outreach=None, history=None, profile=None, week_path=None):
         self.load = load
         self.minutes = minutes
         self.calories = calories
@@ -211,6 +213,7 @@ class DailyLoop:
         self.signals = signals
         self.outreach = outreach
         self.profile = profile
+        self.week_path = week_path
         self.history = list(history) if history else []
         self.phase = {}
         self.notes = {}
@@ -423,6 +426,40 @@ class DailyLoop:
             return "Readiness has to pass before training."
         return None
 
+    def _week_file(self):
+        if self.week_path:
+            return self.week_path
+        return os.path.join(os.path.dirname(os.path.abspath(__file__)), "data", "week.json")
+
+    def _confirmed_week(self):
+        """The saved week, or None when the file is missing or not confirmed."""
+        path = self._week_file()
+        if not path or not os.path.isfile(path):
+            return None
+        try:
+            with open(path, encoding="utf-8") as handle:
+                loaded = json.load(handle)
+        except (OSError, json.JSONDecodeError):
+            return None
+        if not isinstance(loaded, dict):
+            return None
+        confirmation = loaded.get("confirmation")
+        sessions = loaded.get("sessions")
+        if not isinstance(confirmation, dict) or not confirmation.get("record_id"):
+            return None
+        if not isinstance(sessions, list):
+            return None
+        return loaded
+
+    def _confirmed_session(self, day):
+        loaded = self._confirmed_week()
+        if loaded is None:
+            return None
+        for row in loaded["sessions"]:
+            if isinstance(row, dict) and str(row.get("date")) == str(day):
+                return row
+        return None
+
     def _workout(self, day):
         blocked = self._before_training(day)
         if blocked:
@@ -436,16 +473,60 @@ class DailyLoop:
         )
         day_name = checked.get("day") or "normal"
         changes = (checked.get("proposal") or {}).get("changes") or {}
-        load = changes.get("load", self.load)
-        available = self.notes[day].get("minutes", self.minutes)
-        if day_name == "easy":
-            session_minutes = max(15, int(round(available * 0.7)))
-            lead = "Easy day."
+        session = self._confirmed_session(day)
+        needs_yes = False
+        name = None
+        exercises = None
+        if session:
+            name = session.get("name") or "Session"
+            exercises = session.get("exercises") if isinstance(session.get("exercises"), list) else []
+            available = session.get("minutes", self.notes[day].get("minutes", self.minutes))
+            session_load = session.get("load", self.load)
+            proposed = changes.get("load")
+            load = session_load
+            if isinstance(proposed, (int, float)) and isinstance(session_load, (int, float)):
+                if proposed > session_load:
+                    needs_yes = True
+                    load = proposed
+                elif proposed < session_load:
+                    load = proposed
+            if day_name == "easy":
+                session_minutes = max(15, int(round(available * 0.7)))
+                lead = f"Easy day. {name}."
+            else:
+                session_minutes = available
+                lead = f"{name}."
+            names = []
+            for item in exercises:
+                if isinstance(item, dict) and isinstance(item.get("name"), str):
+                    names.append(item["name"])
+                elif isinstance(item, str) and item:
+                    names.append(item)
+            shown = ", ".join(names)
+            text = f"{lead} {shown}. {session_minutes} min, load {load}."
+            if needs_yes:
+                text += " Yes to raise the load."
+            week = self._confirmed_week()
+            dates = [
+                str(row.get("date"))
+                for row in (week or {}).get("sessions", [])
+                if isinstance(row, dict) and row.get("date")
+            ]
+            first = min(dates) if dates else None
+            if session.get("experience") == "intermediate" and str(day) == first:
+                text += " Pick a weight you can lift 10 times with 2 reps left."
         else:
-            session_minutes = available
-            lead = f"Today is a {day_name} day."
+            load = changes.get("load", self.load)
+            available = self.notes[day].get("minutes", self.minutes)
+            if day_name == "easy":
+                session_minutes = max(15, int(round(available * 0.7)))
+                lead = "Easy day."
+            else:
+                session_minutes = available
+                lead = f"Today is a {day_name} day."
+            text = f"{lead} {session_minutes} min, load {load}."
         food = f"{self.calories} kcal" if self.calories is not None else self.goal
-        text = f"{lead} {session_minutes} min, load {load}. Food: {food}."
+        text = f"{text} Food: {food}."
         if self.signals is not None and "resting_hr" in self.signals.abnormal(as_of):
             text += " If you feel unwell, check with a doctor."
         if self.signals is not None and self.signals.connected():
@@ -455,12 +536,16 @@ class DailyLoop:
             if note and note != "Today is on plan.":
                 text = f"{note} {text}"
         row = {
-            "day": day_name,
+            "day": name or day_name,
             "minutes": session_minutes,
             "load": load,
             "food": food,
             "text": text,
+            "needs_yes": needs_yes,
         }
+        if name:
+            row["name"] = name
+            row["exercises"] = exercises
         self.workouts[day] = row
         self.phase[day] = "workout"
         return text

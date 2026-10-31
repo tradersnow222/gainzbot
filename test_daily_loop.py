@@ -266,6 +266,66 @@ def test_the_onboarding_profile_opens_the_day():
     assert blocked.phase[day] == "paused"
 
 
+def test_a_confirmed_week_returns_that_session_without_a_yes(tmp_path):
+    import json
+
+    from daily_loop import DailyLoop, adult_profile
+
+    day = "2026-11-02"
+    exercises = [
+        {"name": "Bench press", "sets": 4, "reps": "6-10"},
+        {"name": "Barbell row", "sets": 4, "reps": "6-10"},
+    ]
+    week = {
+        "plan": {"training": {"current_load": 100, "previous_load": 100}},
+        "sessions": [{
+            "date": day,
+            "name": "Upper",
+            "load": 100,
+            "minutes": 45,
+            "experience": "intermediate",
+            "exercises": exercises,
+        }],
+        "confirmation": {
+            "record_id": "rec-1",
+            "plan_hash": "abc",
+            "saved_at": "2026-10-31T00:00:00Z",
+        },
+    }
+    path = tmp_path / "week.json"
+    path.write_text(json.dumps(week), encoding="utf-8")
+    loop = DailyLoop(load=80, minutes=45, calories=2200, profile=adult_profile(), week_path=str(path))
+    loop.open_morning(day)
+    text = loop.hear(day, "no, 7, 2, 4, 2")
+    assert loop.phase[day] == "workout"
+    assert loop.workouts[day]["name"] == "Upper"
+    assert loop.workouts[day]["exercises"] == exercises
+    assert loop.workouts[day]["needs_yes"] is False
+    assert text.startswith("Upper.")
+    assert "Bench press" in text
+    assert "Barbell row" in text
+    assert "yes" not in text.lower()
+    assert "push" not in text.lower()
+    assert "Pick a weight you can lift 10 times with 2 reps left." in text
+    raised = DailyLoop(
+        load=100,
+        minutes=45,
+        profile=adult_profile(),
+        week_path=str(path),
+        history=[{
+            "date": "2026-10-25T12:00:00Z",
+            "confirmed": True,
+            "changes": {"load": 100},
+        }],
+    )
+    raised.open_morning(day)
+    raised_text = raised.hear(day, "no, 7, 2, 4, 2")
+    assert raised.workouts[day]["name"] == "Upper"
+    assert raised.workouts[day]["needs_yes"] is True
+    assert "yes" in raised_text.lower()
+    assert raised.workouts[day]["load"] == 110
+
+
 def test_a_clear_no_with_sleep_and_soreness_sends_the_session_in_one_turn():
     from daily_loop import DailyLoop, adult_profile
     from red_flag_check import RedFlagChecker, is_passing_check_in
