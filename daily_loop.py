@@ -9,6 +9,7 @@ import re
 from morning_checkin import MorningCheckIn
 from red_flag_check import RedFlagChecker, clear_safety_no, is_passing_check_in
 from readiness_screen import ReadinessScreen, passing_readiness
+from safety_labels import hard_stop, hard_stop_message, label_action
 from signals import read_gap_reply
 
 
@@ -213,6 +214,48 @@ def _remark_allowed(note):
     if words and all(token in _BARE_YES for token in words):
         return False
     return True
+
+
+def _safety_line(reply):
+    """Hard-stop copy plus the checker's own line when it has one. Negation is ignored."""
+    from record_confirmation import reply_pause
+
+    message = hard_stop_message()
+    paused = reply_pause(reply) if isinstance(reply, str) else None
+    extra = getattr(paused, "message", None) if paused is not None else None
+    if isinstance(extra, str) and extra.strip() and extra not in message:
+        message = f"{message} {extra.strip()}"
+    if "doctor" not in message.lower():
+        message = (
+            message
+            + " Rest today. Come back tomorrow, or after you see a doctor."
+        )
+    return message
+
+
+def _label_hold_text(reply, labels):
+    """A red flag uses the emergency line. A second unclear uses the rest line."""
+    from safety_labels import validate_labels
+
+    parsed, reason = validate_labels(labels) if labels is not None else (None, "missing")
+    flag = parsed["red_flag"] if reason is None else "none"
+    if flag in {"chest_pain", "cardiac_symptoms", "breathing_difficulty", "fainting"}:
+        return _safety_line(reply)
+    return "Rest today. Come back tomorrow, or after you see a doctor."
+
+
+def _evening_explicit(reply):
+    """A did-it or food answer. A leftover remark is not one of these."""
+    text = _fold(reply)
+    if not text:
+        return False
+    if re.search(r"\b(?:did not|didnt)\b", text):
+        return True
+    if re.search(r"\b(?:yes|yep|yeah|did|no|nope)\b", text):
+        return True
+    if re.search(r"\bate\b", text):
+        return True
+    return False
 
 
 def _remark_pause(note):
@@ -502,10 +545,13 @@ class DailyLoop:
         self.nudges[day] = 1
         return _NUDGE
 
-    def hear(self, day, reply):
+    def hear(self, day, reply, labels=None):
         held = _onboarding_hold()
         if held:
             return held
+        if hard_stop(reply):
+            self.notes.setdefault(day, {})["reply"] = reply
+            return self._remember_pause(day, _safety_line(reply))
         phase = self.phase.get(day)
         if phase == "symptom":
             self.notes.setdefault(day, {})["reply"] = reply
@@ -514,21 +560,11 @@ class DailyLoop:
             split = _split_scored_no(reply)
             if split:
                 prefix, note = split
-                held = _remark_pause(note)
-                if held:
-                    return self._remember_pause(day, held)
-                if not _remark_allowed(note):
-                    self.phase[day] = "symptom"
-                    return _SYMPTOM
-                self.notes[day]["note"] = note
-                return self._after_symptom(day, prefix)
-            return self._unclear_symptom(day, reply)
+                return self._labeled_note(day, prefix, note, labels)
+            return self._free_text_hold(day, reply, labels)
         if phase == "signals":
             pending = self.pending.get(day, {"gaps": [], "personal": []})
             self.notes[day]["reply"] = (self.notes[day].get("reply") or "") + " " + reply
-            paused = self._text_pause(reply)
-            if paused:
-                return self._remember_pause(day, paused)
             self.notes[day].update(read_gap_reply(pending["gaps"], reply))
             self._use_hr_answer(day, f"{day}T08:00:00Z")
             for key in pending["personal"]:
@@ -537,14 +573,98 @@ class DailyLoop:
             return self._workout(day)
         if phase == "morning2":
             self.notes[day]["reply"] = (self.notes[day].get("reply") or "") + " " + reply
-            paused = self._text_pause(reply)
-            if paused:
-                return self._remember_pause(day, paused)
             self.notes[day].update(parse_morning(reply))
             return self._workout(day)
         if phase == "evening":
-            return self._evening(day, reply)
+            return self._evening(day, reply, labels)
         return "I'll pick it up in the morning."
+
+    def _unclear_path(self):
+        week = self._week_file()
+        return os.path.join(os.path.dirname(os.path.abspath(week)), "daily_unclear.json")
+
+    def _unclear_count(self, day):
+        path = self._unclear_path()
+        if not os.path.isfile(path):
+            return 0
+        try:
+            with open(path, encoding="utf-8") as handle:
+                loaded = json.load(handle)
+        except (OSError, json.JSONDecodeError):
+            return 0
+        if not isinstance(loaded, dict):
+            return 0
+        value = loaded.get(str(day))
+        if isinstance(value, int) and value >= 0:
+            return value
+        return 0
+
+    def _set_unclear(self, day, count):
+        path = self._unclear_path()
+        loaded = {}
+        if os.path.isfile(path):
+            try:
+                with open(path, encoding="utf-8") as handle:
+                    found = json.load(handle)
+                if isinstance(found, dict):
+                    loaded = found
+            except (OSError, json.JSONDecodeError):
+                loaded = {}
+        loaded[str(day)] = count
+        temporary = path + ".tmp"
+        try:
+            os.makedirs(os.path.dirname(path), exist_ok=True)
+            with open(temporary, "w", encoding="utf-8") as handle:
+                json.dump(loaded, handle)
+                handle.write("\n")
+            os.replace(temporary, path)
+        except OSError:
+            return False
+        return True
+
+    def _free_text_hold(self, day, reply, labels):
+        """A remark with no scores needs labels. One miss re-asks. The next holds."""
+        action = label_action(labels, self._unclear_count(day))
+        if action == "hold":
+            return self._remember_pause(day, _label_hold_text(reply, labels))
+        if action == "clear_age":
+            self.phase[day] = "symptom"
+            return "How old are you? Please type the number."
+        if action == "follow_up":
+            self._set_unclear(day, self._unclear_count(day) + 1)
+            self.phase[day] = "symptom"
+            return _SYMPTOM
+        if action == "note" and isinstance(reply, str):
+            self.notes.setdefault(day, {})["note"] = reply
+        self.phase[day] = "symptom"
+        return _SYMPTOM
+
+    def _labeled_note(self, day, prefix, note, labels):
+        """A leftover remark. note_ok stores it. Anything else does not send the day."""
+        action = label_action(labels, self._unclear_count(day))
+        if action == "hold":
+            return self._remember_pause(day, _label_hold_text(note, labels))
+        if action == "clear_age":
+            self.phase[day] = "symptom"
+            return "How old are you? Please type the number."
+        if action == "follow_up":
+            self._set_unclear(day, self._unclear_count(day) + 1)
+            self.phase[day] = "symptom"
+            return _SYMPTOM
+        words = re.findall(r"[a-z]+", _fold(note))
+        if words and all(word in _BARE_YES for word in words):
+            self.phase[day] = "symptom"
+            return _SYMPTOM
+        if action == "note":
+            self.notes[day]["note"] = note
+            return self._after_symptom(day, prefix)
+        if action == "swap":
+            self.notes[day]["injury"] = note
+            return self._after_symptom(day, prefix)
+        if action == "pass":
+            return self._after_symptom(day, prefix)
+        self.phase[day] = "symptom"
+        return _SYMPTOM
 
     def _symptom_hold(self, reply):
         """A real symptom in the whole message. A missing checklist does not hold."""
@@ -869,10 +989,17 @@ class DailyLoop:
         self.phase[day] = "workout"
         return text
 
-    def _evening(self, day, reply):
-        paused = self._text_pause(reply)
-        if paused:
-            return self._remember_pause(day, paused)
+    def _evening(self, day, reply, labels=None):
+        if not _evening_explicit(reply):
+            action = label_action(labels, self._unclear_count(day))
+            if action == "hold":
+                return self._remember_pause(day, _label_hold_text(reply, labels))
+            if action == "clear_age":
+                return "How old are you? Please type the number."
+            if action != "note" and action != "pass" and action != "swap":
+                self._set_unclear(day, self._unclear_count(day) + 1)
+                self.phase[day] = "evening"
+                return _EVENING
         parsed = parse_evening(reply)
         if parsed.get("ate") == "" and self.notes[day].get("ate"):
             parsed = {key: value for key, value in parsed.items() if key != "ate"}

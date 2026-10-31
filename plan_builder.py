@@ -888,9 +888,10 @@ class PlanBuilder:
         }
 
     def save(self, plan, confirmation, path, sessions=None, check_in_result=None, readiness_result=None):
-        from onboarding import hold_is_active
+        from onboarding import hold_is_active, persist_active_hold
 
         if hold_is_active():
+            persist_active_hold()
             return self._saved_no("Onboarding is held for today. This week is not saved.")
         from onboarding import confirm_phase_active
         from routines import plan_schedule

@@ -9,6 +9,8 @@ import os
 import re
 import unicodedata
 
+from safety_labels import hard_stop, hard_stop_message, label_action, validate_labels
+
 
 PAR_Q = (
     ("chest_pain_at_rest", "Do you have chest pain while resting?"),
@@ -47,9 +49,8 @@ _SETUP_WORDS = ("clone", "pip", "pytest", "release_check", "install", "git ")
 
 HAPPY_PATH = (
     "hello",
-    "hold, male, age 30, 80 kg, 180 cm, no injuries",
+    "hold, male, 80 kg, 180 cm, general training, 3 days 45 min, bodyweight, beginner, no injuries",
     "30",
-    "ok",
     "all no",
     "yes",
 )
@@ -961,16 +962,6 @@ def _parse_explicit(state, reply):
     if stated == "none":
         if "injuries" not in answers:
             answers["injuries"] = "none"
-    elif not _age_correction(reply):
-        if (
-            _untimed_named_injury(reply)
-            or _untimed_pain_phrase(reply)
-            or _loose_timing(reply)
-        ):
-            _ask_injury_when(state, reply)
-        elif stated is not None and answers.get("injuries") in (None, "", "none"):
-            if not _acute_marker(reply):
-                answers["injuries"] = stated
     if re.search(r"\bparkrun\b", folded):
         answers["sport"] = "parkrun"
         if re.search(r"\b(?:saturdays?|sat)\b", folded):
@@ -1052,6 +1043,12 @@ def _drop_target_ask_for_goal(state):
 _INJURY_WHEN = (
     "Is that an old injury that's healed, or something recent "
     "(last few weeks) or still painful?"
+)
+_LABEL_FOLLOWUP = (
+    "One check on that message. "
+    "Tap Old & healed or Recent or still painful, "
+    "or say if this is a minor or a red flag. "
+    "A second unclear answer pauses today."
 )
 _REST_LINE = "Rest today. Come back tomorrow, or after you see a doctor."
 _HOLD_CLOSED = (
@@ -1408,16 +1405,19 @@ def _clear_age(state):
     _clear_proposal(state)
 
 
-def _take_age_number(state, reply):
-    """Readiness runs on the typed number. Leftover text is not an age."""
+def submit_age(state, age):
+    """Store a typed age. 13 to 100 only. Under 18 means no plan.
+
+    The argument is an int. A sentence is not an age.
+    """
     _clear_proposal(state)
-    number = _reply_age(reply)
-    if number is None or not 1 <= number <= 120:
+    if isinstance(age, bool) or not isinstance(age, int) or age < 13 or age > 100:
         state["phase"] = "age"
         state["awaiting"] = None
         state["need_age"] = True
         state["error"] = _AGE_ASK
         return True
+    number = age
     state["answers"]["age"] = str(number)
     state["awaiting"] = None
     state["need_age"] = False
@@ -1433,6 +1433,14 @@ def _take_age_number(state, reply):
     state["hold_message"] = None
     state["phase"] = "confirm"
     return True
+
+
+def _take_age_number(state, reply):
+    """The age step. Only a bare integer reaches submit_age."""
+    folded = _fold(reply) if isinstance(reply, str) else ""
+    if re.fullmatch(r"\d{1,3}", folded):
+        return submit_age(state, int(folded))
+    return submit_age(state, None)
 
 
 def _reply_target_kg(reply):
@@ -2158,63 +2166,268 @@ def _note_age_correction(state, reply):
     return True
 
 
-def apply_reply(state, reply):
-    state["error"] = None
-    if hold_is_active():
-        _adopt_hold(state)
-        _handle_symptom(state, reply)
+def _injury_button(reply):
+    """Tap options for old-or-recent. The engine stores the enum, not the sentence.
+
+    An emoji or any other mark is not the button. It does not store the injury.
+    """
+    if not isinstance(reply, str):
+        return None
+    if any(ord(char) > 127 for char in reply):
+        return None
+    raw = " ".join(reply.strip().lower().replace("&", " and ").split())
+    if raw in {"old and healed", "old"}:
+        return "old"
+    if raw in {"recent or still painful", "recent"}:
+        return "current"
+    return None
+
+
+def submit_injury_when(state, choice):
+    """choice is 'old' or 'current'. A sentence is not a choice."""
+    if choice == "old":
+        label = state.get("pending_injury") or ""
+        if label:
+            state["answers"]["injuries"] = label
+        state.pop("pending_injury", None)
+        state["awaiting"] = None
+        state["error"] = None
+        state["label_unclear"] = 0
+        if state.get("phase") != "confirm":
+            state["phase"] = "intake"
+        return True
+    if choice == "current":
+        state.pop("pending_injury", None)
+        state["awaiting"] = None
+        state["label_unclear"] = 0
+        _hold_symptom(state, choice, _plain_pause())
+        return True
+    return False
+
+
+def submit_par_q(state, choice):
+    """'all_no', or a dict of PAR-Q key to bool. Raw text is not an answer."""
+    if choice == "all_no":
+        parsed = {key: False for key, _question in PAR_Q}
+        _store_par_q(state, parsed, False)
+        state["par_q_reply"] = "all no"
+        state["label_unclear"] = 0
+        return True
+    if not isinstance(choice, dict):
+        return False
+    expected = {key for key, _question in PAR_Q}
+    if set(choice) != expected:
+        return False
+    if any(value is not True and value is not False for value in choice.values()):
+        return False
+    _store_par_q(state, dict(choice), False)
+    state["par_q_reply"] = "yes" if any(choice.values()) else "all no"
+    state["label_unclear"] = 0
+    return True
+
+
+def _emergency_pause(reply):
+    """The hold line. The decision was the backstop. The checker line is included when it has one."""
+    from types import SimpleNamespace
+    from record_confirmation import reply_pause
+
+    message = hard_stop_message()
+    paused = reply_pause(reply) if isinstance(reply, str) else None
+    extra = getattr(paused, "message", None) if paused is not None else None
+    if isinstance(extra, str) and extra.strip() and extra not in message:
+        message = f"{message} {extra.strip()}"
+    recommendations = list(getattr(paused, "recommendations", None) or [])
+    return SimpleNamespace(message=message, recommendations=recommendations)
+
+
+def _profile_line(folded):
+    """Goal, body, or training facts. An injury sentence is not one of these by itself."""
+    if not folded:
+        return False
+    if re.search(r"\b\d+(?:\.\d+)?\s*kg\b", folded) or re.search(r"\b\d{2,3}\s*cm\b", folded):
+        return True
+    if re.search(r"\b(?:lbs?|pounds?)\b", folded):
+        return True
+    if re.search(r"\b(?:male|female|man|woman)\b", folded) and re.search(
+        r"\b(?:cut|lose|gain|hold)\b", folded
+    ):
+        return True
+    if "no injuries" in folded or re.search(r"\binjuries\s+none\b", folded):
+        return True
+    if re.search(r"\b[1-7]\s+days?\b", folded):
+        return True
+    if "general training" in folded or re.search(r"\b(?:dumbbells|bodyweight|barbell|full gym)\b", folded):
+        return True
+    if re.search(r"\b(?:beginner|intermediate|advanced)\b", folded):
+        return True
+    if re.search(r"\bwant\b", folded):
+        return True
+    if re.fullmatch(r"(?:cut|lose|gain|hold)", folded):
+        return True
+    if re.search(
+        r"\b(?:apple health|apple watch|garmin|oura|whoop|fitbit|food app|smart scale)\b",
+        folded,
+    ):
+        return True
+    return False
+
+
+def _structured_reply(state, reply):
+    """Intake slots, buttons, edits, and greetings. These do not need safety labels."""
+    if not isinstance(reply, str):
+        return False
+    if _leg_emoji_only(reply):
+        return True
+    folded = _fold(reply)
+    if not folded:
+        return False
+    if folded in {"hello", "hi", "hey", "skip"} or folded in _ACCEPT:
+        return True
+    if state.get("awaiting") in {"target", "weight", "injury"}:
+        return True
+    if _explicit_edit(reply) is not None:
+        return True
+    if _profile_line(folded):
+        return True
+    if state.get("asked") == "par_q":
+        return True
+    if state.get("asked") == "training" and folded in {"no", "none", "nope"}:
+        return True
+    status, parsed = read_par_q(reply)
+    if status == "all_no" or (status != "unclear" and parsed):
+        return True
+    if state.get("phase") == "confirm":
+        if (
+            _is_plan_yes(reply)
+            or _schedule_aside(reply)
+            or _harmless_aside(reply)
+            or _nonblocking_stat(folded)
+            or _counted_training(reply)
+        ):
+            return True
+    return False
+
+
+def _store_old_from_text(state, reply):
+    """The area, once the label or the button already says old."""
+    folded = _fold(reply) if isinstance(reply, str) else ""
+    label = _named_injury_label(folded) or ""
+    if not label:
+        stated = _stated_injury(folded)
+        if stated and stated != "none":
+            label = stated
+    if not label:
+        label = state.get("pending_injury") or ""
+    if label:
+        state["answers"]["injuries"] = label
+    state.pop("pending_injury", None)
+    state["awaiting"] = None
+    state["label_unclear"] = 0
+
+
+def _ask_label_followup(state, reply, labels):
+    """One follow-up. The next unclear holds the day."""
+    count = state.get("label_unclear") or 0
+    if not isinstance(count, int) or count < 0:
+        count = 0
+    if count >= 1:
+        _hold_symptom(state, reply, _plain_pause())
         return
-    paused = _symptom_hold(reply)
-    if paused is not None:
-        _hold_symptom(state, reply, paused)
+    state["label_unclear"] = count + 1
+    _clear_proposal(state)
+    parsed, reason = validate_labels(labels) if labels is not None else (None, "missing")
+    if reason is None and parsed.get("injury") == "unclear":
+        _ask_injury_when(state, reply)
         return
-    if state.get("awaiting") == "injury_when":
-        _take_injury_when(state, reply)
+    state["error"] = _LABEL_FOLLOWUP
+    if state.get("phase") == "confirm":
+        state["phase"] = "confirm"
+
+
+def _apply_label_decision(state, reply, labels):
+    """One label action. True when this reply is finished."""
+    count = state.get("label_unclear") or 0
+    action = label_action(labels, count)
+    if action == "follow_up":
+        if isinstance(reply, str) and _profile_line(_fold(reply)):
+            _parse_explicit(state, reply)
+        _ask_label_followup(state, reply, labels)
+        return True
+    if action == "hold":
+        parsed, reason = validate_labels(labels)
+        flag = parsed["red_flag"] if reason is None else "none"
+        if flag in {"chest_pain", "cardiac_symptoms", "breathing_difficulty", "fainting"}:
+            _hold_symptom(state, reply, _emergency_pause(reply))
+        else:
+            _hold_symptom(state, reply, _plain_pause())
+        return True
+    if action == "clear_age":
+        _clear_age(state)
+        state["phase"] = "age"
+        state["awaiting"] = None
+        state["error"] = _AGE_ASK
+        state["label_unclear"] = 0
+        return True
+    if action == "swap":
+        _parse_explicit(state, reply)
+        _store_old_from_text(state, reply)
+        state["error"] = None
+        if state.get("phase") != "confirm":
+            state["phase"] = "intake"
+        return True
+    if action in {"note", "pass"}:
+        state["label_unclear"] = 0
+        if action == "note" and isinstance(reply, str):
+            state["answers"]["remark"] = reply
+        if state.get("phase") == "confirm":
+            state["error"] = None
+            state["phase"] = "confirm"
+            return True
+        return False
+    return False
+
+
+def _take_injury_choice(state, reply, labels):
+    """A button, or a label that already says old or current."""
+    parsed = None
+    if labels is not None:
+        parsed, reason = validate_labels(labels)
+        if reason is None and parsed["red_flag"] != "none":
+            _apply_label_decision(state, reply, labels)
+            return
+        if reason is None and parsed["minor_signal"]:
+            _apply_label_decision(state, reply, labels)
+            return
+        if reason is None and parsed["injury"] in {"old", "current"}:
+            if parsed["injury"] == "old":
+                _store_old_from_text(state, reply if state.get("pending_injury") else reply)
+            submit_injury_when(state, parsed["injury"])
+            return
+    choice = _injury_button(reply)
+    if choice == "old":
+        submit_injury_when(state, "old")
         return
+    if choice == "current":
+        submit_injury_when(state, "current")
+        return
+    _ask_label_followup(state, reply, labels)
+
+
+def _take_structured(state, reply):
+    """A real intake slot clears a pending label check."""
+    state["label_unclear"] = 0
     if _leg_emoji_only(reply):
         _ask_which_area(state)
         return
-    phase = state.get("phase")
-    if phase == "symptom":
-        _handle_symptom(state, reply)
-        return
-    if phase == "age":
-        if _age_correction(reply) and _reply_age(reply) is None:
-            _clear_age(state)
-            state["phase"] = "age"
-            state["awaiting"] = None
-            state["error"] = _AGE_ASK
-            return
-        _handle_age(state, reply)
-        return
-    if phase == "blocked":
-        _handle_blocked(state, reply)
-        return
-    if state.get("awaiting") == "injury":
-        _take_injury_answer(state, reply)
-        return
-    folded = _fold(reply)
-    injury_branch = bool(
-        _untimed_named_injury(reply)
-        or _untimed_pain_phrase(reply)
-        or _loose_timing(reply)
-        or _pain_phrase_label(folded)
-        or (_named_injury_present(folded) and _strict_old_remainder(reply))
-    )
-    if phase == "confirm" and injury_branch and _age_correction(reply):
-        _note_age_correction(state, reply)
-        return
-    if phase == "confirm" and _pain_phrase_label(folded) and not _strict_old_remainder(reply):
-        _hold_symptom(state, reply, _plain_pause())
-        return
-    if phase == "confirm" and (_untimed_named_injury(reply) or _loose_timing(reply)):
-        _ask_injury_when(state, reply)
-        return
-    if phase == "confirm" and _handle_confirm(state, reply):
+    if state.get("phase") == "confirm" and _handle_confirm(state, reply):
         return
     if state.get("awaiting") == "target":
         _take_target_number(state, reply)
         return
+    if state.get("awaiting") == "injury":
+        _take_injury_answer(state, reply)
+        return
+    folded = _fold(reply) if isinstance(reply, str) else ""
     if folded == "skip":
         _remember_skip(state)
         return
@@ -2222,12 +2435,55 @@ def apply_reply(state, reply):
         _fill_group(state, state["asked"])
         return
     _parse_explicit(state, reply)
-    if state.get("awaiting") == "injury_when":
-        return
-    if _note_age_correction(state, reply):
-        return
-    if state["phase"] == "confirm":
+    if state.get("phase") == "confirm":
         _review_confirm_edit(state, reply)
+
+
+def apply_reply(state, reply, labels=None):
+    """One user reply. Hard-stop first, then host labels, then a structured slot.
+
+    Labels are the argument. They are never read out of reply.
+    """
+    state["error"] = None
+    text = reply if isinstance(reply, str) else ""
+    if hold_is_active():
+        _adopt_hold(state)
+        _handle_symptom(state, text)
+        return
+    if hard_stop(text):
+        _hold_symptom(state, text, _emergency_pause(text))
+        return
+    if state.get("awaiting") == "injury_when":
+        _take_injury_choice(state, text, labels)
+        return
+    if (
+        (state.get("label_unclear") or 0) >= 1
+        and state.get("phase") == "confirm"
+        and labels is None
+        and _is_plan_yes(text)
+    ):
+        _hold_symptom(state, text, _plain_pause())
+        return
+    phase = state.get("phase")
+    if phase == "symptom":
+        _handle_symptom(state, text)
+        return
+    if phase == "age":
+        _handle_age(state, text, labels)
+        return
+    if phase == "blocked":
+        _handle_blocked(state, text, labels)
+        return
+    if labels is not None:
+        if _apply_label_decision(state, text, labels):
+            return
+        if _structured_reply(state, text):
+            _take_structured(state, text)
+        return
+    if _structured_reply(state, text):
+        _take_structured(state, text)
+        return
+    _ask_label_followup(state, text, None)
 
 
 def _symptom_hold_message(paused):
@@ -2386,6 +2642,28 @@ def hold_is_active():
     """True while a symptom hold blocks onboarding, including a bad hold file."""
     kind, _saved = _read_hold_file()
     return kind == "active"
+
+
+def persist_active_hold():
+    """Write a memory hold to disk. A file that is already active stays as it is."""
+    if not hold_is_active():
+        return False
+    disk_kind, _disk = _read_hold_on_disk()
+    if disk_kind == "active":
+        return True
+    if not isinstance(_memory_hold, dict):
+        return False
+    path = onboarding_state_path()
+    temporary = path + ".tmp"
+    try:
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        with open(temporary, "w", encoding="utf-8") as handle:
+            json.dump(_memory_hold, handle)
+            handle.write("\n")
+        os.replace(temporary, path)
+    except OSError:
+        return False
+    return True
 
 
 def active_hold_message():
@@ -2577,26 +2855,20 @@ def _handle_symptom(state, reply):
     return True
 
 
-def _handle_age(state, reply):
-    """A typed number runs readiness. A yes stays here and does not confirm."""
-    from record_confirmation import reply_pause
-
+def _handle_age(state, reply, labels=None):
+    """A typed number runs readiness. A sentence is not an age."""
     _clear_proposal(state)
-    paused = reply_pause(reply)
-    if paused is not None:
-        return _hold_symptom(state, reply, paused)
+    if labels is not None and _apply_label_decision(state, reply, labels):
+        return True
     return _take_age_number(state, reply)
 
 
-def _handle_blocked(state, reply):
+def _handle_blocked(state, reply, labels=None):
     """Under 18, or readiness failed. A yes repeats that refusal."""
-    from record_confirmation import reply_pause
-
     _clear_proposal(state)
-    paused = reply_pause(reply)
-    if paused is not None:
-        return _hold_symptom(state, reply, paused)
-    if _reply_age(reply) is not None:
+    if labels is not None and _apply_label_decision(state, reply, labels):
+        return True
+    if isinstance(reply, str) and re.fullmatch(r"\d{1,3}", _fold(reply)):
         return _take_age_number(state, reply)
     _apply_age_readiness(state)
     state["phase"] = "blocked"
@@ -2635,23 +2907,11 @@ def _schedule_aside(reply):
 def _handle_confirm(state, reply):
     """Confirm only when the whole reply is a plan-yes.
 
-    Anything else is an edit. A clear weight or profile edit updates the
-    profile and the proposal is shown again. A symptom ends onboarding for
-    the day. An age hint asks for a typed age, and readiness runs on that
-    number before the plan is shown again. A clearly old injury is stored
-    and the plan is shown again.
+    A clear weight or profile edit updates the profile and the proposal is
+    shown again. A clock or a harmless aside stays on the proposal. Age and
+    injury changes come from the typed age and the host labels, not from
+    leftover words.
     """
-    folded = _fold(reply)
-    if _named_injury_present(folded) and _strict_old_remainder(reply) and not _acute_marker(reply):
-        _store_named_injury(state, reply)
-        state["error"] = None
-        state["awaiting"] = None
-        state["phase"] = "confirm"
-        _clear_proposal(state)
-        return True
-    paused = _symptom_hold(reply)
-    if paused is not None:
-        return _hold_symptom(state, reply, paused)
     if state.get("awaiting") == "weight":
         return _take_weight_number(state, reply)
     if _is_plan_yes(reply):
@@ -2665,9 +2925,6 @@ def _handle_confirm(state, reply):
         state["error"] = None
         state["phase"] = "confirm"
         return True
-    if _age_correction(reply):
-        _clear_age(state)
-        return _hold_age(state)
     if _counted_training(reply):
         state["error"] = None
         state["phase"] = "confirm"
@@ -2676,7 +2933,7 @@ def _handle_confirm(state, reply):
         state["error"] = None
         state["phase"] = "confirm"
         return True
-    return _hold_age(state)
+    return False
 
 
 def _apply_age_readiness(state):
@@ -2698,12 +2955,6 @@ def _apply_age_readiness(state):
 
 def _review_confirm_edit(state, reply):
     """A confirm-step reply that fell through still cannot stay confirmable."""
-    from record_confirmation import reply_pause
-
-    paused = reply_pause(reply)
-    if paused is not None:
-        _hold_symptom(state, reply, paused)
-        return
     age = _number(state["answers"].get("age"))
     if age is not None and age < 18:
         from readiness_screen import ReadinessScreen
@@ -2716,11 +2967,9 @@ def _review_confirm_edit(state, reply):
 
 
 def _is_plan_yes(reply):
-    from record_confirmation import is_clear_yes, reply_pause
+    from record_confirmation import is_clear_yes
     from routines import plan_schedule
 
-    if reply_pause(reply) is not None:
-        return False
     return is_clear_yes(reply) or plan_schedule(reply) is not None
 
 
@@ -2827,6 +3076,7 @@ def _confirm(state, reply):
         state["record"] = None
         return
     if hold_is_active():
+        persist_active_hold()
         _adopt_hold(state)
         state["confirmed"] = False
         state["record"] = None
@@ -3069,20 +3319,50 @@ def open_chat():
     return state, speak(state)
 
 
+def _host_reply(reply):
+    """A string, an int age, (text, labels), or {text, labels, age}."""
+    if isinstance(reply, bool):
+        return "", None, None
+    if isinstance(reply, int):
+        return str(reply), None, reply
+    if isinstance(reply, tuple) and len(reply) == 2:
+        text, labels = reply
+        return text if isinstance(text, str) else "", labels, None
+    if isinstance(reply, dict) and "text" in reply:
+        age = reply.get("age")
+        if isinstance(age, bool):
+            age = None
+        return reply.get("text") or "", reply.get("labels"), age
+    if isinstance(reply, str):
+        return reply, None, None
+    return "", None, None
+
+
 def run_chat(replies):
     """The onboarding entry. A hold dated today is checked before any reply.
 
     Confirm helpers run only while this loop is on a confirm-phase reply.
-    If a reply leaves a field blank, the next line asks for that field.
+    An int at the age step is submit_age. A tuple is (text, labels).
+    Labels are never parsed out of the text.
     """
     state = _state_for_attempt()
     bots = []
     for reply in replies:
+        text, labels, age = _host_reply(reply)
         token = None
         if state.get("phase") == "confirm":
             token = _CONFIRM_PHASE.set(True)
         try:
-            apply_reply(state, reply)
+            if age is not None and state.get("phase") == "age" and labels is None:
+                submit_age(state, age)
+            elif (
+                state.get("asked") == "par_q"
+                and labels is None
+                and text == "all_no"
+            ):
+                submit_par_q(state, "all_no")
+            else:
+                apply_reply(state, text, labels)
             bots.append(speak(state))
         finally:
             if token is not None:

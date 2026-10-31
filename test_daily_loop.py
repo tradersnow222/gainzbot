@@ -448,22 +448,31 @@ def test_no_but_palpitations_does_not_send_the_session():
 
 
 def test_a_no_with_anything_else_asks_the_symptom_line_again():
+    import os
+
     from daily_loop import _SYMPTOM, adult_profile
 
     day = "2026-10-26"
     unclear = (
         "no, болит грудь",
-        "no no 8 fine 45 (actually chest tight)",
         "no, but new pain in my knee",
         "no idea",
     )
     for reply in unclear:
         loop = DailyLoop(load=80, minutes=45, profile=adult_profile())
+        path = loop._unclear_path()
+        if os.path.isfile(path):
+            os.remove(path)
         loop.open_morning(day)
         again = loop.hear(day, reply)
         assert again == _SYMPTOM, reply
         assert loop.phase[day] == "symptom"
         assert day not in loop.workouts
+    tight = DailyLoop(load=80, minutes=45, profile=adult_profile())
+    tight.open_morning(day)
+    tight_text = tight.hear(day, "no no 8 fine 45 (actually chest tight)")
+    assert tight.phase[day] == "paused"
+    assert "medical emergency" in tight_text.lower()
     bandage = DailyLoop(load=80, minutes=45, profile=adult_profile())
     bandage.open_morning("2026-10-27")
     paused = bandage.hear("2026-10-27", "no \U0001F915")
@@ -472,6 +481,9 @@ def test_a_no_with_anything_else_asks_the_symptom_line_again():
     assert "head" in paused.lower() or "doctor" in paused.lower()
     for reply in ("no", "no 8 45", "no 8 fine 45"):
         loop = DailyLoop(load=80, minutes=45, profile=adult_profile())
+        for path in (loop._pause_file(), loop._unclear_path()):
+            if os.path.isfile(path):
+                os.remove(path)
         loop.open_morning(day)
         text = loop.hear(day, reply)
         assert text != _SYMPTOM, reply
@@ -590,7 +602,12 @@ def test_a_scored_no_with_a_plain_remark_keeps_the_note(tmp_path):
     remark = "no, 7, 2. yep doing parkrun at 9"
     loop = _live_loop(tmp_path)
     loop.open_morning(saturday)
-    text = loop.hear(saturday, remark)
+    text = loop.hear(saturday, remark, {
+        "minor_signal": False,
+        "red_flag": "none",
+        "injury": "none",
+        "note_ok": True,
+    })
     assert text != _SYMPTOM
     assert loop.phase[saturday] == "workout"
     assert loop.notes[saturday]["sleep"] == 7
@@ -720,7 +737,12 @@ def test_a_scored_no_remark_is_scanned_alone_and_allowlisted(tmp_path):
         pause_file.unlink()
     clear = _live_loop(tmp_path)
     clear.open_morning(saturday)
-    text = clear.hear(saturday, "no, 7, 2. yep doing parkrun at 9")
+    text = clear.hear(saturday, "no, 7, 2. yep doing parkrun at 9", {
+        "minor_signal": False,
+        "red_flag": "none",
+        "injury": "none",
+        "note_ok": True,
+    })
     assert text != _SYMPTOM
     assert clear.phase[saturday] == "workout"
     assert clear.notes[saturday]["note"] == "yep doing parkrun at 9"
@@ -761,10 +783,15 @@ def test_open_morning_does_not_reset_a_pause_or_a_hold(tmp_path):
 
 
 def test_a_bare_yes_or_yep_remark_is_not_a_note(tmp_path):
+    import os
+
     from daily_loop import _SYMPTOM
 
     for day in ("2026-11-02", "2026-10-31"):
         for reply in ("no 7 2 yes", "no 7 2 yep", "no, 7, 2. yep", "no, 7, 2. yes"):
+            unclear = tmp_path / "daily_unclear.json"
+            if unclear.exists():
+                unclear.unlink()
             loop = _live_loop(tmp_path)
             loop.open_morning(day)
             text = loop.hear(day, reply)
@@ -777,7 +804,12 @@ def test_a_bare_yes_or_yep_remark_is_not_a_note(tmp_path):
     saturday = "2026-10-31"
     clear = _live_loop(tmp_path)
     clear.open_morning(saturday)
-    text = clear.hear(saturday, "no, 7, 2. yep doing parkrun at 9")
+    text = clear.hear(saturday, "no, 7, 2. yep doing parkrun at 9", {
+        "minor_signal": False,
+        "red_flag": "none",
+        "injury": "none",
+        "note_ok": True,
+    })
     assert text != _SYMPTOM
     assert clear.phase[saturday] == "workout"
     assert clear.notes[saturday]["note"] == "yep doing parkrun at 9"

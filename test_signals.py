@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Connected signals skip the non-symptom questions. Proactive notes stay capped."""
 
+import os
 from pathlib import Path
 
 from daily_loop import DailyLoop, _SYMPTOM, adult_profile
@@ -217,6 +218,9 @@ def test_none_is_not_fresh_and_out_of_range_values_still_ask():
         assert f"resting heart rate {wearable}" not in corrected_text.lower()
         muddy = _loop(heart_book(wearable))
         muddy.open_morning(DAY)
+        unclear_path = muddy._unclear_path()
+        if os.path.isfile(unclear_path):
+            os.remove(unclear_path)
         again = muddy.hear(DAY, "no idea")
         assert again == _SYMPTOM
         assert DAY not in muddy.workouts
