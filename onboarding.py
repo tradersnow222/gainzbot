@@ -18,7 +18,10 @@ def _par_q_text():
     ]
     for key, question in PAR_Q:
         lines.append(f"- {key}: {question}")
-    lines.append("A yes on any of them means run readiness_screen before training. Do not skip one.")
+    lines.append(
+        "A skipped or unclear PAR-Q answer runs readiness_screen, the same as a yes. "
+        "There is no training until readiness_screen passes."
+    )
     return "\n".join(lines)
 
 

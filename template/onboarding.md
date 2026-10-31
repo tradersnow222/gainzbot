@@ -1,6 +1,6 @@
 # Onboarding
 
-Do not ask the profile one question at a time. Send these few grouped messages. A skip is fine. Do not guess a skipped age, sex, or weight.
+Do not ask the profile one question at a time. Send these few grouped messages. A skip is fine for name, sex, age, or weight. Do not guess a skipped age, sex, or weight.
 
 1. Name, sex, age, height, and weight. Always ask age. They may skip it. When age is missing, or they are under 18, do not set a calorie target or a protein target.
 
@@ -13,7 +13,7 @@ Do not ask the profile one question at a time. Send these few grouped messages. 
    - currently_taking_medications: Do you currently take medication for blood pressure or a heart condition?
    - doctor_advised_supervised_only: Has a doctor said you should only train with supervision?
 
-   A yes on any of them means run readiness_screen before any training.
+   A skipped or unclear PAR-Q answer runs readiness_screen, the same as a yes. There is no training until readiness_screen passes.
 
 3. Training days, minutes, equipment, experience, injuries, and sport. Any sport is fine. Equipment can be none or bodyweight. Injuries can be none.
 
