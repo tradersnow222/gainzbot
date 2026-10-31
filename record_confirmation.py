@@ -344,16 +344,78 @@ def _host_confirm_allowed(speaker, plan) -> bool:
     return confirm_phase_active() and _first_plan_confirm(plan)
 
 
-def _host_confirm_refusal(reply) -> bool:
-    """True when the user's text opens with no, nah, or not.
+# Longer phrases first so "not yet" is not read as "no", and "n" is a whole token.
+_REFUSAL_PHRASES = (
+    "let me check with my doctor first",
+    "maybe later",
+    "let me think",
+    "never mind",
+    "not yet",
+    "not now",
+    "hold on",
+    "nope",
+    "nah",
+    "don't",
+    "cancel",
+    "stop",
+    "wait",
+    "no",
+    "n",
+)
+_ACCEPT_WORDS = (
+    "let's go",
+    "do it",
+    "yes",
+    "yep",
+    "yeah",
+    "sure",
+    "good",
+    "great",
+    "perfect",
+    "love",
+    "fine",
+    "works",
+    "sounds",
+    "problem",
+    "worries",
+    "complaints",
+    "doubt",
+    "bad",
+)
 
-    Leading punctuation is ignored. 'now' and 'nothing' are not those words.
-    """
+
+def _confirm_reply_text(reply):
+    """Trimmed, lower-cased reply. Leading and trailing punctuation is ignored."""
     if not isinstance(reply, str):
-        return False
+        return ""
     text = reply.strip().lower()
     text = re.sub(r"""^[\s"'`.,!?;:()\[\]{}<>…\-/_|\\]+""", "", text)
-    return re.match(r"(?:no|nah|not)\b", text) is not None
+    text = re.sub(r"""[\s"'`.,!?;:()\[\]{}<>…\-/_|\\]+$""", "", text)
+    return text.strip()
+
+
+def _has_accept_word(text):
+    for phrase in _ACCEPT_WORDS:
+        if re.search(rf"(?<!\w){re.escape(phrase)}(?!\w)", text):
+            return True
+    return False
+
+
+def _host_confirm_refusal(reply) -> bool:
+    """True when the reply is a refusal, or starts with one and does not accept.
+
+    The host confirm flag is the yes. 'not sure but yes' and 'no worries'
+    still confirm. 'nope' and 'no, keep it' do not.
+    """
+    text = _confirm_reply_text(reply)
+    if not text:
+        return False
+    for phrase in _REFUSAL_PHRASES:
+        if text == phrase or re.match(rf"{re.escape(phrase)}(?!\w)", text):
+            if text == phrase:
+                return True
+            return not _has_accept_word(text)
+    return False
 
 
 def _first_plan_confirm(plan) -> bool:
@@ -549,7 +611,7 @@ class ConfirmationRecorder:
         elif paused is not None:
             errors.append(paused.message)
         elif host_confirm and _host_confirm_refusal(reply):
-            errors.append("That reply starts with no. The plan stays up.")
+            errors.append("That reply declines the plan. It is not saved.")
         elif host_confirm:
             pass
         elif not is_clear_yes(reply) and schedule is None:

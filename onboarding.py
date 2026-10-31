@@ -1174,7 +1174,10 @@ _AGE_WORDS = frozenset({
 })
 _WEIGHT_EDIT = re.compile(
     r"^(?:(?:wait|actually|please|sorry|just)\s+)*"
-    r"(?:my\s+)?(?:weight(?:\s+is)?\s+)?(\d+(?:\.\d+)?)\s+kg$"
+    r"(?:my\s+)?(?:weight(?:\s+is)?\s+)?(\d+(?:\.\d+)?)\s+(kg|lb|lbs|pounds?)$"
+)
+_CONFIRM_DECLINED = (
+    "No problem, it's not saved. Say yes when you're ready, or tell me what to change."
 )
 _DAYS_EDIT = re.compile(
     r"^(?:(?:wait|actually|please|sorry|just)\s+)*"
@@ -1280,10 +1283,17 @@ def _hints_age(reply):
 
 
 def _explicit_edit(reply):
-    """A profile edit that uses the whole reply, or None."""
+    """A profile edit that uses the whole reply, or None.
+
+    A reply that is only a pound weight is stored as kilograms.
+    """
     weight = _WEIGHT_EDIT.fullmatch(_soft(reply))
     if weight:
-        return ("weight", weight.group(1) + " kg")
+        raw = float(weight.group(1))
+        unit = weight.group(2)
+        if unit != "kg" and raw >= 660:
+            return ("weight", "ask")
+        return ("weight", _kg_text(_as_kg(raw, unit)) + " kg")
     folded = _fold(reply)
     days = _DAYS_EDIT.fullmatch(folded)
     if days:
@@ -1294,18 +1304,31 @@ def _explicit_edit(reply):
     return None
 
 
-def _apply_edit(state, edit):
+def _apply_edit(state, edit, reply=""):
     kind, value = edit
     state["confirmed"] = False
     state["record"] = None
     state["awaiting"] = None
     if kind == "weight":
+        # A profile payload owns height and weight. The typed figure only
+        # chooses the unit that the stored kilograms are shown in.
+        if state.get("skip_body_from_text"):
+            if isinstance(reply, str) and reply.strip():
+                _remember_unit_echo(state, reply)
+            state["error"] = None
+            return True
+        if value == "ask":
+            state["awaiting"] = "weight"
+            state["error"] = _WEIGHT_ASK
+            return True
         number = float(value.split()[0])
         if not _kg_in_range(number):
             state["awaiting"] = "weight"
             state["error"] = _WEIGHT_ASK
             return True
         state["answers"]["weight"] = value
+        if isinstance(reply, str) and reply.strip():
+            _remember_unit_echo(state, reply)
     elif kind == "days":
         state["answers"]["training_days"] = value
         state["answers"]["days"] = _dates(value)
@@ -1667,7 +1690,26 @@ def _take_target_number(state, reply):
 def _take_weight_number(state, reply):
     state["confirmed"] = False
     state["record"] = None
-    match = re.fullmatch(r"(\d+(?:\.\d+)?)(?:\s+kg)?", _soft(reply))
+    soft = _soft(reply)
+    found = _current_weight(soft)
+    if found == "ask":
+        state["awaiting"] = "weight"
+        state["error"] = _WEIGHT_ASK
+        return True
+    if isinstance(found, str):
+        target = state["answers"].get("target")
+        if not (
+            _weight_fits_target(target, found) or _target_near_weight(target, found)
+        ):
+            state["awaiting"] = "weight"
+            state["error"] = _WEIGHT_ASK
+            return True
+        state["answers"]["weight"] = found
+        _remember_unit_echo(state, reply)
+        state["awaiting"] = None
+        state["error"] = None
+        return True
+    match = re.fullmatch(r"(\d+(?:\.\d+)?)(?:\s+kg)?", soft)
     if match is None:
         state["awaiting"] = "weight"
         state["error"] = _WEIGHT_ASK
@@ -2830,7 +2872,7 @@ def _take_exact(state, reply):
         return
     edit = _explicit_edit(reply)
     if edit is not None:
-        _apply_edit(state, edit)
+        _apply_edit(state, edit, reply)
         return
     if folded in _ACCEPT and state.get("asked") in {"goal", "training"}:
         _fill_group(state, state["asked"])
@@ -3200,7 +3242,7 @@ def _apply_structured_confirm(state, confirm, token, reply=""):
         state["phase"] = "confirm"
         state["confirmed"] = False
         state["record"] = None
-        state["error"] = None
+        state["error"] = _CONFIRM_DECLINED
         return token
     if token is None:
         token = _CONFIRM_PHASE.set(True)
@@ -3747,7 +3789,7 @@ def _handle_confirm(state, reply):
         return True
     edit = _explicit_edit(reply)
     if edit is not None:
-        return _apply_edit(state, edit)
+        return _apply_edit(state, edit, reply)
     if _harmless_aside(reply) or _nonblocking_stat(_fold(reply)):
         state["error"] = None
         state["phase"] = "confirm"

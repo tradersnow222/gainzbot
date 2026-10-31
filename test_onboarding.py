@@ -1869,6 +1869,31 @@ def test_a_structural_injury_is_stored_and_does_not_hold_the_day():
         onboarding._memory_hold = None
 
 
+def test_a_weight_typed_only_as_pounds_is_stored_in_kg():
+    from onboarding import _CURRENT_WEIGHT_ASK, _WEIGHT_ASK
+
+    state, bots = run_chat(["200 lb"])
+    assert state["answers"]["weight"] == "90.7 kg"
+    assert state.get("awaiting") != "weight"
+    assert _WEIGHT_ASK not in bots
+    assert _CURRENT_WEIGHT_ASK not in bots
+    followed, followed_bots = run_chat(["200 lb", "hold, male, 180 cm"])
+    assert followed["answers"]["weight"] == "90.7 kg"
+    assert _WEIGHT_ASK not in followed_bots
+    assert _CURRENT_WEIGHT_ASK not in followed_bots
+    asked, asked_bots = run_chat(["want 64 kg", "200 lb"])
+    assert asked["answers"]["target"] == "64 kg"
+    assert asked["answers"]["weight"] == "90.7 kg"
+    assert asked.get("awaiting") != "weight"
+    assert asked_bots[-1] != _WEIGHT_ASK
+    assert asked_bots[-1] != _CURRENT_WEIGHT_ASK
+    shown, shown_bots = run_chat(list(HAPPY_PATH[:-1]) + ["200 lb"])
+    assert shown["answers"]["weight"] == "90.7 kg"
+    assert shown["confirmed"] is False
+    assert shown_bots[-1] != _WEIGHT_ASK
+    assert "200 lb" in shown_bots[-1]
+
+
 def test_a_decimal_kg_and_a_pound_weight_convert():
     from onboarding import _TARGET_ASK, _WEIGHT_ASK
 
@@ -2944,6 +2969,17 @@ def test_confirm_followup_eval_rows():
         "injury_after_shown_plan",
         "age_17_after_adult",
         "confirm_string_true",
+        "refuse_nope",
+        "refuse_cancel",
+        "refuse_stop",
+        "refuse_wait",
+        "refuse_never_mind",
+        "refuse_dont",
+        "refuse_n",
+        "refuse_maybe_later",
+        "refuse_let_me_think",
+        "refuse_doctor_first",
+        "refuse_no_keep_it",
     ]
     for row in rows:
         state, bots = run_chat(_confirm_eval_chat(row))
@@ -2955,6 +2991,11 @@ def test_confirm_followup_eval_rows():
             assert "under 18" in bots[-1].lower(), row["id"]
         elif row["expect"] == "rejected":
             assert "one yes confirms the plan" in bots[-1].lower(), row["id"]
+        elif row["expect"] == "declined":
+            from onboarding import _CONFIRM_DECLINED
+
+            assert bots[-1] == _CONFIRM_DECLINED, row["id"]
+            assert "one yes confirms the plan" not in bots[-1].lower(), row["id"]
         else:
             raise AssertionError(row["expect"])
 
@@ -3102,7 +3143,46 @@ def test_shown_weight_converts_the_stored_kg_not_the_typed_pounds():
 
 
 def test_host_confirm_no_shows_the_plan_again():
-    for text in ("no, keep it", "No.", "nah", "not yet", "...no thanks"):
+    from onboarding import _CONFIRM_DECLINED
+
+    accepts = (
+        "not sure but yes",
+        "not a problem",
+        "not bad, let's go",
+        "no worries, looks good",
+        "nah it's perfect",
+        "no problem, yes",
+        "No doubt, let's do it",
+        "no complaints",
+        "sure",
+        "looks good",
+    )
+    for text in accepts:
+        state, bots = run_chat(list(HAPPY_PATH[:-1]) + [{
+            "text": text,
+            "labels": _labels(),
+            "confirm": {"confirm": True},
+        }])
+        assert state["confirmed"] is True, text
+        assert state["record"] is not None, text
+        assert bots[-1] != _CONFIRM_DECLINED, text
+    for text in (
+        "no, keep it",
+        "No.",
+        "nah",
+        "not yet",
+        "...no thanks",
+        "nope",
+        "cancel",
+        "stop",
+        "wait",
+        "never mind",
+        "don't",
+        "n",
+        "maybe later",
+        "let me think",
+        "let me check with my doctor first",
+    ):
         state, bots = run_chat(list(HAPPY_PATH[:-1]) + [{
             "text": text,
             "labels": _labels(),
@@ -3110,7 +3190,8 @@ def test_host_confirm_no_shows_the_plan_again():
         }])
         assert state["confirmed"] is False, text
         assert state["record"] is None, text
-        assert "one yes confirms the plan" in bots[-1].lower(), text
+        assert bots[-1] == _CONFIRM_DECLINED, text
+        assert "one yes confirms the plan" not in bots[-1].lower(), text
 
 
 def test_routine_clocks_accept_common_formats_and_canonical_wins():

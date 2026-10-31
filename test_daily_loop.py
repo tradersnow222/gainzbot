@@ -1142,6 +1142,48 @@ def test_a_scored_no_keeps_the_hours_and_soreness(tmp_path):
     assert rows[0]["note"] == reply
 
 
+def test_out_of_range_morning_scores_ask_again(tmp_path):
+    from daily_loop import DailyLoop, _OUT_OF_RANGE, adult_profile
+    from log_store import LogStore
+
+    day = "2026-10-26"
+    path = tmp_path / "log.json"
+    loop = DailyLoop(load=80, minutes=45, profile=adult_profile(), log_path=str(path))
+    loop.open_morning(day)
+    reply = "soreness 50, slept 30 hours"
+    text = loop.hear(day, reply, {
+        "minor_signal": False,
+        "red_flag": "none",
+        "injury": "none",
+        "note_ok": True,
+    })
+    assert text == _OUT_OF_RANGE
+    assert "\n" not in text
+    assert loop.phase[day] == "morning2"
+    assert day not in loop.workouts
+    assert loop.notes.get(day, {}).get("sleep") != 7
+    assert loop.notes.get(day, {}).get("soreness") != 2
+    assert LogStore(path).data["checkins"] == []
+    labels = {
+        "minor_signal": False,
+        "red_flag": "none",
+        "injury": "none",
+        "note_ok": True,
+    }
+    cleared = loop.hear(day, "no, soreness 50, slept 30 hours", labels)
+    assert cleared == _OUT_OF_RANGE
+    assert loop.notes.get(day, {}).get("sleep") != 7
+    assert loop.notes.get(day, {}).get("soreness") != 2
+    assert day not in loop.workouts
+    fresh = DailyLoop(load=80, minutes=45, profile=adult_profile(), log_path=str(path))
+    fresh.open_morning(day)
+    led = fresh.hear(day, "no, soreness 50, slept 30 hours", labels)
+    assert led == _OUT_OF_RANGE
+    assert fresh.phase[day] != "workout"
+    assert fresh.notes.get(day, {}).get("sleep") != 7
+    assert fresh.notes.get(day, {}).get("soreness") != 2
+
+
 def test_no_with_trailing_punctuation_is_a_bare_no():
     from daily_loop import DailyLoop, adult_profile
 

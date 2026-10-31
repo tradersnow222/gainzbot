@@ -624,13 +624,40 @@ def test_host_confirm_that_starts_with_no_does_not_seal():
     import onboarding
     from record_confirmation import _host_confirm_refusal, _mark_first_plan
 
-    assert _host_confirm_refusal("No.")
-    assert _host_confirm_refusal("  nah")
-    assert _host_confirm_refusal("not yet")
-    assert _host_confirm_refusal("...no thanks")
-    assert not _host_confirm_refusal("now let's go")
-    assert not _host_confirm_refusal("nothing else")
-    assert not _host_confirm_refusal("yes")
+    for text in (
+        "No.",
+        "  nah",
+        "not yet",
+        "...no thanks",
+        "nope",
+        "cancel",
+        "stop",
+        "wait",
+        "never mind",
+        "don't",
+        "n",
+        "maybe later",
+        "let me think",
+        "let me check with my doctor first",
+        "no, keep it",
+    ):
+        assert _host_confirm_refusal(text), text
+    for text in (
+        "now let's go",
+        "nothing else",
+        "yes",
+        "not sure but yes",
+        "not a problem",
+        "not bad, let's go",
+        "no worries, looks good",
+        "nah it's perfect",
+        "no problem, yes",
+        "No doubt, let's do it",
+        "no complaints",
+        "sure",
+        "looks good",
+    ):
+        assert not _host_confirm_refusal(text), text
     plan = {
         "plan": {"user": {"age": 30}},
         "sessions": [{"date": "2026-11-02", "name": "Upper"}],
@@ -641,7 +668,11 @@ def test_host_confirm_that_starts_with_no_does_not_seal():
         record = ConfirmationRecorder().record(
             sealed, "no, keep it", "host_confirm", passing_check_in()
         )
+        accepted = ConfirmationRecorder().record(
+            sealed, "not sure but yes", "host_confirm", passing_check_in()
+        )
     finally:
         onboarding._CONFIRM_PHASE.reset(token)
     assert sealed.get("first_plan") is True
     assert record.confirmed is False
+    assert accepted.confirmed is True

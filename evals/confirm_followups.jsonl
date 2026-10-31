@@ -2,3 +2,14 @@
 {"id": "injury_after_shown_plan", "expect": "show_again", "base": "shown", "text": "sprained my ankle 2 years ago, fine now", "injury": "old", "confirm": {"confirm": true}}
 {"id": "age_17_after_adult", "expect": "blocked", "base": "shown", "text": "i am 17", "confirm": {"confirm": true}, "profile": {"age": 17}}
 {"id": "confirm_string_true", "expect": "rejected", "base": "dana", "text": "all no", "confirm": {"confirm": "true"}}
+{"id": "refuse_nope", "expect": "declined", "base": "shown", "text": "nope", "confirm": {"confirm": true}}
+{"id": "refuse_cancel", "expect": "declined", "base": "shown", "text": "cancel", "confirm": {"confirm": true}}
+{"id": "refuse_stop", "expect": "declined", "base": "shown", "text": "stop", "confirm": {"confirm": true}}
+{"id": "refuse_wait", "expect": "declined", "base": "shown", "text": "wait", "confirm": {"confirm": true}}
+{"id": "refuse_never_mind", "expect": "declined", "base": "shown", "text": "never mind", "confirm": {"confirm": true}}
+{"id": "refuse_dont", "expect": "declined", "base": "shown", "text": "don't", "confirm": {"confirm": true}}
+{"id": "refuse_n", "expect": "declined", "base": "shown", "text": "n", "confirm": {"confirm": true}}
+{"id": "refuse_maybe_later", "expect": "declined", "base": "shown", "text": "maybe later", "confirm": {"confirm": true}}
+{"id": "refuse_let_me_think", "expect": "declined", "base": "shown", "text": "let me think", "confirm": {"confirm": true}}
+{"id": "refuse_doctor_first", "expect": "declined", "base": "shown", "text": "let me check with my doctor first", "confirm": {"confirm": true}}
+{"id": "refuse_no_keep_it", "expect": "declined", "base": "shown", "text": "no, keep it", "confirm": {"confirm": true}}

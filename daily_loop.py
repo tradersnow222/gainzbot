@@ -16,6 +16,9 @@ from signals import read_gap_reply
 _SYMPTOM = "Morning. Any chest pain, trouble breathing, dizziness or new pain? no / yes"
 _MORNING = "Hours of sleep, and soreness from 1 to 5?"
 _SECOND = "One more: soreness or sleep, in a word or a number."
+_OUT_OF_RANGE = (
+    "Those scores are outside the scale. Sleep is 0 to 14 hours, and soreness is 1 to 5."
+)
 _EVENING = "Did you do it? easy, right, or hard. What did you eat?"
 _NUDGE = "Missed today. I'll pick it up in the morning."
 
@@ -200,6 +203,28 @@ def _leading_symptom_no(reply):
     if not isinstance(reply, str):
         return False
     return re.match(r"\s*(?:no|nope)\b", reply, flags=re.IGNORECASE) is not None
+
+
+def _out_of_range_morning(reply):
+    """True when a named sleep or soreness score sits outside its scale.
+
+    Sleep is 0 to 14 hours. Soreness is 1 to 5. 'very sore 30' is a word
+    score plus minutes, so that 30 is not a soreness score.
+    """
+    if not isinstance(reply, str) or not reply.strip():
+        return False
+    text = reply.lower()
+    if "very sore" not in text:
+        sore = re.search(r"\bsoreness\b\s*[:.]?\s*(\d+(?:\.\d+)?)", text)
+        if sore and not 1 <= float(sore.group(1)) <= 5:
+            return True
+    for match in re.finditer(r"\b(?:slept|sleep)\b\s*[:.]?\s*(\d+(?:\.\d+)?)", text):
+        if not 0 <= float(match.group(1)) <= 14:
+            return True
+    for match in re.finditer(r"(\d+(?:\.\d+)?)\s+hours?\b", text):
+        if not 0 <= float(match.group(1)) <= 14:
+            return True
+    return False
 
 
 def _bare_symptom_no(reply):
@@ -636,6 +661,9 @@ class DailyLoop:
         gated = self._labels_before_workout(day, reply, labels)
         if gated is not None:
             return gated
+        if self.phase.get(day) in {"symptom", "morning2"} and _out_of_range_morning(reply):
+            self.phase[day] = "morning2"
+            return _OUT_OF_RANGE
         phase = self.phase.get(day)
         if phase == "symptom":
             self.notes.setdefault(day, {})["reply"] = reply
@@ -855,6 +883,9 @@ class DailyLoop:
         return gap not in notes
 
     def _after_symptom(self, day, reply):
+        if _out_of_range_morning(reply):
+            self.phase[day] = "morning2"
+            return _OUT_OF_RANGE
         as_of = f"{day}T08:00:00Z"
         pending = self.pending.get(day)
         if pending is None:
