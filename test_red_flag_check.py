@@ -299,6 +299,27 @@ class TestRecommendations:
         assert result.pause_plan
         assert any("resume" in rec.lower() or "clearance" in rec.lower() for rec in result.recommendations)
 
+    def test_a_symptom_right_now_pauses_today_and_does_not_block_the_account(self):
+        checker = RedFlagChecker()
+        chest = checker.scan_text("my chest hurts right now")
+        assert chest.pause_plan
+        chest_text = " ".join([chest.message, *chest.recommendations]).lower()
+        assert "today" in chest_text
+        assert "doctor" in chest_text
+        assert "does not block the account" in chest_text
+        assert "911" in chest_text or "emergency" in chest_text
+        faint = checker.scan_text("fainting during the session")
+        assert faint.pause_plan
+        faint_text = " ".join([faint.message, *faint.recommendations]).lower()
+        assert "today" in faint_text
+        assert "doctor" in faint_text
+        assert "does not block the account" in faint_text
+        assert "emergency services if" in faint_text
+        still = checker.scan_text("my doctor cleared me but my chest hurts right now")
+        assert still.pause_plan
+        history = checker.scan_text("my doctor cleared me for exercise")
+        assert history.pause_plan is False
+
 
 class TestFalsePositives:
     """Test that benign phrases don't trigger false positives."""

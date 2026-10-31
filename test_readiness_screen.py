@@ -1,8 +1,10 @@
 #!/usr/bin/env python3
 """Tests for readiness_screen.py screening guardrails."""
 
+from datetime import datetime, timezone
+
 import pytest
-from readiness_screen import ReadinessScreen, ClearanceLevel
+from readiness_screen import ReadinessScreen, ClearanceLevel, passing_readiness
 
 
 def complete_par_q(**overrides):
@@ -783,6 +785,83 @@ class TestP2bProbes:
     def test_intake_none_blocks(self):
         result, _ = self._screen(None)
         assert result.blocked
+
+
+class TestDoctorClearance:
+    """A doctor's clearance passes a PAR-Q yes. Acute proof is not required."""
+
+    def setup_method(self):
+        self.screen = ReadinessScreen()
+        self.pq = {flag: False for flag in ReadinessScreen.PAR_Q_RED_FLAGS}
+
+    def _chest(self, **extra):
+        intake = {
+            "age": 34,
+            "par_q": {**self.pq, "chest_pain_at_rest": True, "chest_pain_during_activity": "yes"},
+        }
+        intake.update(extra)
+        return self.screen.screen_intake(intake)
+
+    def test_a_spoken_clearance_passes_chest_pain_and_keeps_the_answers(self):
+        result = self._chest(
+            medical_clearance="my doctor cleared me for exercise",
+            clearance_date="2026-10-01",
+        )
+        assert result.blocked is False
+        assert result.clearance == ClearanceLevel.CAUTION
+        assert passing_readiness(result)
+        assert result.doctor_cleared is True
+        assert result.clearance_date == "2026-10-01"
+        assert result.par_q["chest_pain_at_rest"] is True
+        assert result.par_q["chest_pain_during_activity"] is True
+        assert result.par_q["loss_of_consciousness"] is False
+        text = " ".join(result.reasons).lower()
+        assert "chest pain at rest: yes" in text
+        assert "chest pain during activity: yes" in text
+        assert "loss of consciousness: no" in text
+        follows = [
+            rec for rec in result.recommendations
+            if rec == "The plan follows the doctor's clearance."
+        ]
+        assert follows == ["The plan follows the doctor's clearance."]
+        blob = " ".join(result.reasons + result.recommendations).lower()
+        assert "proof" not in blob
+        assert "document" not in blob
+        assert "doctor's note" not in blob
+        changed = result
+        changed.par_q = dict(result.par_q)
+        changed.par_q["chest_pain_at_rest"] = False
+        assert passing_readiness(changed) is False
+
+    def test_a_boolean_clearance_records_today_when_no_date_is_given(self):
+        result = self._chest(medical_clearance=True)
+        assert passing_readiness(result)
+        assert result.clearance_date == datetime.now(timezone.utc).date().isoformat()
+        assert result.recommendations.count("The plan follows the doctor's clearance.") == 1
+
+    def test_chest_pain_without_clearance_still_blocks(self):
+        result = self._chest(medical_clearance=False)
+        assert result.blocked
+        assert result.doctor_cleared is False
+        assert passing_readiness(result) is False
+        assert "The plan follows the doctor's clearance." not in result.recommendations
+
+    def test_a_denied_clearance_does_not_pass(self):
+        result = self._chest(medical_clearance="the doctor has not cleared me")
+        assert result.blocked
+        assert result.doctor_cleared is False
+        assert "chest pain at rest" in " ".join(result.reasons).lower()
+
+    def test_pregnancy_still_needs_its_own_clearance(self):
+        result = self.screen.screen_intake({
+            "age": 30,
+            "par_q": self.pq,
+            "pregnant": True,
+            "medical_clearance": "my doctor cleared me for exercise",
+        })
+        assert result.blocked
+        assert "without medical clearance" in " ".join(result.reasons).lower()
+        assert "The plan follows the doctor's clearance." not in result.recommendations
 
 
 if __name__ == "__main__":

@@ -61,11 +61,12 @@ _MAX_EXERCISES = 8
 _MAX_SETS = 6
 _MAX_REPS = 20
 _SECONDS_PER_REP = 4
-# Conservative load ceilings, as a multiple of body weight.
+# Generous load ceilings, as a multiple of body weight.
+# A normal lifter stays inside these. An absurd load still refuses.
 _LOAD_MULTIPLE = {
-    "beginner": 1.0,
-    "intermediate": 1.5,
-    "advanced": 2.0,
+    "beginner": 2.5,
+    "intermediate": 3.5,
+    "advanced": 5.0,
 }
 _EXERCISE_KEYS = {"name", "sets", "reps", "rest", "effort", "load_kg"}
 _GYM = {

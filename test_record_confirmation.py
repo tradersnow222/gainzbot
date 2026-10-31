@@ -78,9 +78,7 @@ class TestClearYes:
         "sure I guess",
         "looks fine",
         "whatever",
-        "ok",
         "yeah maybe",
-        "sounds good",
         "yes I guess",
         "I think so",
     ])
@@ -179,6 +177,14 @@ class TestClearYes:
         "yes 💪",
         "yes 🔥",
         "yes ✅",
+        "sounds good",
+        "sounds good!",
+        "let's go",
+        "Let's go!",
+        "ok",
+        "ok.",
+        "do it",
+        "do it 👍",
     ])
     def test_bare_yes_words_are_accepted(self, reply):
         assert is_clear_yes(reply)
@@ -208,7 +214,9 @@ class TestClearYes:
         "looks fine",
         "whatever",
         "maybe",
-        "do it",
+        "ok, my knee hurts",
+        "sounds good?",
+        "do it tomorrow",
         "yes, what's for dinner?",
         "yes, болит грудь",
         "yes 胸が痛い",

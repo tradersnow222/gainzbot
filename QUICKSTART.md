@@ -51,6 +51,8 @@ Paste `template/getting-started.md` in as the getting-started skill. The first c
 
 Leave `template/profile.md` as the place the bot writes their sport, goal, and schedule. Do not put a real name or health history in the repo.
 
+When the user says a doctor has cleared them for exercise, the readiness screen passes even if a PAR-Q answer is yes, including chest pain. Record the clearance and the date, keep the PAR-Q answers on record, and say once that the plan follows the doctor's clearance. Do not ask for proof or a document. A symptom happening right now, such as "my chest hurts right now" or fainting during the session, still pauses that day and suggests checking in with a doctor. That pause does not block the account.
+
 ## 4. Confirm one adult plan
 
 Paste this in the repo folder with `python3`:

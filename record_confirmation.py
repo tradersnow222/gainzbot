@@ -68,10 +68,16 @@ def normalize_reply(reply: str) -> str:
     return re.sub(r"\s+", " ", "".join(kept)).strip()
 
 
-# Exact phrases only. Allowed emoji may sit beside them. Anything else refuses.
+# Exact phrases only. Allowed emoji may sit beside them.
+# A reply that adds a symptom, a change, a question, or a condition is not here.
 _BARE_YES = CLEAR_YES | {
     "yep",
     "yeah",
+    "ok",
+    "okay",
+    "sounds good",
+    "lets go",
+    "do it",
     "confirm",
     "confirmed",
     "lock it in",
@@ -83,12 +89,13 @@ def _has_format_character(reply: str) -> bool:
 
 
 def is_clear_yes(reply) -> bool:
-    """True only for a bare yes, plus ASCII punctuation other than '?' or the allowed emoji.
+    """True only for a friendly yes, plus ordinary punctuation or the allowed emoji.
 
-    Allowed words: yes, yep, yeah, confirm, confirmed, lock it in,
-    and the fixed lines in CLEAR_YES such as 'I confirm this plan'.
-    A question mark, a format character, another script, or any other
-    symbol refuses the reply.
+    Allowed words: yes, yep, yeah, sounds good, let's go, ok, do it,
+    confirm, confirmed, lock it in, and the fixed lines in CLEAR_YES
+    such as 'I confirm this plan'. A reply that adds a symptom, a change,
+    a question, or a condition refuses. A question mark, a format character,
+    another script, or any other symbol refuses the reply.
     """
     if not isinstance(reply, str) or not reply.strip():
         return False

@@ -111,6 +111,23 @@ def test_age_is_always_asked_and_readiness_runs_before_training():
     assert ready < today.index("set_logger.suggest_next")
 
 
+def test_the_safety_section_describes_doctor_clearance():
+    safety = PROMPT.lower().split("## safety order", 1)[1].split("## ", 1)[0]
+    assert "the plan follows the doctor's clearance" in safety
+    assert "do not ask for proof or a document" in safety
+    assert "including chest pain" in safety
+    assert "my chest hurts right now" in safety
+    assert "does not block the account" in safety
+    assert "sounds good" in safety
+    assert "let's go" in safety
+    assert "do it" in safety
+    quick = QUICKSTART.lower()
+    assert "the plan follows the doctor's clearance" in quick
+    assert "do not ask for proof or a document" in quick
+    assert "including chest pain" in quick
+    assert "does not block the account" in quick
+
+
 def test_a_red_flag_passes_on_the_check_recommendation():
     safety = PROMPT.lower().split("## safety order", 1)[1].split("## ", 1)[0]
     assert "pass on that check's own recommendation" in safety

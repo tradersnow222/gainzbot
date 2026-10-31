@@ -792,29 +792,34 @@ def test_save_rejects_loose_exercises_and_caps_load_by_body_weight(tmp_path):
     refused(_one_lift(built["sessions"], effort="until you fail"))
     refused(_one_lift(built["sessions"], effort="max effort RPE 10"))
     refused(_one_lift(built["sessions"], effort="fail\u200b"))
-    legal = _one_lift(built["sessions"], load_kg=80)
+    legal = _one_lift(built["sessions"], load_kg=200)
     yes = recorded(week_to_confirm(built["plan"], legal))
     assert _save(builder, built, yes, path, sessions=legal, check_in=check_in)["saved"] is True
-    over = _one_lift(built["sessions"], load_kg=81)
+    over = _one_lift(built["sessions"], load_kg=201)
     over_yes = recorded(week_to_confirm(built["plan"], over))
     over_path = tmp_path / "over.json"
     assert _save(builder, built, over_yes, over_path, sessions=over, check_in=check_in)["saved"] is False
     later = builder.propose(profile(experience="intermediate"), check_in)
-    heavy = _one_lift(later["sessions"], load_kg=120)
+    heavy = _one_lift(later["sessions"], load_kg=280)
     heavy_path = tmp_path / "heavy.json"
     heavy_yes = recorded(week_to_confirm(later["plan"], heavy))
     assert _save(builder, later, heavy_yes, heavy_path, sessions=heavy, check_in=check_in)["saved"] is True
-    too_heavy = _one_lift(later["sessions"], load_kg=121)
+    too_heavy = _one_lift(later["sessions"], load_kg=281)
     too_yes = recorded(week_to_confirm(later["plan"], too_heavy))
     assert builder.save(
         later["plan"], too_yes, tmp_path / "too.json", too_heavy, check_in_result=check_in,
     )["saved"] is False
     advanced = builder.propose(profile(experience="advanced"), check_in)
-    capped = _one_lift(advanced["sessions"], load_kg=160)
+    capped = _one_lift(advanced["sessions"], load_kg=400)
     capped_yes = recorded(week_to_confirm(advanced["plan"], capped))
     assert builder.save(
         advanced["plan"], capped_yes, tmp_path / "cap.json", capped, check_in_result=check_in,
     )["saved"] is True
+    past = _one_lift(advanced["sessions"], load_kg=401)
+    past_yes = recorded(week_to_confirm(advanced["plan"], past))
+    assert builder.save(
+        advanced["plan"], past_yes, tmp_path / "past.json", past, check_in_result=check_in,
+    )["saved"] is False
 
 
 def test_a_crashed_save_is_recovered_on_the_next_load(tmp_path):

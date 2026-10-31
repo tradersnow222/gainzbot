@@ -265,7 +265,11 @@ class RedFlagChecker:
         ),
         "cardiac": "Medical emergency. Stop all activity and seek immediate medical attention.",
         "neurological": "Serious concern. Please see a doctor as soon as possible.",
-        "fainting": "Stop training immediately. Call emergency services if accompanied by chest pain, trouble breathing, or confusion. Otherwise see a doctor before resuming training.",
+        "fainting": (
+            "Stop training immediately. Pause today and check in with a doctor. "
+            "Call emergency services if accompanied by chest pain, trouble breathing, or confusion. "
+            "This does not block the account."
+        ),
         "injury": "Training pause required. Professional evaluation recommended.",
         "psychological": "Please speak with a healthcare professional about these concerns.",
         "general": "Plan paused. Professional consultation recommended before continuing.",
@@ -669,7 +673,7 @@ class RedFlagChecker:
                 "Call emergency services immediately (911 in US)."
             )
             recommendations.append(
-                "Do not attempt any physical activity until cleared by a physician."
+                "Pause today and check in with a doctor. This does not block the account."
             )
         
         if severity == "fainting":
@@ -736,7 +740,8 @@ class RedFlagChecker:
             )
         
         recommendations.append(
-            "Do not resume training until the issue is addressed and you have clearance."
+            "Pause today and check in with a doctor before you resume. "
+            "This does not block the account."
         )
         
         return recommendations
