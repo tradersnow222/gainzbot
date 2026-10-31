@@ -44,13 +44,22 @@ def check(entry, confirmed_changes=None, as_of=AS_OF, planned_load=200, baseline
     )
 
 
-def week():
+def week(load=100):
     return [
-        {"date": "2026-10-26", "load": 100},
-        {"date": "2026-10-27", "load": 100},
-        {"date": "2026-10-28", "load": 100},
-        {"date": "2026-10-29", "load": 100},
+        {"date": "2026-10-26", "load": load},
+        {"date": "2026-10-27", "load": load},
+        {"date": "2026-10-28", "load": load},
+        {"date": "2026-10-29", "load": load},
     ]
+
+
+def rewrite(sessions, missed="2026-10-27", confirmed_changes=None, as_of="2026-10-28T00:00:00Z"):
+    return MorningCheckIn().rewrite_week(
+        sessions,
+        missed,
+        HISTORY if confirmed_changes is None else confirmed_changes,
+        as_of,
+    )
 
 
 class TestDayType:
@@ -79,7 +88,7 @@ class TestDayType:
         assert result["proposal"]["changes"]["load"] <= 100
 
     def test_a_push_after_a_rewrite_to_110_does_not_propose_121(self):
-        rewritten = MorningCheckIn().rewrite_week(week(), "2026-10-27")
+        rewritten = rewrite(week())
         later = [
             item for item in rewritten["proposal"]["changes"]["sessions"]
             if item["date"] > "2026-10-27"
@@ -116,7 +125,7 @@ class TestDayType:
 
 class TestMissedSession:
     def test_a_missed_session_rewrites_later_days_inside_the_cap(self):
-        result = MorningCheckIn().rewrite_week(week(), "2026-10-27")
+        result = rewrite(week())
         assert result["applied"] is False
         sessions = result["proposal"]["changes"]["sessions"]
         by_date = {item["date"]: item for item in sessions}
@@ -135,13 +144,22 @@ class TestMissedSession:
             {"date": "2026-10-27", "load": 10},
             {"date": "2026-10-28", "load": 100},
         ]
-        result = MorningCheckIn().rewrite_week(sessions, "2026-10-27")
+        result = rewrite(sessions)
         updated = result["proposal"]["changes"]["sessions"]
         assert updated[1]["load"] == 110
         assert result["proposal"]["changes"]["left_out"] == 0
 
+    def test_a_week_sent_at_200_is_built_from_the_confirmed_load(self):
+        result = rewrite(week(200))
+        sessions = result["proposal"]["changes"]["sessions"]
+        by_date = {item["date"]: item for item in sessions}
+        assert by_date["2026-10-26"]["load"] == 100
+        assert by_date["2026-10-28"]["load"] == 110
+        assert by_date["2026-10-29"]["load"] == 110
+        assert all(item["load"] != 220 for item in sessions)
+
     def test_an_unknown_session_is_not_rewritten(self):
-        result = MorningCheckIn().rewrite_week(week(), "2026-10-30")
+        result = rewrite(week(), "2026-10-30")
         assert result["ok"] is False
         assert result["proposal"] is None
 
@@ -168,7 +186,7 @@ class TestConfirmation:
         assert applied["changes"]["day"] == "push"
 
     def test_week_rewrite_needs_confirmation(self):
-        proposal = MorningCheckIn().rewrite_week(week(), "2026-10-27")["proposal"]
+        proposal = rewrite(week())["proposal"]
         refused = MorningCheckIn().apply(proposal, None)
         assert refused["applied"] is False
         applied = MorningCheckIn().apply(proposal, confirm(proposal))

@@ -4,12 +4,12 @@ Morning check-in for sleep, soreness, energy, and stress.
 
 The day is push, normal, or easy. The session scales from the last confirmed
 load, inside the 10 percent cap, and only after 7 times 24 hours. A planned
-load passed by the caller is ignored. A missed session rewrites the rest of
-the week without breaking that cap. Nothing is applied until
-record_confirmation covers that proposal.
+load passed by the caller is ignored. A missed session rebuilds the rest of
+the week from that confirmed load, not from the loads the caller sends in.
+Nothing is applied until record_confirmation covers that proposal.
 """
 
-from datetime import date, datetime
+from datetime import date, datetime, timezone
 from typing import Dict, List, Optional
 import os
 import sys
@@ -19,6 +19,24 @@ from confirmed_change import last_confirmed_change, parse_utc, seven_days_old
 from guardrails.validate import InputValidator, ValidationError
 from plan_check import PlanValidator
 from record_confirmation import ConfirmationRecord, ConfirmationRecorder
+
+
+def _clock(value):
+    """UTC clock for this check. A calendar day starts that day. It is not a history stamp."""
+    parsed = parse_utc(value)
+    if parsed is not None:
+        return parsed
+    if isinstance(value, datetime):
+        return None
+    if isinstance(value, date):
+        return datetime(value.year, value.month, value.day, tzinfo=timezone.utc)
+    if isinstance(value, str) and len(value.strip()) == 10:
+        try:
+            day = date.fromisoformat(value.strip())
+        except ValueError:
+            return None
+        return datetime(day.year, day.month, day.day, tzinfo=timezone.utc)
+    return None
 
 
 def _parse_day(value) -> Optional[date]:
@@ -50,7 +68,7 @@ class MorningCheckIn:
         if not parsed["ok"]:
             return parsed
         day_name = self._day_name(parsed)
-        load = self._scaled_load(day_name, confirmed_changes, as_of)
+        load = self._scaled_load(day_name, confirmed_changes, _clock(as_of))
         changes = {"day": day_name}
         if load is not None:
             changes["load"] = load
@@ -79,7 +97,7 @@ class MorningCheckIn:
         cap = found.value * (1 + PlanValidator.MAX_TRAINING_LOAD_INCREASE_PERCENT / 100)
         return _whole(min(found.value * factor, cap))
 
-    def rewrite_week(self, sessions, missed_date) -> Dict:
+    def rewrite_week(self, sessions, missed_date, confirmed_changes=None, as_of=None) -> Dict:
         rows = self._sessions(sessions)
         if isinstance(rows, dict):
             return rows
@@ -89,13 +107,18 @@ class MorningCheckIn:
         matched = [row for row in rows if row["date"] == missed]
         if len(matched) != 1:
             return self._bad("That session is not in this week.")
+        clock = _clock(as_of)
+        found = last_confirmed_change(confirmed_changes, "load", clock) if clock is not None else None
+        if found is None or not found.ok or found.value is None:
+            return self._bad("The week is built from the confirmed load.")
+        base = found.value
+        can_raise = seven_days_old(found.at, clock)
+        room = base * (PlanValidator.MAX_TRAINING_LOAD_INCREASE_PERCENT / 100) if can_raise else 0.0
         missed_row = matched[0]
         later = [row for row in rows if row["date"] > missed]
-        rooms = [
-            row["load"] * (PlanValidator.MAX_TRAINING_LOAD_INCREASE_PERCENT / 100)
-            for row in later
-        ]
-        assigned = self._spread(missed_row["load"], rooms)
+        rooms = [room for _ in later]
+        to_place = min(missed_row["load"], base)
+        assigned = self._spread(to_place, rooms)
         updated = []
         for row in rows:
             if row["date"] == missed:
@@ -108,17 +131,17 @@ class MorningCheckIn:
             if row["date"] < missed:
                 updated.append({
                     "date": row["date"].isoformat(),
-                    "load": _whole(row["load"]),
+                    "load": _whole(base),
                     "missed": False,
                 })
                 continue
             index = later.index(row)
             updated.append({
                 "date": row["date"].isoformat(),
-                "load": _whole(row["load"] + assigned[index]),
+                "load": _whole(base + assigned[index]),
                 "missed": False,
             })
-        left_out = _whole(missed_row["load"] - sum(assigned))
+        left_out = _whole(to_place - sum(assigned))
         proposal = {
             "summary": "The rest of the week is rewritten so it still holds.",
             "changes": {"sessions": updated, "left_out": left_out},
