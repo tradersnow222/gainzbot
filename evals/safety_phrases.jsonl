@@ -171,3 +171,5 @@
 {"phrase": "ready when you are", "labels": {"minor_signal": false, "red_flag": "none", "injury": "none", "note_ok": false}, "hard_stop": false, "tags": ["pass"]}
 {"phrase": "that plan looks right", "labels": {"minor_signal": false, "red_flag": "none", "injury": "none", "note_ok": false}, "hard_stop": false, "tags": ["pass"]}
 {"phrase": "nothing unusual to report", "labels": {"minor_signal": false, "red_flag": "none", "injury": "none", "note_ok": false}, "hard_stop": false, "tags": ["pass"]}
+{"phrase": "no, my knee hurts since yesterday", "labels": {"minor_signal": false, "red_flag": "none", "injury": "current", "note_ok": false}, "hard_stop": false, "tags": ["injury"]}
+{"phrase": "no, I'm 15 btw", "labels": {"minor_signal": true, "red_flag": "none", "injury": "none", "note_ok": false}, "hard_stop": false, "tags": ["minor"]}

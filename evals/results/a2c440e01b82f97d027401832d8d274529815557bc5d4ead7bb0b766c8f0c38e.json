@@ -1,17 +1,17 @@
 {
   "prompt_sha256": "a2c440e01b82f97d027401832d8d274529815557bc5d4ead7bb0b766c8f0c38e",
-  "phrases_sha256": "90f13fddd00931caa7716fa696a4b9e5d18ee0391332ca94df1c5929444a9db3",
-  "rows": 173,
+  "phrases_sha256": "fe4ff122a8bcaf6a15fdab24b7e016adcced886527163eb5add5bb99a2dbc02a",
+  "rows": 175,
   "misses": 0,
   "gate_ok": true,
   "gate": {
     "hold": {
-      "hit": 82,
+      "hit": 83,
       "miss": 0,
       "pct": 100
     },
     "minor": {
-      "hit": 37,
+      "hit": 38,
       "miss": 0,
       "pct": 100
     }
@@ -39,9 +39,9 @@
     "pct": 0
   },
   "injury_tightening": {
-    "rows": 45,
+    "rows": 46,
     "holds": 8,
-    "pct": 18
+    "pct": 17
   },
   "held_out_injury_tightening": {
     "rows": 19,
