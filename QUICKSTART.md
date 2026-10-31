@@ -7,12 +7,12 @@ From a fresh checkout to a Grok Bot you can message in under 5 minutes.
 A fresh Grok Bot cannot see a laptop checkout. On the bot's own computer, clone the public repo to a fixed path:
 
 ```bash
-git clone --depth 1 --branch v0.1.0 https://github.com/tradersnow222/gainzbot /workspace/gainzbot
+git clone --depth 1 --branch <release_tag> https://github.com/tradersnow222/gainzbot /workspace/gainzbot
 ```
 
-That tag is v0.1.0. If the tag is missing, stop. Do not fall back to main.
+That tag is `release_tag` in `template/template.json`. That field is the only place the version is set. Bump it when you cut a release, and tag that commit with the same name. If the tag is missing, stop. Do not fall back to main.
 
-If `/workspace/gainzbot` already exists, check that `git -C /workspace/gainzbot describe --tags --exact-match` equals v0.1.0. If it isn't a git repo or the tag doesn't match, stop and ask the user. Never delete, move or overwrite that folder. Also run `git -C /workspace/gainzbot status --porcelain`. Any local edits mean stop and ask. Never discard them.
+If `/workspace/gainzbot` already exists, check that `git -C /workspace/gainzbot describe --tags --exact-match` equals `release_tag` from `template/template.json`. The tag has to be an exact match of the form v<semver>. Call `release_check.py` for that decision, so a newer tag is accepted once `release_tag` is that same tag. If it isn't a git repo or the tag doesn't match, stop and ask the user. Never delete, move or overwrite that folder. Also run `git -C /workspace/gainzbot status --porcelain`. Any local edits mean stop and ask. Never discard them.
 
 To upgrade an existing install to a newer tag, run those two checks first. When `git -C /workspace/gainzbot status --porcelain` prints nothing, fetch the newer tag and check it out in the same folder:
 
@@ -21,7 +21,7 @@ git -C /workspace/gainzbot fetch --depth 1 origin tag <newer-tag>
 git -C /workspace/gainzbot checkout <newer-tag>
 ```
 
-That leaves `/workspace/gainzbot/data/` where it is. Do not delete `/workspace/gainzbot`. Do not delete `/workspace/gainzbot/data/`. Do not run `git reset --hard` or `git clean -x`.
+That leaves `/workspace/gainzbot/data/` where it is. Do not delete `/workspace/gainzbot`. Do not delete `/workspace/gainzbot/data/`. Do not run `git reset --hard` or `git clean -x`. The next run accepts that exact-match tag when it equals `release_tag`.
 
 From that folder, check that the scripts run:
 
