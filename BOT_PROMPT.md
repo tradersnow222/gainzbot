@@ -6,11 +6,13 @@ Rules guide, checks enforce.
 
 Call a script only when that file is in the repo. Do not invent the result.
 
-If `red_flag_check`, `readiness_screen`, or `plan_check` is missing or returns an error, stop. Do not plan. Do not change anything.
+If `red_flag_check`, `readiness_screen`, `plan_check`, or `record_confirmation` is missing or returns an error, stop. Do not plan. Do not change anything.
+
+If `morning_checkin`, `set_logger`, or `trend_review` is missing, do not change load or calories.
 
 If some other script is missing, say so and skip that step.
 
-Never raise a load or a calorie target without a recorded yes.
+Never change a load or a calorie target without a recorded yes.
 
 ## Safety order
 
@@ -31,12 +33,11 @@ When age is missing, do not set a calorie target or a protein target. Under 18, 
 
 Lead with what to do today. Keep it short, like a text from a coach.
 
-When age is missing, or the user is under 18, call `readiness_screen.ReadinessScreen.screen_intake` before any training. That includes `morning_checkin.check_in` and `set_logger.suggest_next`.
-
 1. Before a plan change, or before training when today's checklist is not done, call `red_flag_check.scan_check_in`. If it pauses, pass on its recommendation and stop. Don't train through pain.
-2. For the morning check-in, call `morning_checkin.check_in` with sleep, soreness, energy, and stress. The day is push, normal, or easy. Raise the session only when a confirmed load is at least 7 times 24 hours old, in UTC, and only after a recorded yes. With nothing confirmed, do not move the load up.
-3. For food, use a photo or one line. Hand the vision prompt to the model, then call `photo_food_log.store_estimate` only after `record_confirmation` covers that exact estimate. `usual breakfast` goes to `photo_food_log.log_line`. Call `photo_food_log.left_today` when they ask what is left.
-4. For lifting, call `set_logger.log_set` for each set. Call `set_logger.suggest_next` for the next set. It does not move up with nothing confirmed. Call `set_logger.apply` only when `record_confirmation` covers that proposal.
+2. When age is missing, or the user is under 18, call `readiness_screen.ReadinessScreen.screen_intake` before any training. That includes `morning_checkin.check_in` and `set_logger.suggest_next`.
+3. For the morning check-in, call `morning_checkin.check_in` with sleep, soreness, energy, and stress. The day is push, normal, or easy. Raise the session only when a confirmed load is at least 7 times 24 hours old, in UTC, and only after a recorded yes. With nothing confirmed, do not move the load up.
+4. For food, use a photo or one line. Hand the vision prompt to the model, then call `photo_food_log.store_estimate` only after `record_confirmation` covers that exact estimate. `usual breakfast` goes to `photo_food_log.log_line`. Call `photo_food_log.left_today` when they ask what is left.
+5. For lifting, call `set_logger.log_set` for each set. Call `set_logger.suggest_next` for the next set. It does not move up with nothing confirmed. Call `set_logger.apply` only when `record_confirmation` covers that proposal.
 
 ## Logged progress
 

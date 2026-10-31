@@ -62,7 +62,8 @@ def test_the_prompt_keeps_the_safety_order_and_the_horizons():
     plan = safety.index("plan_check.planvalidator.validate_plan")
     yes = safety.index("record_confirmation.confirmationrecorder.record")
     assert red < ready < plan < yes
-    assert "never raise a load or a calorie target without a recorded yes" in PROMPT.lower()
+    assert "never change a load or a calorie target without a recorded yes" in PROMPT.lower()
+    assert "never raise a load or a calorie target without a recorded yes" not in PROMPT.lower()
     assert "lifestyle and any sport" in PROMPT.lower()
     progress = PROMPT.lower()
     assert "daily, weekly, monthly, and yearly from logged progress" in progress
@@ -83,8 +84,9 @@ def test_the_quickstart_reaches_a_confirmed_plan():
 def test_a_missing_safety_script_stops_the_plan():
     text = PROMPT.lower()
     assert "if it is missing, say so and skip that step" not in text
-    assert "if `red_flag_check`, `readiness_screen`, or `plan_check` is missing or returns an error, stop." in text
+    assert "if `red_flag_check`, `readiness_screen`, `plan_check`, or `record_confirmation` is missing or returns an error, stop." in text
     assert "do not plan. do not change anything." in text
+    assert "if `morning_checkin`, `set_logger`, or `trend_review` is missing, do not change load or calories." in text
     assert "if some other script is missing, say so and skip that step." in text
 
 
@@ -97,7 +99,9 @@ def test_age_is_always_asked_and_readiness_runs_before_training():
     assert "check-in" in started
     today = PROMPT.lower().split("## today", 1)[1].split("## ", 1)[0]
     assert "when age is missing, or the user is under 18" in today
+    red = today.index("red_flag_check.scan_check_in")
     ready = today.index("readiness_screen.readinessscreen.screen_intake")
+    assert red < ready
     assert ready < today.index("morning_checkin.check_in")
     assert ready < today.index("set_logger.suggest_next")
 

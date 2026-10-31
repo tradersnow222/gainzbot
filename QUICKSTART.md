@@ -63,6 +63,6 @@ print(record.confirmed)
 
 ## 4. Message the bot
 
-Send "What should I do today?" The bot leads with today. It will not raise a load until you give a recorded yes.
+Send "What should I do today?" The bot leads with today. It will not change a load or a calorie target until you give a recorded yes.
 
 An old yes does not cover a plan you edit later. Run the same steps again for the new plan.
