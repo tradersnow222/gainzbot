@@ -3,10 +3,11 @@
 
 import io
 import zipfile
+from datetime import datetime, timezone
 
 from record_confirmation import ConfirmationRecorder
 from red_flag_check import RedFlagChecker, is_passing_check_in
-from wearable_import import GROK_SUMMARY_PROMPT, WearableImport
+from wearable_import import GROK_SUMMARY_PROMPT, WearableImport, apple_health_plan
 
 APPLE = {"source": "apple_health"}
 GARMIN = {"source": "garmin"}
@@ -54,7 +55,7 @@ def recorded(plan):
 
 
 def apple(source):
-    return WearableImport().parse_apple_health(source, recorded(APPLE))
+    return WearableImport().parse_apple_health(source, recorded(apple_health_plan(source)))
 
 
 def summary(reading):
@@ -173,6 +174,41 @@ class TestGarmin:
         assert result["connected"] is False
 
 
+def sleep_xml(end):
+    return f"""<?xml version="1.0" encoding="UTF-8"?>
+<HealthData>
+  <Record type="HKCategoryTypeIdentifierSleepAnalysis"
+    value="HKCategoryValueSleepAnalysisAsleepUnspecified"
+    startDate="2026-10-01 00:00:00 -0700" endDate="{end}"/>
+</HealthData>
+"""
+
+
+def workout_xml(minutes):
+    return f"""<?xml version="1.0" encoding="UTF-8"?>
+<HealthData>
+  <Workout workoutActivityType="HKWorkoutActivityTypeRunning" duration="{minutes}"
+    durationUnit="min" startDate="2026-10-02 07:00:00 -0700" endDate="2026-10-02 07:30:00 -0700"/>
+</HealthData>
+"""
+
+
+def workouts_xml(minutes):
+    rows = []
+    for index, item in enumerate(minutes):
+        rows.append(
+            f'  <Workout workoutActivityType="HKWorkoutActivityTypeRunning" duration="{item}" '
+            f'durationUnit="min" startDate="2026-10-02 {7 + index:02d}:00:00 -0700" '
+            f'endDate="2026-10-02 {7 + index:02d}:30:00 -0700"/>'
+        )
+    body = "\n".join(rows)
+    return f"""<?xml version="1.0" encoding="UTF-8"?>
+<HealthData>
+{body}
+</HealthData>
+"""
+
+
 def record_xml(weight="80", steps="4000"):
     return f"""<?xml version="1.0" encoding="UTF-8"?>
 <HealthData>
@@ -242,3 +278,49 @@ class TestBounds:
         result = summary(reading)
         assert result["stored"] is True
         assert result["reading"]["date"] == "2026-10-30"
+
+    def test_apple_health_confirmation_is_per_file(self):
+        other = EXPORT.replace('value="80"', 'value="81"', 1)
+        generic = WearableImport().parse_apple_health(EXPORT, recorded(APPLE))
+        wrong_file = WearableImport().parse_apple_health(EXPORT, recorded(apple_health_plan(other)))
+        assert generic["stored"] is False
+        assert wrong_file["stored"] is False
+        assert "record_confirmation" in generic["message"]
+        assert apple(EXPORT)["ok"] is True
+
+    def test_sleep_stops_at_24_hours(self):
+        kept = apple(sleep_xml("2026-10-02 00:00:00 -0700"))
+        assert kept["ok"] is True
+        assert kept["sleep"] == [{"date": "2026-10-01", "hours": 24}]
+        over = apple(sleep_xml("2026-10-02 00:01:00 -0700"))
+        assert over["stored"] is False
+        assert "24" in over["message"]
+        day = summary({"date": "2026-10-30", "sleep_hours": 24})
+        assert day["stored"] is True
+        assert day["reading"]["sleep_hours"] == 24
+        too_long = summary({"date": "2026-10-30", "sleep_hours": 25})
+        assert too_long["stored"] is False
+        assert "24" in too_long["message"]
+
+    def test_workout_minutes_stop_at_1440(self):
+        kept = apple(workout_xml("1440"))
+        assert kept["ok"] is True
+        assert kept["workouts"][0]["minutes"] == 1440
+        over = apple(workout_xml("1441"))
+        assert over["stored"] is False
+        assert "1,440" in over["message"]
+        stacked = apple(workouts_xml(("800", "800")))
+        assert stacked["stored"] is False
+
+    def test_a_future_date_is_rejected(self):
+        later = record_xml().replace("2026-10-01", "2099-01-01")
+        parsed = apple(later)
+        assert parsed["stored"] is False
+        assert "future" in parsed["message"].lower()
+        reading = {"date": "2099-01-01", "steps": 1000}
+        assert summary(reading)["stored"] is False
+        assert "future" in summary(reading)["message"].lower()
+        today = datetime.now(timezone.utc).date().isoformat()
+        kept = summary({"date": today, "steps": 1000})
+        assert kept["stored"] is True
+        assert kept["reading"]["date"] == today

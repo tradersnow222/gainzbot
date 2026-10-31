@@ -6,13 +6,16 @@ Parse an Apple Health export, or check a screenshot summary the user
 already has. Each path needs record_confirmation for that source. A bare
 true flag does not count. Garmin's personal API stays behind a flag.
 Weight outside 25 to 350 kg, and more than 100000 steps in a day, are
-rejected. This script stores readings. It does not change the plan and
-it does not set a calorie target.
+rejected. Sleep stops at 24 hours a day. Workout minutes stop at 1440
+in a day. A future date is rejected. An Apple Health confirmation covers
+that export file only. This script stores readings. It does not change
+the plan and it does not set a calorie target.
 """
 
 from datetime import date, datetime, timezone
 from typing import Dict, Optional
 from xml.etree import ElementTree
+import hashlib
 import io
 import os
 import re
@@ -34,10 +37,35 @@ _LB_PER_KG = 2.2046226218
 MIN_WEIGHT_KG = 25
 MAX_WEIGHT_KG = 350
 MAX_STEPS_PER_DAY = 100000
+MAX_SLEEP_HOURS_PER_DAY = 24
+MAX_WORKOUT_MINUTES_PER_DAY = 24 * 60
 _DATE = re.compile(r"^\d{4}-\d{2}-\d{2}$")
 _STAMP = re.compile(
     r"^\d{4}-\d{2}-\d{2}[T ]\d{2}:\d{2}:\d{2}(?:\.\d+)?(?:Z|[+-]\d{2}:\d{2})$"
 )
+
+
+def _source_bytes(source):
+    """The export bytes a confirmation is tied to. None when there is no file."""
+    if isinstance(source, bytes):
+        return source
+    if isinstance(source, str) and os.path.isfile(source):
+        with open(source, "rb") as handle:
+            return handle.read()
+    if isinstance(source, str) and source.lstrip().startswith("<"):
+        return source.encode("utf-8")
+    return None
+
+
+def apple_health_plan(source) -> Optional[dict]:
+    """The confirmation plan for one Apple Health export, not every export."""
+    raw = _source_bytes(source)
+    if not isinstance(raw, bytes):
+        return None
+    return {
+        "source": "apple_health",
+        "export_sha256": hashlib.sha256(raw).hexdigest(),
+    }
 
 
 def _confirmed(confirmation, plan) -> bool:
@@ -97,19 +125,25 @@ class WearableImport:
     """Local import plus an optional Garmin fetch that stays off by default."""
 
     def parse_apple_health(self, source, confirmation=None) -> Dict:
-        if not _confirmed(confirmation, {"source": "apple_health"}):
+        plan = apple_health_plan(source)
+        if plan is None:
+            return self._no("Give an Apple Health export file or its XML.")
+        if not _confirmed(confirmation, plan):
             return self._no("This Apple Health export needs record_confirmation before it is read.")
-        raw = self._read_source(source)
+        raw = self._read_source(_source_bytes(source))
         if isinstance(raw, dict):
             return raw
         try:
             root = ElementTree.fromstring(raw)
         except ElementTree.ParseError:
             return self._no("That Apple Health export could not be read.")
+        if self._has_future_date(root):
+            return self._no("A future date is rejected.")
         weights = []
         steps: Dict[str, float] = {}
         sleep: Dict[str, float] = {}
         workouts = []
+        workout_minutes: Dict[str, float] = {}
         for node in root.iter("Record"):
             kind = node.attrib.get("type", "")
             if kind == "HKQuantityTypeIdentifierBodyMass":
@@ -124,11 +158,22 @@ class WearableImport:
                 if added == "too many":
                     return self._no("Steps over 100,000 in a day are rejected.")
             elif kind == "HKCategoryTypeIdentifierSleepAnalysis":
-                self._add_sleep(sleep, node)
+                added = self._add_sleep(sleep, node)
+                if added == "too much":
+                    return self._no("Sleep over 24 hours in a day is rejected.")
         for node in root.iter("Workout"):
             workout = self._workout(node)
-            if workout:
-                workouts.append(workout)
+            if not workout:
+                continue
+            if workout.get("error"):
+                return self._no("Workout minutes over 1,440 in a day are rejected.")
+            if "minutes" in workout:
+                day = workout["date"]
+                total = workout_minutes.get(day, 0) + workout["minutes"]
+                if total > MAX_WORKOUT_MINUTES_PER_DAY:
+                    return self._no("Workout minutes over 1,440 in a day are rejected.")
+                workout_minutes[day] = total
+            workouts.append(workout)
         return {
             "ok": True,
             "stored": True,
@@ -237,17 +282,30 @@ class WearableImport:
         steps[day] = total
         return None
 
-    def _add_sleep(self, sleep, node) -> None:
+    def _has_future_date(self, root) -> bool:
+        today = datetime.now(timezone.utc).date()
+        nodes = list(root.iter("Record")) + list(root.iter("Workout"))
+        for node in nodes:
+            when = _apple_dt(node.attrib.get("startDate"))
+            if when is not None and when.date() > today:
+                return True
+        return False
+
+    def _add_sleep(self, sleep, node) -> Optional[str]:
         value = node.attrib.get("value") or ""
         if "Asleep" not in value:
-            return
+            return None
         start = _apple_dt(node.attrib.get("startDate"))
         end = _apple_dt(node.attrib.get("endDate"))
         if start is None or end is None or end <= start:
-            return
+            return None
         hours = (end - start).total_seconds() / 3600
         day = start.date().isoformat()
-        sleep[day] = sleep.get(day, 0) + hours
+        total = sleep.get(day, 0) + hours
+        if total > MAX_SLEEP_HOURS_PER_DAY:
+            return "too much"
+        sleep[day] = total
+        return None
 
     def _workout(self, node) -> Optional[Dict]:
         start = _apple_dt(node.attrib.get("startDate"))
@@ -266,6 +324,8 @@ class WearableImport:
             unit = (node.attrib.get("durationUnit") or "min").lower()
             if unit in {"hr", "hour", "hours"}:
                 minutes *= 60
+            if minutes > MAX_WORKOUT_MINUTES_PER_DAY:
+                return {"error": "minutes"}
             workout["minutes"] = _whole(minutes)
         return workout
 
@@ -281,8 +341,8 @@ class WearableImport:
                 kept["steps"] = _whole(steps)
             if reading.get("sleep_hours") is not None:
                 hours = InputValidator.parse_number(reading["sleep_hours"], "sleep_hours", allow_zero=True)
-                if hours > 14:
-                    return self._no("Sleep hours have to be between 0 and 14.")
+                if hours > MAX_SLEEP_HOURS_PER_DAY:
+                    return self._no("Sleep over 24 hours in a day is rejected.")
                 kept["sleep_hours"] = _whole(hours)
             if reading.get("resting_hr") is not None:
                 heart = InputValidator.parse_number(reading["resting_hr"], "resting_hr")
@@ -299,6 +359,8 @@ class WearableImport:
         day = _real_day(reading.get("date"))
         if day is None:
             return self._no("The summary date needs a real date.")
+        if date.fromisoformat(day) > datetime.now(timezone.utc).date():
+            return self._no("A future date is rejected.")
         if not kept:
             return self._no("The summary has no usable numbers.")
         kept["date"] = day
