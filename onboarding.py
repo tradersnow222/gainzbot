@@ -119,17 +119,14 @@ def _fold(reply):
     return " ".join("".join(cleaned).split())
 
 
+_LOCALTIME_PATH = "/etc/localtime"
+_TIMEZONE_FILE = "/etc/timezone"
+_memory_hold = None
+
+
 def _now():
     """Aware local time. Tests replace this to pin the clock."""
     return datetime.now().astimezone()
-
-
-def _default_timezone_name():
-    """The computer's local timezone, used when the profile has none."""
-    key = getattr(_now().tzinfo, "key", None)
-    if isinstance(key, str) and key.strip():
-        return key.strip()
-    return "UTC"
 
 
 def _zone(name):
@@ -141,8 +138,103 @@ def _zone(name):
         return None
 
 
+def _offset_zone(name):
+    """A stored UTC offset such as -07:00. The word UTC is not an offset."""
+    if not isinstance(name, str):
+        return None
+    match = re.fullmatch(r"([+-])(\d{2}):(\d{2})", name.strip())
+    if match is None:
+        return None
+    hours = int(match.group(2))
+    minutes = int(match.group(3))
+    if hours > 23 or minutes > 59:
+        return None
+    sign = 1 if match.group(1) == "+" else -1
+    return timezone(sign * timedelta(hours=hours, minutes=minutes))
+
+
+def _usable_zone(name):
+    return _zone(name) or _offset_zone(name)
+
+
+def _format_offset(delta):
+    if not isinstance(delta, timedelta):
+        delta = timedelta(0)
+    total = int(delta.total_seconds())
+    sign = "+" if total >= 0 else "-"
+    total = abs(total)
+    hours, rem = divmod(total, 3600)
+    minutes = rem // 60
+    return f"{sign}{hours:02d}:{minutes:02d}"
+
+
+def _tz_env_name():
+    raw = os.environ.get("TZ")
+    if not isinstance(raw, str):
+        return None
+    name = raw.strip()
+    if name.startswith(":"):
+        name = name[1:].strip()
+    if _zone(name) is None:
+        return None
+    return name
+
+
+def _localtime_zone_name():
+    path = _LOCALTIME_PATH
+    try:
+        if not os.path.islink(path):
+            return None
+        target = os.path.realpath(path)
+    except OSError:
+        return None
+    marker = f"{os.sep}zoneinfo{os.sep}"
+    index = target.rfind(marker)
+    if index == -1:
+        return None
+    name = target[index + len(marker):].strip()
+    if _zone(name) is None:
+        return None
+    return name
+
+
+def _timezone_file_name():
+    try:
+        with open(_TIMEZONE_FILE, encoding="utf-8") as handle:
+            line = handle.read().strip().splitlines()
+    except OSError:
+        return None
+    name = line[0].strip() if line else ""
+    if _zone(name) is None:
+        return None
+    return name
+
+
+def _iana_zone_name():
+    """IANA name from TZ, then the localtime symlink, then /etc/timezone."""
+    for name in (_tz_env_name(), _localtime_zone_name(), _timezone_file_name()):
+        if name:
+            return name
+    return None
+
+
+def _default_timezone_name():
+    """The profile timezone. An offset when the box has no IANA name.
+
+    datetime.now().astimezone() is a fixed offset and has no zone key.
+    That offset is stored as -07:00. It is never the word UTC.
+    """
+    named = _iana_zone_name()
+    if named:
+        return named
+    now = _now()
+    if now.tzinfo is None:
+        now = now.astimezone()
+    return _format_offset(now.utcoffset())
+
+
 def _timezone_name(answers=None, saved=None):
-    """IANA name on the profile, then the one stored with the hold, then the box."""
+    """Name or offset on the profile, then the one stored with the hold, then the box."""
     sources = []
     if isinstance(answers, dict):
         sources.append(answers.get("timezone"))
@@ -152,17 +244,22 @@ def _timezone_name(answers=None, saved=None):
         if isinstance(nested, dict):
             sources.append(nested.get("timezone"))
     for name in sources:
-        if _zone(name) is not None:
+        if _usable_zone(name) is not None:
             return name.strip()
     return _default_timezone_name()
 
 
 def _local_today(name=None):
-    """The user's local calendar date. Not UTC."""
-    zone = _zone(name) or _zone(_default_timezone_name()) or timezone.utc
+    """The user's local calendar date. Not the UTC date."""
+    zone = _usable_zone(name) if name else None
+    if zone is None:
+        named = _iana_zone_name()
+        zone = _zone(named) if named else None
     now = _now()
     if now.tzinfo is None:
-        now = now.replace(tzinfo=timezone.utc)
+        now = now.astimezone()
+    if zone is None:
+        return now.astimezone().date()
     return now.astimezone(zone).date()
 
 
@@ -810,7 +907,7 @@ def _remember_timezone(state):
     if not isinstance(answers, dict):
         answers = {}
         state["answers"] = answers
-    if _zone(answers.get("timezone")) is None:
+    if _usable_zone(answers.get("timezone")) is None:
         answers["timezone"] = _default_timezone_name()
     return answers["timezone"].strip()
 
@@ -839,10 +936,35 @@ def _write_onboarding_state(state):
     return True
 
 
+def _arm_memory_hold(state):
+    """Keep today's hold in this process when the file could not be saved.
+
+    A restarted process does not see it. The file is the only hold that
+    survives a new process.
+    """
+    global _memory_hold
+    zone_name = _timezone_name(state.get("answers") if isinstance(state.get("answers"), dict) else None)
+    answers = dict(state.get("answers") or {})
+    answers["timezone"] = zone_name
+    state["answers"] = answers
+    _memory_hold = {
+        "answers": answers,
+        "checks_again": True,
+        "timezone": zone_name,
+        "hold": {
+            "date": _local_today(zone_name).isoformat(),
+            "message": state.get("hold_message") or _REST_LINE,
+        },
+    }
+
+
 def _persist_hold(state):
     """Write the hold. A failed write is the reply, and onboarding stops."""
+    global _memory_hold
     if _write_onboarding_state(state):
+        _memory_hold = None
         return True
+    _arm_memory_hold(state)
     state["phase"] = "symptom"
     state["confirmed"] = False
     state["record"] = None
@@ -867,6 +989,8 @@ def _read_hold_file():
     """
     path = onboarding_state_path()
     if not os.path.lexists(path):
+        if isinstance(_memory_hold, dict):
+            return _classify_saved(_memory_hold)
         return "missing", None
     try:
         with open(path, encoding="utf-8") as handle:
@@ -877,6 +1001,10 @@ def _read_hold_file():
         loaded = json.loads(raw)
     except json.JSONDecodeError:
         return "active", None
+    return _classify_saved(loaded)
+
+
+def _classify_saved(loaded):
     if not isinstance(loaded, dict):
         return "active", None
     hold = loaded.get("hold")
@@ -899,6 +1027,76 @@ def hold_is_active():
     """True while a symptom hold blocks onboarding, including a bad hold file."""
     kind, _saved = _read_hold_file()
     return kind == "active"
+
+
+def active_hold_message():
+    """The line to show while a hold blocks, or None when nothing is held."""
+    if not hold_is_active():
+        return None
+    _kind, saved = _read_hold_file()
+    if _hold_is_today(saved):
+        hold = saved.get("hold") if isinstance(saved, dict) else {}
+        message = hold.get("message") if isinstance(hold, dict) else ""
+        if isinstance(message, str) and message.strip():
+            return message.strip()
+        return _REST_LINE
+    return _HOLD_CLOSED
+
+
+def _typed_date(reply):
+    if not isinstance(reply, str):
+        return None
+    text = reply.strip()
+    if text.lower().startswith("clear_hold"):
+        parts = text.split(None, 1)
+        text = parts[1].strip() if len(parts) == 2 else ""
+    if not re.fullmatch(r"\d{4}-\d{2}-\d{2}", text):
+        return None
+    try:
+        return date.fromisoformat(text).isoformat()
+    except ValueError:
+        return None
+
+
+def _clear_date(saved):
+    """The date that has to be typed. A file with no date uses the local today."""
+    if isinstance(saved, dict):
+        hold = saved.get("hold")
+        if isinstance(hold, dict) and isinstance(hold.get("date"), str):
+            try:
+                return date.fromisoformat(hold["date"]).isoformat()
+            except ValueError:
+                pass
+    if isinstance(saved, dict):
+        return _local_today(_timezone_name(saved=saved)).isoformat()
+    return _local_today().isoformat()
+
+
+def clear_hold(reply):
+    """Clear a corrupt or future-dated hold when the reply is that date.
+
+    A hold dated today is not cleared. It stops on a later local date.
+    Type the date in the file as YYYY-MM-DD. A corrupt or unreadable file
+    has no date, so type today's local date.
+    """
+    global _memory_hold
+    kind, saved = _read_hold_file()
+    if kind != "active":
+        return "There is no hold to clear."
+    if _hold_is_today(saved):
+        return "A hold dated today stays until the next local day. It is not cleared."
+    wanted = _clear_date(saved)
+    typed = _typed_date(reply)
+    if typed != wanted:
+        return f"Type the date {wanted} to clear this hold."
+    path = onboarding_state_path()
+    if os.path.lexists(path):
+        try:
+            os.remove(path)
+        except OSError:
+            return "Stop. The hold file could not be cleared. Please check it."
+    _memory_hold = None
+    return "The hold is cleared."
 
 
 def _hold_is_today(saved):
@@ -984,22 +1182,38 @@ def _handle_symptom(state, reply):
         return _end_onboarding_for_today(state, paused)
     state["confirmed"] = False
     state["record"] = None
+    if not isinstance(state.get("answers"), dict):
+        state["answers"] = {}
+    stored_age = state["answers"].get("age")
     number = _typed_int(reply)
-    if number is not None and 1 <= number <= 120:
+    typed_minor = number is not None and 1 <= number <= 120 and number < 18
+    under = ""
+    if typed_minor:
         state["answers"]["age"] = str(number)
-    age = _number(state["answers"].get("age"))
-    if age is not None and age < 18:
         _apply_age_readiness(state)
-        state["phase"] = "symptom"
-        _clear_proposal(state)
-        state["confirmed"] = False
-        state["record"] = None
-        if _can_refresh_hold():
-            _persist_hold(state)
-        return True
-    state["error"] = state.get("hold_message") or _REST_LINE
+        under = state.get("error") or ""
+        if stored_age is None:
+            state["answers"].pop("age", None)
+        else:
+            state["answers"]["age"] = stored_age
+    age = _number(state["answers"].get("age"))
+    if age is not None and age < 18 and not under:
+        _apply_age_readiness(state)
+        under = state.get("error") or ""
+    hold = state.get("hold_message") or _REST_LINE
+    if under:
+        state["error"] = under if hold in under else f"{hold} {under}".strip()
+    else:
+        state["error"] = hold
+    state["phase"] = "symptom"
+    _clear_proposal(state)
+    state["confirmed"] = False
+    state["record"] = None
     if _can_refresh_hold():
-        _persist_hold(state)
+        saved_error = state["error"]
+        if not _persist_hold(state):
+            return True
+        state["error"] = saved_error
     return True
 
 

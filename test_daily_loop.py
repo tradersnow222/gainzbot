@@ -326,6 +326,31 @@ def test_a_confirmed_week_returns_that_session_without_a_yes(tmp_path):
     assert raised.workouts[day]["load"] == 110
 
 
+def test_the_daily_loop_stops_while_onboarding_is_held():
+    from daily_loop import DailyLoop
+    from onboarding import run_chat
+
+    run_chat([
+        "hello",
+        "hold, male, age 25, 80 kg, 180 cm",
+        "ok",
+        "all no",
+        "my chest hurts",
+    ])
+    loop = DailyLoop()
+    morning = loop.open_morning("2026-10-31")
+    assert "tomorrow" in morning.lower()
+    assert "medical emergency" in morning.lower()
+    heard = loop.hear("2026-10-31", "no, 7, 2")
+    assert "tomorrow" in heard.lower()
+    assert loop.workouts == {}
+    evening = loop.open_evening("2026-10-31")
+    assert "tomorrow" in evening.lower()
+    review = loop.weekly("2026-10-31T18:00:00Z")
+    assert review["changed"] is False
+    assert "tomorrow" in review["text"].lower()
+
+
 def test_a_clear_no_with_sleep_and_soreness_sends_the_session_in_one_turn():
     from daily_loop import DailyLoop, adult_profile
     from red_flag_check import RedFlagChecker, is_passing_check_in

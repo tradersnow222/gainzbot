@@ -411,10 +411,12 @@ def test_a_symptom_ends_onboarding_for_the_day(replies):
 def test_a_minor_age_during_a_symptom_hold_blocks_and_does_not_resume():
     state, bots = run_chat(list(_AGE_25) + ["im 15 and dizzy", "15", "yes"])
     assert state["confirmed"] is False
-    assert state["answers"]["age"] == "15"
+    assert state["answers"]["age"] == "25"
     assert state["phase"] == "symptom"
-    assert "calorie" in bots[-1].lower()
-    assert "protein" in bots[-1].lower()
+    assert "calorie" in bots[-2].lower()
+    assert "protein" in bots[-2].lower()
+    assert "tomorrow" in bots[-2].lower()
+    assert "tomorrow" in bots[-1].lower()
     assert "one yes confirms the plan" not in bots[-1].lower()
     assert "one yes confirms the plan" not in bots[-2].lower()
 
@@ -554,6 +556,10 @@ def test_a_failed_hold_write_returns_an_error_and_does_not_continue(monkeypatch)
     assert "one yes confirms the plan" not in bots[-2].lower()
     assert "one yes confirms the plan" not in bots[-1].lower()
     assert "onboarding does not continue" in bots[-1].lower()
+    again, again_bots = run_chat(HAPPY_PATH)
+    assert again["confirmed"] is False
+    assert again["phase"] == "symptom"
+    assert "one yes confirms the plan" not in " ".join(again_bots).lower()
 
 
 def test_four_fifty_nine_pm_pdt_to_five_pm_stays_held(monkeypatch):
@@ -592,6 +598,121 @@ def test_four_fifty_nine_pm_pdt_to_five_pm_stays_held(monkeypatch):
     assert os.path.isfile(path)
     kept = json.loads(open(path, encoding="utf-8").read())
     assert kept["hold"]["date"] == "2026-10-31"
+
+
+def test_real_now_with_a_fixed_offset_stays_held_from_459_to_500(monkeypatch, tmp_path):
+    import json
+    import os
+    import time
+    from datetime import datetime, timedelta, timezone
+
+    import onboarding
+
+    pdt = timezone(timedelta(hours=-7))
+    early = datetime(2026, 10, 31, 16, 59, tzinfo=pdt)
+    late = datetime(2026, 10, 31, 17, 0, tzinfo=pdt)
+    assert getattr(early.tzinfo, "key", None) is None
+    assert early.astimezone(timezone.utc).date().isoformat() == "2026-10-31"
+    assert late.astimezone(timezone.utc).date().isoformat() == "2026-11-01"
+    monkeypatch.setattr(onboarding, "_LOCALTIME_PATH", str(tmp_path / "no-localtime"))
+    monkeypatch.setattr(onboarding, "_TIMEZONE_FILE", str(tmp_path / "no-timezone"))
+    previous = os.environ.get("TZ")
+    os.environ["TZ"] = "<-07>7"
+    time.tzset()
+
+    class _Clock(datetime):
+        instant = early
+
+        @classmethod
+        def now(cls, tz=None):
+            current = cls.instant
+            if tz is not None:
+                return current.astimezone(tz)
+            return cls(
+                current.year, current.month, current.day,
+                current.hour, current.minute, current.second,
+            )
+
+    try:
+        monkeypatch.setattr(onboarding, "datetime", _Clock)
+        assert onboarding._now().utcoffset() == timedelta(hours=-7)
+        assert onboarding._default_timezone_name() == "-07:00"
+        assert onboarding._now().astimezone().date().isoformat() == "2026-10-31"
+        state, bots = run_chat(list(_AGE_25) + ["my chest hurts"])
+        assert state["confirmed"] is False
+        assert "tomorrow" in bots[-1].lower()
+        saved = json.loads(open(onboarding.onboarding_state_path(), encoding="utf-8").read())
+        assert saved["hold"]["date"] == "2026-10-31"
+        assert saved["timezone"] == "-07:00"
+        assert saved["timezone"] != "UTC"
+        _Clock.instant = late
+        assert onboarding._now().astimezone().date().isoformat() == "2026-10-31"
+        later, later_bots = run_chat(["yes"])
+        assert later["confirmed"] is False
+        assert later["phase"] == "symptom"
+        assert "one yes confirms the plan" not in " ".join(later_bots).lower()
+        kept = json.loads(open(onboarding.onboarding_state_path(), encoding="utf-8").read())
+        assert kept["hold"]["date"] == "2026-10-31"
+    finally:
+        if previous is None:
+            os.environ.pop("TZ", None)
+        else:
+            os.environ["TZ"] = previous
+        time.tzset()
+
+
+def test_clear_hold_needs_the_date_for_a_future_or_corrupt_file():
+    import json
+    import os
+
+    import onboarding
+
+    path = onboarding.onboarding_state_path()
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    future = {
+        "timezone": "-07:00",
+        "answers": {"age": "30", "timezone": "-07:00"},
+        "checks_again": True,
+        "hold": {"date": "2099-01-01", "message": "later"},
+    }
+    with open(path, "w", encoding="utf-8") as handle:
+        json.dump(future, handle)
+    assert "2099-01-01" in onboarding.clear_hold("2026-10-31")
+    assert os.path.isfile(path)
+    refused, refused_bots = run_chat(HAPPY_PATH)
+    assert refused["confirmed"] is False
+    assert "one yes confirms the plan" not in " ".join(refused_bots).lower()
+    assert onboarding.clear_hold("clear_hold 2099-01-01") == "The hold is cleared."
+    assert not os.path.isfile(path)
+    with open(path, "w", encoding="utf-8") as handle:
+        handle.write("garbage")
+    blocked, blocked_bots = run_chat(HAPPY_PATH)
+    assert blocked["confirmed"] is False
+    assert "one yes confirms the plan" not in " ".join(blocked_bots).lower()
+    today = onboarding._local_today().isoformat()
+    assert today in onboarding.clear_hold("nope")
+    assert os.path.isfile(path)
+    assert onboarding.clear_hold(today) == "The hold is cleared."
+    assert not os.path.isfile(path)
+    done, _done_bots = run_chat(HAPPY_PATH)
+    assert done["confirmed"] is True
+
+
+def test_clear_hold_leaves_a_hold_dated_today():
+    import json
+    import os
+
+    import onboarding
+
+    run_chat(list(_AGE_25) + ["my chest hurts"])
+    path = onboarding.onboarding_state_path()
+    saved = json.loads(open(path, encoding="utf-8").read())
+    answer = onboarding.clear_hold(saved["hold"]["date"])
+    assert "not cleared" in answer.lower()
+    assert os.path.isfile(path)
+    later, later_bots = run_chat(["yes"])
+    assert later["confirmed"] is False
+    assert "one yes confirms the plan" not in " ".join(later_bots).lower()
 
 
 def test_save_refuses_while_a_hold_dated_today_exists(tmp_path):

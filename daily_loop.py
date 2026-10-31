@@ -19,6 +19,13 @@ _EVENING = "Did you do it? easy, right, or hard. What did you eat?"
 _NUDGE = "Missed today. I'll pick it up in the morning."
 
 
+def _onboarding_hold():
+    """The onboarding symptom hold, when one still blocks today."""
+    from onboarding import active_hold_message
+
+    return active_hold_message()
+
+
 def _fold(reply):
     if not isinstance(reply, str):
         return ""
@@ -225,6 +232,9 @@ class DailyLoop:
 
     def open_morning(self, day):
         """The bot opens with the symptom line. Wearables skip only the other questions."""
+        held = _onboarding_hold()
+        if held:
+            return held
         self.notes[day] = {}
         self.phase[day] = "symptom"
         if not self._has_session(day):
@@ -261,17 +271,26 @@ class DailyLoop:
         return " ".join(asked)
 
     def open_evening(self, day):
+        held = _onboarding_hold()
+        if held:
+            return held
         self.phase[day] = "evening"
         return _EVENING
 
     def nudge(self, day):
         """One gentle nudge for a missed day. A second call says nothing."""
+        held = _onboarding_hold()
+        if held:
+            return held
         if self.nudges.get(day, 0) >= 1:
             return None
         self.nudges[day] = 1
         return _NUDGE
 
     def hear(self, day, reply):
+        held = _onboarding_hold()
+        if held:
+            return held
         phase = self.phase.get(day)
         if phase == "symptom":
             self.notes.setdefault(day, {})["reply"] = reply
@@ -578,6 +597,9 @@ class DailyLoop:
     def weekly(self, as_of):
         """A short review. A raise waits for 7 times 24 hours and stays inside 10 percent."""
         food = f"{self.calories} kcal" if self.calories is not None else self.goal
+        held = _onboarding_hold()
+        if held:
+            return {"load": self.load, "changed": False, "food": food, "text": held}
         if self.felt_easy < 1:
             return {
                 "load": self.load,

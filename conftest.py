@@ -8,3 +8,4 @@ def _isolate_onboarding_files(tmp_path, monkeypatch):
     record = tmp_path / "onboarding_record.json"
     monkeypatch.setattr("onboarding.onboarding_state_path", lambda: str(state))
     monkeypatch.setattr("record_confirmation.onboarding_record_path", lambda: str(record))
+    monkeypatch.setattr("onboarding._memory_hold", None)

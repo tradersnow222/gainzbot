@@ -94,7 +94,15 @@ print(record.confirmed)
 
 `True` prints only when the checklist passed, the plan passed `plan_check`, and the yes covers that exact plan.
 
-## 5. Message the bot
+## 5. Clear a bad symptom hold
+
+A symptom during onboarding holds the rest of the local day. `onboarding.run_chat` and `DailyLoop` both refuse that day. The date comes from the TZ environment variable, then the `/etc/localtime` symlink, then `/etc/timezone`. When none of those is an IANA name, the date is the computer's local date and the saved zone is the UTC offset, such as `-07:00`, never the word UTC.
+
+A corrupt or future-dated hold stays active. Clear it with `onboarding.clear_hold` and the date typed as `YYYY-MM-DD`. Use the date in the hold file. A corrupt file has no date, so type today's local date. A hold dated today is not cleared that way. It stops on the next local day.
+
+If the hold file cannot be saved, this process still refuses new chats for the local day. A restarted process will not see that hold, because it was never written. An age typed during a hold does not replace the stored age. Under 18 shows the hold message and the under-18 message.
+
+## 6. Message the bot
 
 Send "What should I do today?" The bot leads with today. It will not change a load or a calorie target until you give a recorded yes.
 
