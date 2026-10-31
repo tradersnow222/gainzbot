@@ -3064,3 +3064,89 @@ def test_routine_time_aliases_are_saved_and_echoed():
     assert "morning at 06:30" in bots[-1].lower()
     assert "evening at 21:00" in bots[-1].lower()
     assert "weekly sun 19:00" in bots[-1].lower()
+
+
+def test_shown_weight_converts_the_stored_kg_not_the_typed_pounds():
+    state, bots = run_chat([
+        {
+            "text": "200 lb",
+            "labels": _labels(),
+            "profile": _cut_profile(weight_kg=74, height_cm=163),
+        },
+        {"text": "none", "labels": _labels()},
+    ])
+    assert state["answers"]["weight"] == "74 kg"
+    assert "200 lb" not in bots[-1]
+    assert "163 lb" in bots[-1]
+    missing, _missing_bots = run_chat([{
+        "text": "200 lb, 5 ft 4 in",
+        "labels": _labels(),
+        "profile": {"goal": "cut", "age": 30, "sex": "male"},
+    }])
+    assert missing["answers"].get("weight") in (None, "")
+    assert missing["answers"].get("height") in (None, "")
+    assert missing["answers"].get("weight") != "90.7 kg"
+    edited, edited_bots = run_chat([
+        {
+            "text": "200 lb, 5 ft 4 in",
+            "labels": _labels(),
+            "profile": _cut_profile(weight_kg=74, height_cm=163),
+        },
+        {"text": "none", "labels": _labels()},
+        {"text": "updated", "labels": _labels(), "profile": {"weight_kg": 80}},
+    ])
+    assert edited["answers"]["weight"] == "80 kg"
+    assert "176 lb" in edited_bots[-1]
+    assert "163 lb" not in edited_bots[-1]
+    assert "200 lb" not in edited_bots[-1]
+
+
+def test_host_confirm_no_shows_the_plan_again():
+    for text in ("no, keep it", "No.", "nah", "not yet", "...no thanks"):
+        state, bots = run_chat(list(HAPPY_PATH[:-1]) + [{
+            "text": text,
+            "labels": _labels(),
+            "confirm": {"confirm": True},
+        }])
+        assert state["confirmed"] is False, text
+        assert state["record"] is None, text
+        assert "one yes confirms the plan" in bots[-1].lower(), text
+
+
+def test_routine_clocks_accept_common_formats_and_canonical_wins():
+    state, bots = run_chat(_dana_turns({
+        "text": "all no",
+        "confirm": {
+            "confirm": True,
+            "routine_times": {
+                "morning": "06:30",
+                "daily_checkin": "9 pm",
+                "evening": "9:30am",
+                "weekly": "Sun 9 pm",
+            },
+        },
+    }))
+    assert state["confirmed"] is True
+    assert state["times"]["daily_checkin"] == "21:00"
+    assert state["times"]["evening_followup"] == "09:30"
+    assert state["times"]["weekly_review"] == "Sun 21:00"
+    assert "morning at 21:00" in bots[-1].lower()
+    assert "evening at 09:30" in bots[-1].lower()
+    assert "weekly sun 21:00" in bots[-1].lower()
+    ignored, ignored_bots = run_chat(_dana_turns({
+        "text": "all no",
+        "confirm": {
+            "confirm": True,
+            "routine_times": {
+                "morning": "9pm",
+                "daily_checkin": "nope",
+                "evening_followup": "21:00",
+            },
+        },
+    }))
+    assert ignored["confirmed"] is True
+    assert ignored["times"]["daily_checkin"] == "07:00"
+    assert ignored["times"]["evening_followup"] == "21:00"
+    assert "ignored" in ignored_bots[-1].lower()
+    assert "default was kept" in ignored_bots[-1].lower()
+    assert "morning at 07:00" in ignored_bots[-1].lower()

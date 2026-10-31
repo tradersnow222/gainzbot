@@ -344,6 +344,18 @@ def _host_confirm_allowed(speaker, plan) -> bool:
     return confirm_phase_active() and _first_plan_confirm(plan)
 
 
+def _host_confirm_refusal(reply) -> bool:
+    """True when the user's text opens with no, nah, or not.
+
+    Leading punctuation is ignored. 'now' and 'nothing' are not those words.
+    """
+    if not isinstance(reply, str):
+        return False
+    text = reply.strip().lower()
+    text = re.sub(r"""^[\s"'`.,!?;:()\[\]{}<>…\-/_|\\]+""", "", text)
+    return re.match(r"(?:no|nah|not)\b", text) is not None
+
+
 def _first_plan_confirm(plan) -> bool:
     """True only when onboarding sealed this object as the first plan.
 
@@ -536,6 +548,8 @@ class ConfirmationRecorder:
             errors.append("The confirmation has to be the user's own words.")
         elif paused is not None:
             errors.append(paused.message)
+        elif host_confirm and _host_confirm_refusal(reply):
+            errors.append("That reply starts with no. The plan stays up.")
         elif host_confirm:
             pass
         elif not is_clear_yes(reply) and schedule is None:

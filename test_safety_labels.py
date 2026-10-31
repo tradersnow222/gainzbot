@@ -373,7 +373,7 @@ def test_the_safety_eval_gate_is_complete():
     assert ok is True, reason
     assert reason == (
         "safety label gate passed: "
-        "hold 82, minor 37; held-out hold 10, minor 24; over-hold 0/46 (0%)"
+        "hold 83, minor 38; held-out hold 10, minor 24; over-hold 0/46 (0%)"
     )
 
 
@@ -645,7 +645,7 @@ def test_the_committed_gate_passes_and_scores_in_a_temp_dir(tmp_path):
     assert ok is True, reason
     assert reason == (
         "safety label gate passed: "
-        "hold 82, minor 37; held-out hold 10, minor 24; over-hold 0/46 (0%)"
+        "hold 83, minor 38; held-out hold 10, minor 24; over-hold 0/46 (0%)"
     )
     after = {path.name for path in (ROOT / "evals" / "results").glob("*")}
     assert before == after

@@ -618,3 +618,30 @@ def test_seal_key_is_mode_0600_and_an_unreadable_key_is_not_overwritten(tmp_path
     record = ConfirmationRecorder().record({"changes": {"load": 80}}, "yes", "user", None)
     assert record.confirmed is False
     assert record.message == DATA_FILE_MESSAGE
+
+
+def test_host_confirm_that_starts_with_no_does_not_seal():
+    import onboarding
+    from record_confirmation import _host_confirm_refusal, _mark_first_plan
+
+    assert _host_confirm_refusal("No.")
+    assert _host_confirm_refusal("  nah")
+    assert _host_confirm_refusal("not yet")
+    assert _host_confirm_refusal("...no thanks")
+    assert not _host_confirm_refusal("now let's go")
+    assert not _host_confirm_refusal("nothing else")
+    assert not _host_confirm_refusal("yes")
+    plan = {
+        "plan": {"user": {"age": 30}},
+        "sessions": [{"date": "2026-11-02", "name": "Upper"}],
+    }
+    token = onboarding._CONFIRM_PHASE.set(True)
+    try:
+        sealed = _mark_first_plan(plan)
+        record = ConfirmationRecorder().record(
+            sealed, "no, keep it", "host_confirm", passing_check_in()
+        )
+    finally:
+        onboarding._CONFIRM_PHASE.reset(token)
+    assert sealed.get("first_plan") is True
+    assert record.confirmed is False

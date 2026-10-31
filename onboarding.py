@@ -518,23 +518,26 @@ def _ft_in_display(text):
 
 
 def _remember_unit_echo(state, reply):
-    """Keep the units the user typed. The plan still stores kg and cm."""
+    """Remember lb or ft. The shown figure is converted from the stored kg or cm."""
     answers = state.get("answers")
     if not isinstance(answers, dict) or not isinstance(reply, str):
         return
-    pounds = _lb_display(reply)
-    if pounds:
-        answers["weight_display"] = pounds
-    elif re.search(r"\b\d+(?:\.\d+)?\s*kg\b", _fold(reply)):
-        answers.pop("weight_display", None)
+    answers.pop("weight_display", None)
+    answers.pop("height_display", None)
+    if _lb_display(reply):
+        answers["weight_units"] = "lb"
+    elif re.search(r"\b\d+(?:\.\d+)?\s*kg\b", _without_target_clause(_fold(reply))):
+        answers["weight_units"] = "kg"
     if re.search(r"\b\d{2,3}\s*cm\b", _fold(reply)):
-        answers.pop("height_display", None)
+        answers["height_units"] = "cm"
         return
     found = _ft_in_display(reply)
     if found is None:
         return
-    display, canonical = found
-    answers["height_display"] = display
+    _display, canonical = found
+    answers["height_units"] = "ft"
+    if state.get("skip_body_from_text"):
+        return
     if answers.get("height") in (None, ""):
         answers["height"] = canonical
 
@@ -975,6 +978,7 @@ def _parse_profile_fields(state, reply):
     """
     answers = state["answers"]
     folded = _fold(reply)
+    skip_body = state.get("skip_body_from_text") is True
     if re.search(r"\b(?:lose\s+fat|lose\s+weight|fat\s+loss|cut)\b", folded):
         answers["goal"] = "cut"
     else:
@@ -983,7 +987,7 @@ def _parse_profile_fields(state, reply):
                 answers["goal"] = goal
                 break
     height = re.search(r"\b(\d{2,3})\s*cm\b", folded)
-    if height:
+    if height and not skip_body:
         answers["height"] = height.group(1) + " cm"
     soft = _soft(reply)
     target = _target_from_want(soft)
@@ -1002,7 +1006,7 @@ def _parse_profile_fields(state, reply):
         answers["target"] = target
         if state.get("awaiting") == "target":
             state["awaiting"] = None
-    weight = _current_weight(soft)
+    weight = None if skip_body else _current_weight(soft)
     if weight == "ask":
         state["error"] = _WEIGHT_ASK
         if target is not None:
@@ -3025,15 +3029,28 @@ def _finish_profile(state, profile):
 
 
 def _clock_hhmm(value):
+    """21:00, 9pm, 9 pm, and 9:30am. None when the text is not a clock."""
     if not isinstance(value, str):
         return None
-    match = re.fullmatch(r"(\d{1,2}):(\d{2})", value.strip())
+    text = " ".join(value.strip().lower().split())
+    match = re.fullmatch(r"(\d{1,2}):(\d{2})", text)
+    if match is not None:
+        hour = int(match.group(1))
+        minute = int(match.group(2))
+        if hour > 23 or minute > 59:
+            return None
+        return f"{hour:02d}:{minute:02d}"
+    match = re.fullmatch(r"(\d{1,2})(?::(\d{2}))?\s*(am|pm)", text)
     if match is None:
         return None
     hour = int(match.group(1))
-    minute = int(match.group(2))
-    if hour > 23 or minute > 59:
+    minute = int(match.group(2) or 0)
+    if hour < 1 or hour > 12 or minute > 59:
         return None
+    if match.group(3) == "am":
+        hour = 0 if hour == 12 else hour
+    elif hour != 12:
+        hour += 12
     return f"{hour:02d}:{minute:02d}"
 
 
@@ -3062,20 +3079,14 @@ def _weekly_clock(value):
     """A weekday plus a clock, or None. A bare word is not a weekly time."""
     if not isinstance(value, str):
         return None
-    match = re.fullmatch(
-        r"([A-Za-z]+) (\d{1,2}):(\d{2})",
-        " ".join(value.split()),
-    )
+    match = re.fullmatch(r"([A-Za-z]+)\s+(.+)", " ".join(value.split()))
     if match is None:
         return None
     day = _WEEKDAY_CLOCK.get(match.group(1).lower())
-    if day is None:
+    clock = _clock_hhmm(match.group(2))
+    if day is None or clock is None:
         return None
-    hour = int(match.group(2))
-    minute = int(match.group(3))
-    if hour > 23 or minute > 59:
-        return None
-    return f"{day} {hour:02d}:{minute:02d}"
+    return f"{day} {clock}"
 
 
 _ROUTINE_TIME_ALIASES = {
@@ -3089,17 +3100,22 @@ _ROUTINE_TIME_ALIASES = {
 
 
 def _canonical_routine_times(times):
-    """morning, evening, and weekly are the host names for the stored keys."""
+    """morning, evening, and weekly are aliases. The canonical key wins."""
     if not isinstance(times, dict):
         return {}
-    canonical = {}
+    ranked = {}
     for key, value in times.items():
         if not isinstance(key, str):
             continue
-        name = _ROUTINE_TIME_ALIASES.get(key.strip().lower())
-        if name:
-            canonical[name] = value
-    return canonical
+        raw = key.strip().lower()
+        name = _ROUTINE_TIME_ALIASES.get(raw)
+        if not name:
+            continue
+        priority = 1 if raw == name else 0
+        current = ranked.get(name)
+        if current is None or priority >= current[0]:
+            ranked[name] = (priority, value)
+    return {name: pair[1] for name, pair in ranked.items()}
 
 
 def _overlay_routine_times(state, times):
@@ -3114,20 +3130,35 @@ def _overlay_routine_times(state, times):
     times = _canonical_routine_times(times)
     if not times:
         state["times"] = current
+        state.pop("routine_time_note", None)
         return
+    ignored = False
     if "daily_checkin" in times:
-        current["daily_checkin"] = (
-            _clock_hhmm(times.get("daily_checkin")) or DEFAULT_LOOP_TIMES["daily_checkin"]
-        )
+        parsed = _clock_hhmm(times.get("daily_checkin"))
+        if parsed:
+            current["daily_checkin"] = parsed
+        else:
+            current["daily_checkin"] = DEFAULT_LOOP_TIMES["daily_checkin"]
+            ignored = True
     if "evening_followup" in times:
-        current["evening_followup"] = (
-            _clock_hhmm(times.get("evening_followup")) or DEFAULT_LOOP_TIMES["evening_followup"]
-        )
+        parsed = _clock_hhmm(times.get("evening_followup"))
+        if parsed:
+            current["evening_followup"] = parsed
+        else:
+            current["evening_followup"] = DEFAULT_LOOP_TIMES["evening_followup"]
+            ignored = True
     if "weekly_review" in times:
-        current["weekly_review"] = (
-            _weekly_clock(times.get("weekly_review")) or DEFAULT_LOOP_TIMES["weekly_review"]
-        )
+        parsed = _weekly_clock(times.get("weekly_review"))
+        if parsed:
+            current["weekly_review"] = parsed
+        else:
+            current["weekly_review"] = DEFAULT_LOOP_TIMES["weekly_review"]
+            ignored = True
     state["times"] = current
+    if ignored:
+        state["routine_time_note"] = "A routine time was ignored and the default was kept."
+    else:
+        state.pop("routine_time_note", None)
 
 
 def _plan_answer(state):
@@ -3162,6 +3193,15 @@ def _apply_structured_confirm(state, confirm, token, reply=""):
         return token
     if not _structured_confirm_allowed(state):
         return token
+    from record_confirmation import _host_confirm_refusal
+
+    quoted_early = reply if isinstance(reply, str) and reply.strip() else "yes"
+    if _host_confirm_refusal(quoted_early):
+        state["phase"] = "confirm"
+        state["confirmed"] = False
+        state["record"] = None
+        state["error"] = None
+        return token
     if token is None:
         token = _CONFIRM_PHASE.set(True)
     state["phase"] = "confirm"
@@ -3180,12 +3220,16 @@ def _apply_structured_confirm(state, confirm, token, reply=""):
 def apply_reply(state, reply, labels=None, profile=None):
     """One user reply. Hard-stop first, then host labels, then a structured slot.
 
+    A profile payload is the source for height and weight. Free text does not
+    fill those two when this turn has a payload that leaves them out.
+
     Labels are the argument. They are never read out of reply.
     A profile payload is the argument. It is never read out of reply.
     A pending follow-up, age check, or hold blocks confirm.
     """
     state["error"] = None
     state["cleared_follow_up"] = False
+    state["skip_body_from_text"] = isinstance(profile, dict)
     text = reply if isinstance(reply, str) else ""
     if hold_is_active():
         _adopt_hold(state)
@@ -4109,18 +4153,46 @@ _FULL_DAYS = (
 )
 
 
+def _lb_from_stored(weight):
+    """Pounds from the stored kilogram figure, rounded to a whole number."""
+    kg = _number(weight)
+    if kg is None:
+        return None
+    return str(int(round(float(kg) / 0.45359237))) + " lb"
+
+
+def _ft_in_from_stored(height):
+    """Feet and inches from the stored centimeter figure."""
+    cm = _number(height)
+    if cm is None:
+        return None
+    total = float(cm) / 2.54
+    feet = int(total // 12)
+    inches = int(round(total - feet * 12))
+    if inches == 12:
+        feet += 1
+        inches = 0
+    return f"{feet} ft {inches} in"
+
+
 def _proposal_profile(answers):
     """Weight, level, sport, and event. Blank fields are left out.
 
-    Weight and height use the units the user typed when we still have them.
+    Pounds and feet are the stored kg and cm, converted. A later weight edit
+    changes the figure that is shown.
     """
     bits = []
-    weight = answers.get("weight_display") or answers.get("weight")
+    if answers.get("weight_units") == "lb":
+        weight = _lb_from_stored(answers.get("weight"))
+    else:
+        stored = answers.get("weight")
+        weight = stored.strip() if isinstance(stored, str) else ""
     if isinstance(weight, str) and weight.strip():
         bits.append(weight.strip())
-    height = answers.get("height_display")
-    if isinstance(height, str) and height.strip():
-        bits.append(height.strip())
+    if answers.get("height_units") == "ft":
+        height = _ft_in_from_stored(answers.get("height"))
+        if isinstance(height, str) and height.strip():
+            bits.append(height.strip())
     level = answers.get("experience")
     if isinstance(level, str) and level.strip():
         bits.append(level.strip())
@@ -4321,13 +4393,18 @@ def _confirmed_line(state):
         listed = ", ".join(parts)
         line = "Confirmed. " + listed[0].upper() + listed[1:] + "."
     if extra:
-        return f"{line} {extra}"
+        line = f"{line} {extra}"
+    ignored = state.get("routine_time_note")
+    if isinstance(ignored, str) and ignored.strip():
+        line = f"{line} {ignored.strip()}"
     return line
 
 
 def speak(state):
     """The next bot reply. The first one is question 1 when nothing is known."""
     from seal_secret import DATA_FILE_MESSAGE
+
+    state.pop("skip_body_from_text", None)
 
     if hold_is_active() and state.get("phase") != "symptom":
         _adopt_hold(state)

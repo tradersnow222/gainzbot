@@ -202,6 +202,14 @@ def _leading_symptom_no(reply):
     return re.match(r"\s*(?:no|nope)\b", reply, flags=re.IGNORECASE) is not None
 
 
+def _bare_symptom_no(reply):
+    """'No.' and 'no' are the same answer. Trailing punctuation does not count."""
+    if not isinstance(reply, str):
+        return False
+    text = _fold(reply).strip(" .,!?;:\"'`")
+    return text in {"no", "nope"}
+
+
 def _remark_allowed(note):
     """True when the leftover is only an allowlisted plan, time, food, or greeting.
 
@@ -721,7 +729,7 @@ class DailyLoop:
             self.notes.setdefault(day, {})["note"] = reply.strip()
         if action in {"note", "pass"} and _leading_symptom_no(reply):
             self.notes.setdefault(day, {})["symptom_cleared"] = True
-            return self._after_symptom(day, "no")
+            return self._after_symptom(day, reply)
         self.phase[day] = "symptom"
         if action in {"note", "pass"}:
             return "Still need a clear no or yes on the symptom line."
@@ -854,7 +862,7 @@ class DailyLoop:
             notes = self.notes.setdefault(day, {})
             if self._needs_more(day):
                 if (
-                    _fold(reply) in {"no", "nope"}
+                    _bare_symptom_no(reply)
                     or self._rest_day(day)
                     or notes.get("symptom_cleared")
                 ):
@@ -871,7 +879,7 @@ class DailyLoop:
             if self._gap_open(day, gap) and gap not in abnormal
         ]
         personal = list(pending["personal"])
-        if personal and _fold(reply) not in {"no", "none", "nope"}:
+        if personal and not _bare_symptom_no(reply) and _fold(reply) != "none":
             for key in personal:
                 self.signals.settle(key)
             personal = []

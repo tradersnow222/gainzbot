@@ -1111,7 +1111,49 @@ def test_a_clear_no_with_ordinary_soreness_logs_the_morning(tmp_path):
     assert len(rows) == 1
     assert rows[0]["note"] == reply
     assert rows[0]["sleep"] == 7
-    assert rows[0]["soreness"] == 2
+    assert rows[0]["soreness"] == 4
+
+
+def test_a_scored_no_keeps_the_hours_and_soreness(tmp_path):
+    from daily_loop import DailyLoop, adult_profile
+    from log_store import LogStore
+
+    day = "2026-10-26"
+    path = tmp_path / "log.json"
+    loop = DailyLoop(load=80, minutes=45, profile=adult_profile(), log_path=str(path))
+    loop.open_morning(day)
+    reply = "no. slept 3 hours, soreness 5"
+    text = loop.hear(day, reply, {
+        "minor_signal": False,
+        "red_flag": "none",
+        "injury": "none",
+        "note_ok": True,
+    })
+    assert loop.phase[day] == "workout"
+    assert loop.notes[day]["sleep"] == 3
+    assert loop.notes[day]["soreness"] == 5
+    assert loop.notes[day]["note"] == reply
+    assert "Today is a normal day" not in text
+    assert text.startswith("Easy day.")
+    rows = LogStore(path).data["checkins"]
+    assert len(rows) == 1
+    assert rows[0]["sleep"] == 3
+    assert rows[0]["soreness"] == 5
+    assert rows[0]["note"] == reply
+
+
+def test_no_with_trailing_punctuation_is_a_bare_no():
+    from daily_loop import DailyLoop, adult_profile
+
+    day = "2026-10-26"
+    loop = DailyLoop(load=80, minutes=45, profile=adult_profile())
+    loop.open_morning(day)
+    text = loop.hear(day, "No.")
+    assert loop.phase[day] == "workout"
+    assert "one more" not in text.lower()
+    assert loop.notes[day]["sleep"] == 7
+    assert loop.notes[day]["soreness"] == 2
+    assert text.startswith("Today is a normal day.")
 
 
 def test_open_morning_stays_under_three_seconds():
