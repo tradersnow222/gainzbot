@@ -1667,7 +1667,25 @@ def _take_target_number(state, reply):
 def _take_weight_number(state, reply):
     state["confirmed"] = False
     state["record"] = None
-    match = re.fullmatch(r"(\d+(?:\.\d+)?)(?:\s+kg)?", _soft(reply))
+    soft = _soft(reply)
+    # A follow-up can be pounds. Conversion and the 30 to 300 kg check match
+    # the first combined answer, and the pound figure stays the display unit.
+    if re.fullmatch(r"\d+(?:\.\d+)?\s+(?:pounds?|lbs|lb)", soft):
+        found = _current_weight(soft)
+        if not isinstance(found, str) or found == "ask":
+            state["awaiting"] = "weight"
+            state["error"] = _WEIGHT_ASK
+            return True
+        if not _weight_fits_target(state["answers"].get("target"), found):
+            state["awaiting"] = "weight"
+            state["error"] = _WEIGHT_ASK
+            return True
+        state["answers"]["weight"] = found
+        _remember_unit_echo(state, reply)
+        state["awaiting"] = None
+        state["error"] = None
+        return True
+    match = re.fullmatch(r"(\d+(?:\.\d+)?)(?:\s+kg)?", soft)
     if match is None:
         state["awaiting"] = "weight"
         state["error"] = _WEIGHT_ASK
