@@ -14,7 +14,7 @@ import os
 
 from guardrails.validate import InputValidator, ValidationError
 from plan_check import PlanValidator
-from readiness_screen import ReadinessScreen, ScreeningResult
+from readiness_screen import ReadinessScreen, ScreeningResult, subject_hash
 from record_confirmation import ConfirmationRecord, ConfirmationRecorder
 
 
@@ -72,17 +72,9 @@ class PlanBuilder:
         user = self._user(profile)
         if isinstance(user, dict) and user.get("ok") is False:
             return user
-        age = user["age"] if user else None
-        if age is None and not self._readiness_passes(readiness_result):
-            return self._no(
-                "An age or a passing readiness screen is required before this week is built. "
-                "A missing baseline does not get a plan."
-            )
-        if age is not None and age < PlanValidator.ADULT_AGE and not self._readiness_passes(readiness_result):
-            return self._no("A passing readiness screen is required before this week is built.")
-        par_q = self._par_q_block(profile)
-        if par_q is not None:
-            return par_q
+        allowed, answers = self._authorize(user, profile, readiness_result, self._no)
+        if allowed is not None:
+            return allowed
         structured = len(days) * minutes / 60.0
         if structured + sport_hours > PlanValidator.MAX_WEEKLY_TRAINING_HOURS:
             return self._no("That week is over the 20 hour training cap.")
@@ -113,7 +105,9 @@ class PlanBuilder:
         }
         plan = {"training": training}
         if user:
-            plan = {"user": user, "training": training}
+            plan["user"] = user
+        if answers is not None:
+            plan["par_q"] = answers
         checked = PlanValidator().validate_plan(
             plan,
             readiness_result=readiness_result,
@@ -146,7 +140,7 @@ class PlanBuilder:
             return sport_hours
         if "previous_load" not in training or training.get("previous_load") in (None, ""):
             return self._saved_no("A baseline load is required.")
-        age_gate = self._save_age_gate(plan, readiness_result)
+        age_gate, _answers = self._authorize(plan.get("user"), plan, readiness_result, self._saved_no)
         if age_gate is not None:
             return age_gate
         if self._positive_load(training.get("previous_load")) is None or self._positive_load(training.get("current_load")) is None:
@@ -314,23 +308,84 @@ class PlanBuilder:
         user["age"] = age
         return user
 
-    def _save_age_gate(self, plan, readiness_result):
-        """Same gate as propose: an age on the plan user, or a passing readiness result."""
-        user = plan.get("user")
+    def _authorize(self, user, par_source, readiness_result, no):
+        """Age or a passing screen, and a complete PAR-Q or that same screen."""
         age = None
         if isinstance(user, dict) and user.get("age") not in (None, ""):
             try:
                 age = InputValidator.parse_number(user["age"], "age")
             except ValidationError as exc:
-                return self._saved_no(str(exc))
+                return no(str(exc)), None
         if age is None and not self._readiness_passes(readiness_result):
-            return self._saved_no(
+            return no(
                 "An age or a passing readiness screen is required before this week is built. "
                 "A missing baseline does not get a plan."
-            )
+            ), None
         if age is not None and age < PlanValidator.ADULT_AGE and not self._readiness_passes(readiness_result):
-            return self._saved_no("A passing readiness screen is required before this week is built.")
+            return no("A passing readiness screen is required before this week is built."), None
+        status, answers = self._par_q_answers(par_source)
+        if status != "clear" and not self._readiness_passes(readiness_result):
+            if status == "yes" and answers:
+                result = ReadinessScreen().check_par_q(answers)
+                text = " ".join(result.reasons) if result.reasons else "A PAR-Q yes blocks this week."
+                return no(text), None
+            return no(
+                "A skipped or partial PAR-Q needs a passing readiness screen before this week is built."
+            ), None
+        needs_screen = (
+            age is None
+            or (age is not None and age < PlanValidator.ADULT_AGE)
+            or status != "clear"
+        )
+        if needs_screen:
+            mismatch = self._different_person(readiness_result, user, no)
+            if mismatch is not None:
+                return mismatch, None
+        return None, answers
+
+    def _different_person(self, result, user, no):
+        if not isinstance(user, dict):
+            return None
+        if not any(user.get(key) not in (None, "") for key in ("sex", "weight_kg", "age", "height_cm")):
+            return None
+        if getattr(result, "subject_hash", "") != subject_hash(user):
+            return no("This readiness screen is for a different person.")
         return None
+
+    def _par_q_answers(self, source):
+        flags = tuple(ReadinessScreen.PAR_Q_RED_FLAGS)
+        if not isinstance(source, dict):
+            return "missing", None
+        raw = {}
+        saw = False
+        nested = source.get("par_q") if "par_q" in source else None
+        if isinstance(nested, dict):
+            saw = True
+            raw.update(nested)
+        elif "par_q" in source and nested is not None:
+            return "partial", None
+        for key in flags:
+            if key in source:
+                saw = True
+                raw[key] = source[key]
+        if not saw:
+            return "missing", None
+        parsed = {}
+        for key, value in raw.items():
+            if key not in flags:
+                return "partial", None
+            if isinstance(value, bool):
+                parsed[key] = value
+                continue
+            try:
+                parsed[key] = InputValidator.parse_boolean(value, key)
+            except ValidationError:
+                return "partial", None
+        if any(key not in parsed for key in flags):
+            return "partial", parsed or None
+        if any(parsed[key] for key in flags):
+            return "yes", parsed
+        return "clear", parsed
 
     def _positive_load(self, value):
         try:
@@ -340,21 +395,6 @@ class PlanBuilder:
         if number <= 0:
             return None
         return number
-
-    def _par_q_block(self, profile):
-        """A PAR-Q yes blocks the week in code. Missing answers are left to the caller."""
-        flags = ReadinessScreen.PAR_Q_RED_FLAGS
-        raw = profile.get("par_q")
-        if raw is None:
-            present = {key: profile[key] for key in flags if key in profile}
-            if not present:
-                return None
-            raw = present
-        result = ReadinessScreen().check_par_q(raw)
-        if not result.blocked:
-            return None
-        reasons = " ".join(result.reasons) if result.reasons else "A PAR-Q yes blocks this week."
-        return self._no(reasons)
 
     def _readiness_passes(self, result) -> bool:
         if not isinstance(result, ScreeningResult):

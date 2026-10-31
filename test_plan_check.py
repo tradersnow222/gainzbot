@@ -586,6 +586,26 @@ class TestK06aProbes:
         assert not result.valid
         assert any("calories" in err.lower() and "require" in err.lower() for err in result.errors)
     
+    def test_par_q_is_an_allowed_plan_key(self):
+        flags = {flag: False for flag in ReadinessScreen.PAR_Q_RED_FLAGS}
+        plan = {
+            "user": {"sex": "M", "weight_kg": 80, "age": 30, "height_cm": 180},
+            "training": {
+                "previous_load": 100,
+                "current_load": 100,
+                "weeks_since_deload": 0,
+                "structured_hours": 1,
+                "sport_hours": 0,
+            },
+            "par_q": flags,
+        }
+        result = PlanValidator().validate_plan(plan, check_in_result=passing_check_in())
+        assert result.valid, result.errors
+        bad = dict(plan, par_q={**flags, "not_a_question": False})
+        refused = PlanValidator().validate_plan(bad, check_in_result=passing_check_in())
+        assert not refused.valid
+        assert any("not_a_question" in err for err in refused.errors)
+
     def test_unknown_key_sport_hrs_rejected(self):
         """Unknown key 'sport_hrs' instead of 'sport_hours' is rejected."""
         validator = PlanValidator()

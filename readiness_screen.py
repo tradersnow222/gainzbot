@@ -34,14 +34,38 @@ class ScreeningResult:
     reasons: List[str]
     blocked: bool
     recommendations: List[str]
+    subject_hash: str = ""
 
     def to_dict(self) -> Dict:
         return {
             "clearance": self.clearance.value,
             "reasons": self.reasons,
             "blocked": self.blocked,
-            "recommendations": self.recommendations
+            "recommendations": self.recommendations,
+            "subject_hash": self.subject_hash,
         }
+
+
+def subject_hash(source) -> str:
+    """Stable id for the person this screen belongs to."""
+    from record_confirmation import hash_plan
+
+    payload = {}
+    if isinstance(source, dict):
+        for key in ("sex", "weight_kg", "age", "height_cm"):
+            if key not in source or source.get(key) in (None, ""):
+                continue
+            value = source[key]
+            if key == "sex":
+                payload[key] = value.strip() if isinstance(value, str) else value
+                continue
+            try:
+                number = InputValidator.parse_number(value, key, allow_zero=True)
+            except ValidationError:
+                payload[key] = value
+                continue
+            payload[key] = int(number) if number == int(number) else number
+    return hash_plan(payload)
 
 
 class ReadinessScreen:
@@ -52,6 +76,9 @@ class ReadinessScreen:
     MAX_AGE = 100
     KNOWN_INTAKE_KEYS = {
         "age",
+        "sex",
+        "weight_kg",
+        "height_cm",
         "parental_consent",
         "par_q",
         "pregnant",
@@ -243,7 +270,7 @@ class ReadinessScreen:
             recommendations=recommendations,
         )
 
-    def check_par_q(self, responses: Dict[str, bool]) -> ScreeningResult:
+    def check_par_q(self, responses: Dict[str, bool], has_clearance: bool = False) -> ScreeningResult:
         """Check PAR-Q+ style questions. Missing or unknown keys block."""
         if not isinstance(responses, dict):
             return self._blocked(
@@ -274,6 +301,15 @@ class ReadinessScreen:
         ]
         reasons = []
         recommendations = []
+        if red_flags and has_clearance and not (unknown or missing or parse_errors):
+            return ScreeningResult(
+                clearance=ClearanceLevel.CAUTION,
+                reasons=[f"Red flag responses with clearance: {', '.join(red_flags)}"],
+                blocked=False,
+                recommendations=[
+                    "Physician clearance is recorded. Modified programming may be required."
+                ],
+            )
         if red_flags:
             reasons.append(f"Red flag responses: {', '.join(red_flags)}")
             recommendations.append(
@@ -475,13 +511,14 @@ class ReadinessScreen:
             else:
                 absorb(self.check_age(intake["age"], parental_consent))
 
+        medical_clearance, medical_error = self._yes_no(intake, "medical_clearance", False)
         if "par_q" not in intake:
             absorb(self._blocked(
                 ["A complete PAR-Q is required."],
                 ["Please answer every PAR-Q question with yes or no."],
             ))
         else:
-            absorb(self.check_par_q(intake["par_q"]))
+            absorb(self.check_par_q(intake["par_q"], has_clearance=bool(medical_clearance)))
 
         is_pregnant, pregnant_error = self._yes_no(intake, "pregnant", False)
         pregnancy_clearance, pregnancy_error = self._yes_no(intake, "pregnancy_clearance", False)
@@ -493,7 +530,6 @@ class ReadinessScreen:
         else:
             absorb(self.check_pregnancy(is_pregnant, pregnancy_clearance))
 
-        medical_clearance, medical_error = self._yes_no(intake, "medical_clearance", False)
         if "medical_conditions" not in intake:
             conditions, condition_error = [], ""
         else:
@@ -515,6 +551,7 @@ class ReadinessScreen:
             reasons=all_reasons,
             blocked=blocked,
             recommendations=all_recommendations,
+            subject_hash=subject_hash(intake),
         )
 
 

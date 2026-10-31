@@ -29,6 +29,12 @@ def recorded(plan):
     return ConfirmationRecorder().record(plan, "yes", "user", passing_check_in())
 
 
+def clear_par_q(**overrides):
+    answers = {flag: False for flag in ReadinessScreen.PAR_Q_RED_FLAGS}
+    answers.update(overrides)
+    return answers
+
+
 def profile(**extra):
     base = {
         "days": ["2026-10-26", "2026-10-28", "2026-10-30"],
@@ -41,9 +47,26 @@ def profile(**extra):
         "weight_kg": 80,
         "age": 30,
         "height_cm": 180,
+        "par_q": clear_par_q(),
     }
     base.update(extra)
     return base
+
+
+def screen_for(user, par_q=None, medical_clearance=False):
+    intake = {
+        "age": user["age"],
+        "sex": user["sex"],
+        "weight_kg": user["weight_kg"],
+        "height_cm": user["height_cm"],
+        "par_q": clear_par_q() if par_q is None else par_q,
+        "pregnant": False,
+        "medical_conditions": [],
+        "medical_clearance": medical_clearance,
+    }
+    if user["age"] < 18:
+        intake["parental_consent"] = True
+    return ReadinessScreen().screen_intake(intake)
 
 
 def test_a_beginner_week_passes_and_does_not_raise_the_load():
@@ -152,14 +175,7 @@ def test_under_18_needs_a_passing_readiness_screen():
     refused = PlanBuilder().propose(young, passing_check_in())
     assert refused["ok"] is False
     assert "readiness" in refused["message"].lower()
-    screen = ReadinessScreen().screen_intake({
-        "age": 16,
-        "par_q": {flag: False for flag in ReadinessScreen.PAR_Q_RED_FLAGS},
-        "pregnant": False,
-        "medical_conditions": [],
-        "medical_clearance": False,
-        "parental_consent": True,
-    })
+    screen = screen_for(young)
     built = PlanBuilder().propose(young, passing_check_in(), readiness_result=screen)
     assert built["ok"] is True
     assert "nutrition" not in built["plan"]
@@ -264,6 +280,7 @@ def test_save_refuses_a_week_at_load_0(tmp_path):
     check_in = passing_check_in()
     plan = {
         "user": {"sex": "M", "weight_kg": 80, "age": 30, "height_cm": 180},
+        "par_q": clear_par_q(),
         "training": {
             "previous_load": 0,
             "current_load": 0,
@@ -298,9 +315,99 @@ def test_an_adult_par_q_yes_is_blocked_in_code():
     assert built["ok"] is True
 
 
+def test_a_skipped_or_partial_par_q_needs_readiness(tmp_path):
+    builder = PlanBuilder()
+    check_in = passing_check_in()
+    skipped = profile()
+    del skipped["par_q"]
+    refused = builder.propose(skipped, check_in)
+    assert refused["ok"] is False
+    assert refused["plan"] is None
+    assert "par-q" in refused["message"].lower()
+    assert builder.propose(profile(par_q=None), check_in)["ok"] is False
+    partial = builder.propose(profile(par_q={"chest_pain_at_rest": False}), check_in)
+    assert partial["ok"] is False
+    assert "partial" in partial["message"].lower() or "skipped" in partial["message"].lower()
+    screen = screen_for(skipped)
+    assert screen.blocked is False
+    built = builder.propose(skipped, check_in, readiness_result=screen)
+    assert built["ok"] is True
+    assert "par_q" not in built["plan"]
+
+    adult = {
+        "user": {"sex": "M", "weight_kg": 80, "age": 30, "height_cm": 180},
+        "training": {
+            "previous_load": 100,
+            "current_load": 100,
+            "weeks_since_deload": 0,
+            "structured_hours": 0.75,
+            "sport_hours": 0,
+        },
+    }
+    sessions = [{"date": "2026-10-26", "load": 100, "minutes": 45}]
+    yes = recorded(week_to_confirm(adult, sessions))
+    path = tmp_path / "adult.json"
+    bare = builder.save(adult, yes, path, sessions, check_in_result=check_in)
+    assert bare["saved"] is False
+    assert not path.exists()
+    assert "par-q" in bare["message"].lower()
+    other = screen_for({"sex": "F", "weight_kg": 60, "age": 40, "height_cm": 165})
+    wrong = builder.save(
+        adult, yes, path, sessions, check_in_result=check_in, readiness_result=other,
+    )
+    assert wrong["saved"] is False
+    assert not path.exists()
+    assert "different person" in wrong["message"].lower()
+    mine = screen_for(adult["user"])
+    saved = builder.save(
+        adult, yes, path, sessions, check_in_result=check_in, readiness_result=mine,
+    )
+    assert saved["saved"] is True
+
+
+def test_a_cleared_par_q_yes_is_allowed(tmp_path):
+    flags = clear_par_q(chest_pain_at_rest=True)
+    person = profile(par_q=flags)
+    screen = screen_for(person, par_q=flags, medical_clearance=True)
+    assert screen.blocked is False
+    assert screen.clearance.value == "caution"
+    check_in = passing_check_in()
+    built = PlanBuilder().propose(person, check_in, readiness_result=screen)
+    assert built["ok"] is True
+    assert built["plan"]["par_q"]["chest_pain_at_rest"] is True
+    path = tmp_path / "cleared.json"
+    yes = recorded(week_to_confirm(built["plan"], built["sessions"]))
+    saved = PlanBuilder().save(
+        built["plan"],
+        yes,
+        path,
+        built["sessions"],
+        check_in_result=check_in,
+        readiness_result=screen,
+    )
+    assert saved["saved"] is True
+    other = screen_for(
+        {"sex": "F", "weight_kg": 60, "age": 40, "height_cm": 165},
+        par_q=flags,
+        medical_clearance=True,
+    )
+    wrong_path = tmp_path / "other.json"
+    wrong = PlanBuilder().save(
+        built["plan"],
+        yes,
+        wrong_path,
+        built["sessions"],
+        check_in_result=check_in,
+        readiness_result=other,
+    )
+    assert wrong["saved"] is False
+    assert not wrong_path.exists()
+
+
 def test_the_builder_does_not_use_the_log_store_and_the_guide_has_no_em_dash():
     source = (ROOT / "plan_builder.py").read_text(encoding="utf-8")
     guide = (ROOT / "template" / "first-plan.md").read_text(encoding="utf-8")
+    assert "A skipped or partial PAR-Q runs readiness_screen before propose()." in guide
     assert "log_store" not in source
     assert "plan_check" in guide
     assert "record_confirmation" in guide
