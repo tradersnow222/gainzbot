@@ -6,7 +6,8 @@ The file holds meals, sets, check-ins, weights, confirmations, the used-record l
 
 Pass `log_path="/workspace/gainzbot/data/log.json"` when saving or reading that log.
 
-- `photo_food_log.store_estimate` and `photo_food_log.log_line` append the meal. They also append the confirmation id to the used-record list in this log.
+- `photo_food_log.store_estimate` and `photo_food_log.log_line` append the meal. They also append the confirmation id to the used-record list in this log. `photo_food_log.log_stated` appends a calorie and protein total the user stated, with no confirm. A photo estimate still needs one.
+- `log_store.log_weight` appends a weigh-in (`weights`, with `date` and `kg`). That is body weight, not a training load.
 - Every food call still passes `used_path="/workspace/gainzbot/data/used_confirmations.json"`. Without that path the food log fails closed.
 - `set_logger.log_set` appends the set.
 - `morning_checkin.check_in` appends the check-in. A check-in does not store a proposed load.

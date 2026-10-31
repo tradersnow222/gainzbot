@@ -2,12 +2,11 @@
 """
 Log each set and suggest the next one.
 
-The baseline is the last confirmed load from the shared history reader.
-When that load cannot be read, there is no weight suggestion. The last
-logged weight is not repeated. A logged weight above a readable confirmed
-load stays at that confirmed value until it is 7 times 24 hours old in UTC.
-A rise is at most 10 percent of that confirmed load, and apply does nothing
-until record_confirmation covers that exact proposal.
+Kilograms on an exercise are not the session load index. The next kilogram
+comes from the last logged set for that exercise. It rises by 2.5 kg when
+every set on the latest day hit the top of the rep range. Anything past
+that step needs a yes. The suggestion text names the same kilogram.
+apply does nothing until record_confirmation covers that exact proposal.
 """
 
 from datetime import date, datetime, timezone
@@ -16,10 +15,12 @@ import os
 import sys
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from confirmed_change import last_confirmed_change, seven_days_old
+from confirmed_change import last_confirmed_change
 from guardrails.validate import InputValidator, ValidationError
-from plan_check import PlanValidator
 from record_confirmation import ConfirmationRecord, ConfirmationRecorder
+
+
+KG_STEP = 2.5
 
 
 def _parse_day(value) -> Optional[date]:
@@ -42,7 +43,7 @@ def _whole(value: float):
 
 
 class SetLogger:
-    """Stores sets and keeps the next suggestion inside the load cap."""
+    """Stores sets. The next kilogram moves by 2.5 kg, not by the load index."""
 
     def __init__(self):
         self.sets: List[Dict] = []
@@ -86,51 +87,67 @@ class SetLogger:
             "entry": stored,
         }
 
-    def suggest_next(self, exercise, confirmed_changes=None, as_of=None) -> Dict:
+    def suggest_next(
+        self,
+        exercise,
+        confirmed_changes=None,
+        as_of=None,
+        log_path=None,
+        rep_top=None,
+        requested_weight=None,
+    ) -> Dict:
         name = self._name(exercise)
         if not name:
             return self._no("Name the exercise.")
-        done = [item for item in self.sets if item["exercise"] == name]
-        if not done and name not in self.working:
+        loaded = self._load_saved(log_path)
+        if loaded is not None:
+            return loaded
+        # The confirmation list may include a plan row with no changes field.
+        # That read is for the session load index only. It is not a kilogram.
+        if confirmed_changes is not None and as_of is not None:
+            last_confirmed_change(confirmed_changes, "load", as_of)
+        done = [
+            item for item in self.sets
+            if item["exercise"].casefold() == name.casefold()
+        ]
+        working = self._working(name)
+        if not done and working is None:
             return self._no("Log a set first.")
-        last_weight, last_reps = self._last(name, done)
-        found = last_confirmed_change(confirmed_changes, "load", as_of)
-        if not found.ok or found.value is None:
-            return {
-                "ok": True,
-                "applied": False,
-                "suggestion": None,
-                "proposal": None,
-                "message": "No confirmed load can be read. What load is confirmed?",
-            }
-        confirmed = found.value
-        baseline = confirmed if seven_days_old(found.at, as_of) else None
-        if baseline is None:
-            weight = min(last_weight, confirmed)
-        else:
-            cap = baseline * (1 + PlanValidator.MAX_TRAINING_LOAD_INCREASE_PERCENT / 100)
-            if last_reps >= 8 and last_weight < cap:
-                weight = min(last_weight * 1.10, cap)
+        last_weight, last_reps, day_sets = self._latest(done, working)
+        top = self._rep_top(rep_top)
+        hit_top = bool(day_sets) and top is not None and all(
+            item["reps"] >= top for item in day_sets
+        )
+        weight = last_weight + (KG_STEP if hit_top else 0)
+        needs_yes = False
+        if requested_weight is not None:
+            try:
+                asked = InputValidator.parse_number(requested_weight, "weight")
+            except ValidationError as exc:
+                return self._no(str(exc))
+            if asked - last_weight > KG_STEP + 1e-9:
+                weight = asked
+                needs_yes = True
             else:
-                weight = min(last_weight, cap)
+                weight = asked
         suggestion = {
             "exercise": name,
             "weight": _whole(weight),
             "reps": _whole(last_reps),
         }
+        shown = suggestion["weight"]
         proposal = None
-        message = "Next set stays at this weight."
-        if baseline is not None and suggestion["weight"] > baseline:
-            check = PlanValidator().validate_training_load_increase(baseline, suggestion["weight"])
-            if not check.valid:
-                suggestion["weight"] = _whole(baseline)
-            else:
-                proposal = {
-                    "summary": f"Next {name} set is {suggestion['weight']} for {suggestion['reps']} reps.",
-                    "changes": dict(suggestion),
-                    "needs_confirmation": True,
-                }
-                message = "The next set stays within 10 percent. Nothing is applied until it is confirmed."
+        if needs_yes:
+            proposal = {
+                "summary": f"Next {name} set is {shown} kg.",
+                "changes": dict(suggestion),
+                "needs_confirmation": True,
+            }
+            message = f"Next set is {shown} kg. Yes to go past the 2.5 kg step."
+        elif shown != _whole(last_weight):
+            message = f"Next set is {shown} kg."
+        else:
+            message = f"Next set stays at {shown} kg."
         return {
             "ok": True,
             "applied": False,
@@ -194,12 +211,65 @@ class SetLogger:
             "message": "Confirmed. This working weight can be applied.",
         }
 
-    def _last(self, name, done):
+    def _load_saved(self, log_path):
+        """Fill an empty logger from the saved log. Memory already wins."""
+        if log_path is None or self.sets:
+            return None
+        from log_store import LogStore
+
+        store = LogStore(log_path)
+        if store.error:
+            return self._no(store.error)
+        for row in store.data["sets"]:
+            entry = self._saved_set(row)
+            if entry is not None:
+                self.sets.append(entry)
+        return None
+
+    def _saved_set(self, row):
+        if not isinstance(row, dict):
+            return None
+        name = self._name(row.get("exercise"))
+        when = _parse_day(row.get("date"))
+        if not name or when is None:
+            return None
+        try:
+            lifted = InputValidator.parse_number(row.get("weight"), "weight")
+            count = InputValidator.parse_number(row.get("reps"), "reps")
+        except ValidationError:
+            return None
+        return {"exercise": name, "weight": lifted, "reps": count, "date": when}
+
+    def _working(self, name):
+        for key, value in self.working.items():
+            if key.casefold() == name.casefold():
+                return value
+        return None
+
+    def _latest(self, done, working):
         if done:
-            last = done[-1]
-            return last["weight"], last["reps"]
-        working = self.working[name]
-        return working["weight"], working["reps"]
+            latest = max(item["date"] for item in done)
+            day_sets = [item for item in done if item["date"] == latest]
+            last = day_sets[-1]
+            return last["weight"], last["reps"], day_sets
+        return working["weight"], working["reps"], []
+
+    def _rep_top(self, rep_top):
+        """The top of a rep range. '6-10' is 10. Missing means no kilogram step."""
+        if rep_top is None or isinstance(rep_top, bool):
+            return None
+        if isinstance(rep_top, str):
+            chunk = rep_top.strip().split("-")[-1].strip()
+            try:
+                value = float(chunk)
+            except ValueError:
+                return None
+            return value if value > 0 else None
+        try:
+            value = InputValidator.parse_number(rep_top, "reps")
+        except ValidationError:
+            return None
+        return value
 
     def _name(self, exercise) -> Optional[str]:
         if not isinstance(exercise, str):

@@ -28,6 +28,34 @@ def test_one_yes_starts_the_daily_loop_at_default_times():
     assert change_loop_time("morning 6:30 unless I'm busy", weekly)["daily_checkin"] == "06:30"
 
 
+def test_a_local_6_30_cron_does_not_shift_across_november_daylight_saving():
+    from datetime import datetime, timezone
+    from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
+
+    from routines import routine_cron
+
+    assert routine_cron("06:30") == "30 6 * * *"
+    guide = Path("template/routines.md").read_text(encoding="utf-8")
+    assert "30 6 * * *" in guide
+    assert "do not convert the hour to utc" in guide.lower()
+    assert "zoneinfo" in guide
+    try:
+        zone = ZoneInfo("America/Los_Angeles")
+    except ZoneInfoNotFoundError:
+        raise AssertionError(
+            "America/Los_Angeles is missing from the platform time zone database. "
+            "template/routines.md documents that this check cannot run without it. "
+            "Do not treat a UTC hour as the routine time."
+        )
+    before = datetime(2026, 10, 31, 6, 30, tzinfo=zone)
+    after = datetime(2026, 11, 2, 6, 30, tzinfo=zone)
+    assert routine_cron(before.strftime("%H:%M")) == "30 6 * * *"
+    assert routine_cron(after.strftime("%H:%M")) == "30 6 * * *"
+    assert before.astimezone(timezone.utc).hour != after.astimezone(timezone.utc).hour
+    assert before.astimezone(timezone.utc).hour == 13
+    assert after.astimezone(timezone.utc).hour == 14
+
+
 def test_the_first_check_in_is_the_saturday_before_a_monday_start():
     from routines import first_checkin_day
 

@@ -86,6 +86,12 @@ def last_confirmed_change(history, kind: str, as_of) -> ConfirmedChange:
     for item in history:
         if not isinstance(item, dict):
             return ConfirmedChange(False, None, None, "bad row")
+        # A plan confirmation has no changes field. Skip it before the date
+        # check so that row cannot hide a later load or calorie change.
+        if "changes" not in item:
+            if any(key in item for key in ("record_id", "plan_hash", "quoted_words")):
+                continue
+            return ConfirmedChange(False, None, None, "wrong key")
         changes = item.get("changes")
         if not isinstance(changes, dict) or not changes:
             return ConfirmedChange(False, None, None, "wrong key")

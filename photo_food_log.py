@@ -14,14 +14,17 @@ to the on-disk user log. If that append fails, the meal is not kept and
 the confirmation is not used.
 A single item over 3000 kcal or over 300 g protein is rejected for a
 re-check, and a day stops at 10000 kcal. Missing age and under 18 set no
-protein target. usual breakfast needs a confirmation. Logging a meal does
-not change the plan.
+protein target. usual breakfast needs a confirmation. A total the user
+states, calories and protein in their own words, logs with no confirm.
+The bot's own estimate still needs one. Logging a meal does not change
+the plan.
 """
 
 from datetime import date, datetime, timezone
 from typing import Dict, List, Optional
 import json
 import os
+import re
 import sys
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
@@ -32,6 +35,17 @@ from record_confirmation import ConfirmationRecord, ConfirmationRecorder
 MAX_ITEM_CALORIES = 3000
 MAX_ITEM_PROTEIN_G = 300
 MAX_DAILY_CALORIES = 10000
+_STATED_CALORIES = re.compile(
+    r"(?:\b(?:about|around|roughly)\s+)?"
+    r"(\d+(?:\.\d+)?)\s*"
+    r"(?:kcals?|calories|calorie|cals|cal)\b",
+    re.IGNORECASE,
+)
+_STATED_PROTEIN = re.compile(
+    r"(\d+(?:\.\d+)?)\s*g(?:rams)?\s*(?:of\s+)?protein\b"
+    r"|\bprotein\s*(?:of\s+)?(\d+(?:\.\d+)?)\s*g(?:rams)?\b",
+    re.IGNORECASE,
+)
 
 
 GROK_VISION_PROMPT = (
@@ -133,6 +147,19 @@ class FoodLog:
                 return kept
         return stored
 
+    def log_stated(self, line, day, log_path=None) -> Dict:
+        """Log a calorie and protein total the user stated. No confirm."""
+        parsed = self._stated(line)
+        if not parsed["ok"]:
+            return parsed
+        stored = self._store(parsed["meal"], day, "stated")
+        if stored.get("stored") and log_path is not None:
+            kept = self._append_stated(log_path, stored["entry"])
+            if not kept["ok"]:
+                self.entries.pop()
+                return kept
+        return stored
+
     def store_estimate(self, estimate, day, confirmation=None, log_path=None) -> Dict:
         if not isinstance(estimate, dict):
             return self._no("The photo estimate has to be an object.")
@@ -191,6 +218,41 @@ class FoodLog:
             "protein_left": None if protein_target is None else _whole(protein_target - eaten_protein),
             "message": " ".join(notes) if notes else "Here is what is left today.",
         }
+
+    def _stated(self, line) -> Dict:
+        if not isinstance(line, str) or not line.strip():
+            return self._no("Say the calories and the protein to log a total.")
+        calories = _STATED_CALORIES.search(line)
+        protein = _STATED_PROTEIN.search(line)
+        if calories is None or protein is None:
+            return self._no("Say the calories and the protein to log a total.")
+        protein_text = protein.group(1) or protein.group(2)
+        try:
+            kcal = InputValidator.parse_number(calories.group(1), "calories", allow_zero=True)
+            grams = InputValidator.parse_number(protein_text, "protein_g", allow_zero=True)
+        except ValidationError as exc:
+            return self._no(str(exc))
+        if kcal > MAX_ITEM_CALORIES or grams > MAX_ITEM_PROTEIN_G:
+            return self._no("That estimate is too high. Re-check it before logging.")
+        return {
+            "ok": True,
+            "meal": {"items": ["stated total"], "calories": kcal, "protein_g": grams},
+        }
+
+    def _append_stated(self, log_path, entry) -> Dict:
+        from log_store import LogStore
+
+        meal = {
+            "date": entry["date"],
+            "items": list(entry["items"]),
+            "calories": entry["calories"],
+            "protein_g": entry["protein_g"],
+            "source": "stated",
+        }
+        saved = LogStore(log_path).append("meals", meal)
+        if not saved["ok"]:
+            return self._no(saved["message"])
+        return {"ok": True}
 
     def _store(self, meal, day, source: str) -> Dict:
         when = _parse_day(day)

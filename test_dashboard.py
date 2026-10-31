@@ -45,7 +45,7 @@ class TestSpec:
         assert DASHBOARD_SPEC["layout"] == "charts"
         assert DASHBOARD_SPEC["windows"] == [7, 28, 90, 365]
         assert [item["id"] for item in DASHBOARD_SPEC["charts"]] == [
-            "weight", "calories", "protein", "adherence", "records",
+            "weight", "calories", "protein", "adherence", "records", "volume",
         ]
 
     def test_a_bad_window_is_refused(self):
@@ -68,7 +68,7 @@ class TestSpec:
         assert result["window_days"] == window
         assert result["applied"] is False
         assert [item["id"] for item in result["charts"]] == [
-            "weight", "calories", "protein", "adherence", "records",
+            "weight", "calories", "protein", "adherence", "records", "volume",
         ]
 
 
@@ -211,3 +211,111 @@ class TestCharts:
         result = Dashboard().build(source, ADULT, 90, "2026-10-28", TARGETS)
         assert result["applied"] is False
         assert repr(source) == before
+
+
+def test_one_day_of_many_rows_is_not_two_days():
+    intake = [
+        {"date": "2026-10-28", "calories": 100, "protein_g": 10}
+        for _ in range(17)
+    ]
+    result = Dashboard().build({"intake": intake}, ADULT, 28, "2026-10-28", TARGETS)
+    assert result["enough_data"] is False
+    assert result["message"] == NOT_ENOUGH
+    assert "first_day" in result
+    assert "Dashboard ready" not in result["message"]
+    two = {
+        "intake": intake + [{"date": "2026-10-29", "calories": 100, "protein_g": 10}],
+    }
+    ready = Dashboard().build(two, ADULT, 28, "2026-10-29", TARGETS)
+    assert ready["enough_data"] is True
+    assert ready["message"] == "Dashboard ready."
+
+
+def test_logged_sets_mark_todays_session_done():
+    week = {
+        "sessions": [
+            {
+                "date": "2026-10-28",
+                "name": "Upper",
+                "exercises": [{"name": "Bench press"}, {"name": "Squat"}],
+            },
+        ],
+    }
+    partial = {
+        "sets": [
+            {"date": "2026-10-28", "exercise": "bench press", "weight": 70, "reps": 10},
+        ],
+    }
+    waiting = Dashboard().build(partial, ADULT, 28, "2026-10-28", week=week)
+    assert waiting["enough_data"] is False
+    assert waiting["first_day"]["next"] == "Log today's session."
+    done = {
+        "sets": partial["sets"] + [
+            {"date": "2026-10-28", "exercise": "SQUAT", "weight": 80, "reps": 8},
+        ],
+    }
+    finished = Dashboard().build(done, ADULT, 28, "2026-10-28", week=week)
+    assert finished["first_day"]["next"] != "Log today's session."
+    assert finished["first_day"]["next"] == "Log a weight."
+
+
+def test_weekly_volume_is_sets_times_reps_times_kg():
+    result = Dashboard().build(logs(), ADULT, 28, "2026-10-28", TARGETS)
+    assert chart(result, "volume")["points"] == [
+        {"date": "2026-10-26", "volume": 500},
+        {"date": "2026-10-28", "volume": 810},
+    ]
+    counted = {
+        "sets": [
+            {"date": "2026-10-27", "exercise": "squat", "weight": 70, "reps": 10, "sets": 3},
+            {"date": "2026-10-28", "exercise": "squat", "weight": 70, "reps": 10, "sets": 3},
+        ],
+    }
+    both = Dashboard().build(counted, ADULT, 7, "2026-10-28", TARGETS)
+    assert chart(both, "volume")["points"] == [
+        {"date": "2026-10-27", "volume": 2100},
+        {"date": "2026-10-28", "volume": 2100},
+    ]
+    empty = Dashboard().build({}, ADULT, 28, "2026-10-28", TARGETS)
+    assert chart(empty, "volume")["points"] == []
+
+
+def test_build_saved_counts_the_confirmed_week(tmp_path):
+    import json
+
+    from log_store import LogStore
+
+    log_path = tmp_path / "log.json"
+    week = {
+        "confirmation": {"record_id": "rec-week"},
+        "sessions": [
+            {
+                "date": "2026-10-28",
+                "name": "Upper",
+                "exercises": [{"name": "Bench press"}, {"name": "Barbell row"}],
+            },
+            {
+                "date": "2026-10-30",
+                "name": "Lower",
+                "exercises": [{"name": "Squat"}],
+            },
+        ],
+    }
+    (tmp_path / "week.json").write_text(json.dumps(week), encoding="utf-8")
+    store = LogStore(log_path)
+    store.append("sets", {"date": "2026-10-28", "exercise": "Bench press", "weight": 70, "reps": 10})
+    store.append("sets", {"date": "2026-10-28", "exercise": "barbell row", "weight": 60, "reps": 8})
+    store.append("weights", {"date": "2026-10-29", "kg": 80})
+    built = Dashboard().build_saved(log_path, ADULT, 28, "2026-10-30", TARGETS)
+    adherence = chart(built, "adherence")
+    assert adherence["planned"] == 2
+    assert adherence["completed"] == 1
+    assert f"{adherence['completed']} of {adherence['planned']}" != "0 of 0"
+    other_dir = tmp_path / "other"
+    other_dir.mkdir()
+    other = other_dir / "log.json"
+    LogStore(other).append("sets", {"date": "2026-10-28", "exercise": "Bench press", "weight": 70, "reps": 10})
+    LogStore(other).append("weights", {"date": "2026-10-29", "kg": 80})
+    missed = Dashboard().build_saved(other, ADULT, 28, "2026-10-30", TARGETS)
+    assert chart(missed, "adherence")["planned"] == 0
+    assert chart(missed, "adherence")["completed"] == 0
