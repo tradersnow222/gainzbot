@@ -34,6 +34,15 @@ def store(log, meal, day="2026-10-30"):
     return log.store_estimate(meal, day, recorded(meal))
 
 
+def usual_plan(name, meal):
+    return {
+        "usual": name,
+        "items": list(meal["items"]),
+        "calories": meal["calories"],
+        "protein_g": meal["protein_g"],
+    }
+
+
 class TestPhotoEstimate:
     def test_prompt_asks_for_items_calories_and_protein(self):
         text = GROK_VISION_PROMPT.lower()
@@ -63,6 +72,32 @@ class TestPhotoEstimate:
         assert wrong["stored"] is False
         assert "record_confirmation" in missed["message"]
         assert log.entries == []
+
+    def test_one_confirmation_logs_only_one_meal(self):
+        log = FoodLog()
+        meal = estimate()
+        yes = recorded(meal)
+        first = log.store_estimate(meal, "2026-10-30", yes)
+        second = log.store_estimate(meal, "2026-10-31", yes)
+        assert first["stored"] is True
+        assert second["stored"] is False
+        assert "already used" in second["message"]
+        assert len(log.entries) == 1
+        again = log.store_estimate(meal, "2026-10-31", recorded(meal))
+        assert again["stored"] is True
+
+    def test_a_day_stops_at_10000_kcal(self):
+        log = FoodLog()
+        feast = {"items": ["feast"], "calories": 3000, "protein_g": 10}
+        for _ in range(3):
+            assert store(log, feast)["stored"] is True
+        room = {"items": ["snack"], "calories": 1000, "protein_g": 10}
+        assert store(log, room)["stored"] is True
+        extra = {"items": ["bite"], "calories": 1, "protein_g": 0}
+        over = store(log, extra)
+        assert over["stored"] is False
+        assert "10,000" in over["message"]
+        assert sum(entry["calories"] for entry in log.entries) == 10000
 
     def test_a_single_item_over_3000_kcal_is_rejected(self):
         log = FoodLog()
@@ -115,12 +150,25 @@ class TestUsualMeals:
         log = FoodLog()
         remembered = log.remember_usual("breakfast", ["oats", "eggs"], 450, 30)
         assert remembered["stored"] is True
-        logged = log.log_line("usual breakfast", "2026-10-30")
+        plan = usual_plan("breakfast", remembered["meal"])
+        logged = log.log_line("usual breakfast", "2026-10-30", recorded(plan))
         assert logged["stored"] is True
         assert logged["entry"]["calories"] == 450
         assert logged["entry"]["protein_g"] == 30
         assert logged["entry"]["source"] == "usual"
         assert logged["applied"] is False
+
+    def test_usual_breakfast_needs_a_confirmation(self):
+        log = FoodLog()
+        remembered = log.remember_usual("breakfast", ["oats", "eggs"], 450, 30)
+        plan = usual_plan("breakfast", remembered["meal"])
+        missed = log.log_line("usual breakfast", "2026-10-30")
+        bare = log.log_line("usual breakfast", "2026-10-30", True)
+        assert missed["stored"] is False
+        assert bare["stored"] is False
+        assert "record_confirmation" in missed["message"]
+        assert log.entries == []
+        assert log.log_line("usual breakfast", "2026-10-30", recorded(plan))["stored"] is True
 
     def test_unknown_usual_does_not_store(self):
         log = FoodLog()
@@ -150,8 +198,9 @@ class TestLeftToday:
     def test_meals_on_the_same_day_add_up(self):
         log = FoodLog()
         store(log, estimate())
-        log.remember_usual("breakfast", ["oats"], 400, 20)
-        log.log_line("usual breakfast", "2026-10-30")
+        remembered = log.remember_usual("breakfast", ["oats"], 400, 20)
+        plan = usual_plan("breakfast", remembered["meal"])
+        log.log_line("usual breakfast", "2026-10-30", recorded(plan))
         left = log.left_today("2026-10-30", ADULT, TARGETS)
         assert left["eaten_calories"] == 1000
         assert left["eaten_protein_g"] == 60
@@ -181,6 +230,8 @@ class TestLeftToday:
         store(log, estimate())
         left = log.left_today("2026-10-30", {"sex": "M", "weight_kg": 80}, TARGETS)
         assert left["calories_left"] is None
+        assert left["protein_left"] is None
+        assert "No protein target is set when age is missing." in left["message"]
         assert "age" in left["message"].lower()
 
     def test_calorie_target_under_the_floor_is_not_used(self):
