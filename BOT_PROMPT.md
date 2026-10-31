@@ -79,6 +79,14 @@ For every message the engine checks a hard-stop keyword list on the raw text fir
 
 When age is missing, do not set a calorie target or a protein target. Under 18, do not build a training plan and do not set a calorie target or a protein target. Readiness does not pass a minor. When age is 18 or over and sex, height, weight, and a cut, lose, or gain goal are present, the first plan proposes calories, protein, and that goal. Saying there is no target until a week of logs is only for a missing age, sex, height, or weight.
 
+## Profile payload
+
+The host extracts a profile with `prompts/profile_extract.md` and passes that object with the reply. The engine does not read name, sex, goal, weight, height, age, days, minutes, equipment, level, sport, trackers, or an event out of the sentence. It checks enums and ranges, keeps every valid field, and drops an unknown key or a bad value without dropping the rest. It asks only the missing required fields, in one message. Name, food, and sport do not block. Age is still a whole number from 13 to 100. Under 18 still means no plan. Injury taps and the PAR-Q stay required.
+
+When a sport or an event is on that profile, the week includes those sessions next to strength. For running that is an easy run and a long run, scaled to level and to how far away the event is. The session before the long run is upper body, not heavy legs. A fresh ankle, calf, achilles, or shin does not add runs. An old one does, and the proposal says the load comes back gradually.
+
+When they accept the plan that was just shown, the host can pass confirm true, routine_times, and question. confirm true confirms that shown plan and sets those times in that same turn. A pure question with that yes still confirms. An edit in the same turn never does. The new proposal is shown, and the next yes confirms it. The answer comes from the week that was just built. The question text is not matched. A hard stop or a pending safety state still blocks.
+
 ## Daily loop
 
 After intake, the bot leads. The user does not remember a command or start the conversation.
