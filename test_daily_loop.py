@@ -876,3 +876,54 @@ def test_a_pause_loads_on_a_new_daily_loop(tmp_path):
     stayed = second.hear(monday, "no, 7, 2")
     assert monday not in second.workouts
     assert second.phase[monday] == "paused"
+
+
+def _safety(flag="none", injury="none", minor=False):
+    return {
+        "minor_signal": minor,
+        "red_flag": flag,
+        "injury": injury,
+        "note_ok": False,
+    }
+
+
+def test_labels_run_before_a_workout_or_an_evening_log(tmp_path):
+    monday = "2026-11-02"
+    for labels in (
+        _safety("palpitations"),
+        _safety(injury="current"),
+        _safety(minor=True),
+    ):
+        loop = _live_loop(tmp_path)
+        loop.open_morning(monday)
+        text = loop.hear(monday, "no sore 7", labels)
+        assert monday not in loop.workouts
+        if labels["minor_signal"]:
+            assert "how old are you" in text.lower()
+        else:
+            assert loop.phase[monday] == "paused"
+            assert "medical emergency" not in text.lower()
+        pause = loop._pause_file()
+        unclear = loop._unclear_path()
+        for path in (pause, unclear):
+            if __import__("os").path.isfile(path):
+                __import__("os").remove(path)
+    second = _live_loop(tmp_path)
+    second.open_morning(monday)
+    second.hear(monday, "no, 7")
+    assert second.phase[monday] in {"morning2", "signals", "symptom"}
+    held = second.hear(monday, "8 2 tired", _safety("palpitations"))
+    assert second.phase[monday] == "paused"
+    assert monday not in second.workouts
+    assert "medical emergency" not in held.lower()
+    for path in (second._pause_file(), second._unclear_path()):
+        if __import__("os").path.isfile(path):
+            __import__("os").remove(path)
+    evening = _live_loop(tmp_path)
+    evening.open_morning(monday)
+    evening.hear(monday, "no 8 fine 45")
+    evening.phase[monday] = "evening"
+    logged = evening.hear(monday, "did it, heart racing after", _safety("palpitations"))
+    assert evening.phase[monday] == "paused"
+    assert evening.notes.get(monday, {}).get("did_it") is None
+    assert "logged" not in logged.lower()

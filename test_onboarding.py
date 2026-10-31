@@ -198,10 +198,11 @@ def test_an_age_correction_under_18_at_confirm_refuses_the_plan():
 
 _AGE_25 = (
     "hello",
-    "hold, male, age 25, 80 kg, 180 cm, no injuries",
+    _marked(
+        "hold, male, 80 kg, 180 cm, general training, 3 days 45 min, bodyweight, beginner"
+    ),
     "25",
-    "ok",
-    "all no",
+    "all_no",
 )
 
 
@@ -370,7 +371,10 @@ def test_a_weight_outside_30_to_300_asks_again():
     assert fixed["confirmed"] is False
     assert fixed["answers"]["weight"] == "60 kg"
     assert "one yes confirms the plan" in fixed_bots[-1].lower()
-    low, low_bots = run_chat(["hello", "hold, male, age 30, 20 kg, 180 cm"])
+    low, low_bots = run_chat([
+        "hello",
+        _marked("hold, male, 20 kg, 180 cm"),
+    ])
     assert low["answers"].get("weight") != "20 kg"
     assert low["answers"].get("age") in (None, "")
     assert low_bots[-1] == _WEIGHT_ASK
@@ -492,7 +496,7 @@ def test_the_next_day_starts_at_the_red_flag_check(monkeypatch):
     assert "all no" in opened_bots[0].lower()
     assert "one yes confirms the plan" not in opened_bots[0].lower()
     assert "tomorrow" not in opened_bots[0].lower()
-    done, done_bots = run_chat(["all no", "yes"])
+    done, done_bots = run_chat(["all_no", "yes"])
     assert done["readiness"] is not None
     assert "one yes confirms the plan" in done_bots[0].lower()
     assert done["confirmed"] is True
@@ -853,18 +857,18 @@ def test_happy_path_confirms_in_five_bot_turns_or_fewer():
 
 
 def test_answers_in_any_order_are_kept_and_only_the_gap_is_asked():
-    state, bots = run_chat([
-        "running, 4 days, 40 min, dumbbells, beginner, no injuries",
-    ])
+    training = _marked("running, 4 days, 40 min, dumbbells, beginner")
+    state, bots = run_chat([training])
     assert state["answers"]["sport"] == "running"
     assert state["answers"]["equipment"] == "dumbbells"
+    assert state["answers"]["injuries"] == "none"
     assert "weight" in bots[0].lower()
     assert "par-q" not in bots[0].lower()
     done, later = run_chat([
-        "running, 4 days, 40 min, dumbbells, beginner, no injuries",
-        "hold, male, age 30, 80 kg, 180 cm",
+        training,
+        _marked("hold, male, 80 kg, 180 cm"),
         "30",
-        "all no",
+        "all_no",
         "yes",
     ])
     assert done["confirmed"] is True
@@ -872,12 +876,13 @@ def test_answers_in_any_order_are_kept_and_only_the_gap_is_asked():
 
 
 def test_everything_at_once_skips_questions_already_answered():
-    blob = (
+    blob = _marked(
         "hold, male, 80 kg, 180 cm, target 80 kg, "
-        "general training, 3 days, 45 min, bodyweight, beginner, no injuries, all no"
+        "general training, 3 days, 45 min, bodyweight, beginner"
     )
     asked, asked_bots = run_chat([blob])
     assert asked["answers"].get("age") in (None, "")
+    assert asked["answers"]["injuries"] == "none"
     assert asked_bots[-1] == "How old are you? Please type the number."
     state, bots = run_chat([blob, "30", "yes"])
     assert state["confirmed"] is False
@@ -888,10 +893,9 @@ def test_everything_at_once_skips_questions_already_answered():
     assert state["answers"]["height"] == "180 cm"
     assert state["answers"]["sport"] == "general training"
     assert state["answers"]["training_days"] == "3"
-    assert all(value is not False for value in state["par_q"].values())
-    assert bots[-1].startswith("Still need a yes or no:")
+    assert state["par_q"] == {}
     assert "one yes confirms the plan" not in bots[-1].lower()
-    done, later = run_chat([blob, "30", "all no", "yes"])
+    done, later = run_chat([blob, "30", "all_no", "yes"])
     assert done["confirmed"] is True
     assert len(done["par_q"]) == len(PAR_Q)
     assert all(value is False for value in done["par_q"].values())
@@ -906,7 +910,7 @@ def test_a_named_injury_stays_and_the_plan_keeps_weight_off_it():
         "old",
         "30",
         "ok",
-        "all no",
+        "all_no",
         "yes",
     ])
     assert back["confirmed"] is True
@@ -923,7 +927,7 @@ def test_a_named_injury_stays_and_the_plan_keeps_weight_off_it():
         _marked("hold, male, 80 kg, 180 cm, hamstring injury", injury="old"),
         "30",
         "ok",
-        "all no",
+        "all_no",
         "yes",
     ])
     assert ham["confirmed"] is True
@@ -953,6 +957,7 @@ def test_ok_does_not_invent_age_sex_weight_or_height():
         assert state["answers"].get(key) in (None, "")
     assert "1780" not in "\n".join(bots)
     assert all("kcal" not in turn.lower() for turn in bots)
+    _drop_hold()
     goal_only, _turns = run_chat(["hello", "ok"])
     assert goal_only["confirmed"] is False
     assert goal_only["answers"].get("goal") == "hold"
@@ -972,29 +977,30 @@ def test_par_q_answers_are_kept_and_a_mixed_reply_asks_only_the_gap():
     from onboarding import PAR_Q, _blank, _check_in
     from red_flag_check import is_passing_check_in
 
-    body = ["hold, male, age 30, 80 kg, 180 cm, no injuries", "30", "ok"]
+    body = [
+        _marked("hold, male, 80 kg, 180 cm, general training, 3 days 45 min, bodyweight, beginner"),
+        "30",
+    ]
     skipped, skip_bots = run_chat(body + ["skip", "yes"])
     assert skipped["confirmed"] is False
     assert skipped.get("par_q_skipped") is True
     assert skipped["par_q"] == {}
-    assert skip_bots[-1].startswith("Still need a yes or no:")
-    assert skip_bots[-1].count("\n") == 0
-    mixed, mixed_bots = run_chat(body + ["joint problem yes, medications no"])
+    assert skip_bots[-2].startswith("Still need a yes or no:")
+    assert skip_bots[-2].count("\n") == 0
+    assert "one yes confirms the plan" not in skip_bots[-1].lower()
+    mixed, _mixed_bots = run_chat(body + ["joint problem yes, medications no"])
     assert mixed["confirmed"] is False
-    assert mixed["par_q"]["bone_joint_problem_worsened_by_activity"] is True
-    assert mixed["par_q"]["currently_taking_medications"] is False
-    asked = mixed_bots[-1]
-    assert asked.startswith("Still need a yes or no:")
-    assert asked.count("\n") == 0
-    assert "bone joint problem" not in asked.lower()
-    assert "currently taking medications" not in asked.lower()
-    for key, _question in PAR_Q:
-        if key in {
-            "bone_joint_problem_worsened_by_activity",
-            "currently_taking_medications",
-        }:
-            continue
-        assert key.replace("_", " ") in asked
+    assert mixed["par_q"] == {}
+    from onboarding import submit_par_q
+
+    reached, _reached_bots = run_chat(body)
+    assert reached["asked"] == "par_q"
+    choice = {key: False for key, _question in PAR_Q}
+    choice["bone_joint_problem_worsened_by_activity"] = True
+    choice["currently_taking_medications"] = False
+    assert submit_par_q(reached, choice) is True
+    assert reached["par_q"]["bone_joint_problem_worsened_by_activity"] is True
+    assert reached["par_q"]["currently_taking_medications"] is False
     invented = _blank()
     invented["par_q_reply"] = "all no"
     invented["par_q"] = {key: False for key, _question in PAR_Q}
@@ -1015,7 +1021,10 @@ def test_par_q_answers_are_kept_and_a_mixed_reply_asks_only_the_gap():
 
 
 def test_all_no_counts_only_when_the_whole_reply_is_that_phrase():
-    body = ["hold, male, age 30, 80 kg, 180 cm, no injuries", "30", "ok"]
+    body = [
+        _marked("hold, male, 80 kg, 180 cm, general training, 3 days 45 min, bodyweight, beginner"),
+        "30",
+    ]
     unclear = (
         "all no except chest pain",
         "all no except joint problem",
@@ -1057,21 +1066,20 @@ def test_all_no_counts_only_when_the_whole_reply_is_that_phrase():
             assert "medical emergency" in bots[-1].lower(), reply
             _drop_hold()
             continue
-        assert bots[-2].startswith("Still need a yes or no:"), reply
-        assert "\n" not in bots[-2]
-        assert bots[-1].startswith("Still need a yes or no:")
+        assert state["par_q"] == {}, reply
+        assert "one yes confirms the plan" not in bots[-1].lower(), reply
+        _drop_hold()
     kept = (
-        ("medication yes, all no", "currently_taking_medications"),
-        ("joint problem yes, all no", "bone_joint_problem_worsened_by_activity"),
-        ("supervised only yes, otherwise all no", "doctor_advised_supervised_only"),
+        "medication yes, all no",
+        "joint problem yes, all no",
+        "supervised only yes, otherwise all no",
     )
-    for reply, key in kept:
+    for reply in kept:
         state, bots = run_chat(body + [reply, "yes"])
         assert state["confirmed"] is False, reply
-        assert state["par_q"].get(key) is True, reply
-        assert all(value is not False for value in state["par_q"].values()), reply
-        assert bots[-1].startswith("Still need a yes or no:"), reply
-        assert "\n" not in bots[-1]
+        assert state["par_q"] == {}, reply
+        assert "one yes confirms the plan" not in bots[-1].lower(), reply
+        _drop_hold()
     accepted = (
         "all no.",
         "all no!",
@@ -1091,9 +1099,13 @@ def test_all_no_counts_only_when_the_whole_reply_is_that_phrase():
     )
     for reply in accepted:
         state, _bots = run_chat(body + [reply, "yes"])
-        assert state["confirmed"] is True, reply
-        assert len(state["par_q"]) == len(PAR_Q)
-        assert all(value is False for value in state["par_q"].values())
+        assert state["confirmed"] is False, reply
+        assert state["par_q"] == {}, reply
+        _drop_hold()
+    button, _button_bots = run_chat(body + ["all_no", "yes"])
+    assert button["confirmed"] is True
+    assert len(button["par_q"]) == len(PAR_Q)
+    assert all(value is False for value in button["par_q"].values())
     chest, chest_bots = run_chat(body + ["chest pain yes. all no", "yes"])
     assert chest["confirmed"] is False
     assert chest["phase"] == "symptom"
@@ -1230,9 +1242,9 @@ def test_the_round3_transcript_asks_age_then_confirms(monkeypatch):
     )
     replies = [
         "hey! a friend said you could help me get in shape",
-        profile,
+        _marked(profile),
         "41",
-        "no injuries, parkrun is about 32 min. all no",
+        "all_no",
         "yes, morning 6:15",
     ]
     state, bots = run_chat(replies)
@@ -1450,10 +1462,9 @@ def test_a_minor_cue_after_the_age_clears_the_adult_age():
 
     body = [
         "hello",
-        "cut, male, 60 kg, 170 cm, no injuries",
+        _marked("cut, male, 60 kg, 170 cm, general training, 3 days 45 min, dumbbells, beginner"),
         "25",
-        "ok",
-        "all no",
+        "all_no",
     ]
     cues = (
         "im a minor",
@@ -1609,7 +1620,7 @@ def test_a_structural_injury_is_stored_and_does_not_hold_the_day():
             _marked(f"hold, male, 80 kg, 180 cm, {phrase}", injury="old"),
             "30",
             "ok",
-            "all no",
+            "all_no",
             "yes",
         ])
         assert state["answers"]["injuries"] == area, phrase
@@ -1695,7 +1706,7 @@ def test_a_named_area_wins_and_an_emoji_asks_which_area():
         _marked("hold, male, 80 kg, 180 cm, no injuries except my knee", injury="old"),
         "30",
         "ok",
-        "all no",
+        "all_no",
         "yes",
     ])
     assert knee["confirmed"] is True
@@ -1755,7 +1766,10 @@ def test_all_no_phrases_need_the_message_to_stay_free_of_symptoms():
     status, _parsed = read_par_q("no injuries, parkrun is about 32 min. all no")
     assert status == "all_no"
     assert read_par_q("not all no")[0] != "all_no"
-    body = ["hold, male, age 30, 80 kg, 180 cm, no injuries", "30", "ok"]
+    body = [
+        _marked("hold, male, 80 kg, 180 cm, general training, 3 days 45 min, bodyweight, beginner"),
+        "30",
+    ]
     impure = (
         "all no for most",
         "all no to most",
@@ -1779,13 +1793,9 @@ def test_all_no_phrases_need_the_message_to_stay_free_of_symptoms():
         state, bots = run_chat(body + [reply, "yes"])
         assert state["confirmed"] is False, reply
         assert "one yes confirms the plan" not in bots[-1].lower(), reply
-        if any(token in {"1", "2", "3", "5", "6"} for token in reply.split()):
-            assert state["answers"].get("age") == "30", reply
-            assert bots[-2].startswith("Still need a yes or no:"), reply
-            assert bots[-1].startswith("Still need a yes or no:"), reply
-            continue
-        assert bots[-2].startswith("Still need a yes or no:"), reply
-        assert bots[-1].startswith("Still need a yes or no:"), reply
+        assert state["par_q"] == {}, reply
+        assert state["answers"].get("age") == "30", reply
+        _drop_hold()
 
 
 def test_a_buckled_acl_on_crutches_holds_and_a_later_chat_stays_held():
@@ -1878,7 +1888,7 @@ def test_an_untimed_named_injury_asks_then_old_stores_and_recent_holds():
         "old",
         "30",
         "ok",
-        "all no",
+        "all_no",
         "yes",
     ])
     assert stored["answers"]["injuries"] == "knee"
@@ -1890,7 +1900,7 @@ def test_an_untimed_named_injury_asks_then_old_stores_and_recent_holds():
         "Old & healed",
         "30",
         "ok",
-        "all no",
+        "all_no",
         "yes",
     ])
     assert healed["answers"]["injuries"] == "back"
@@ -1982,7 +1992,7 @@ def test_only_an_allowlisted_reply_stores_an_injury_as_old():
         "Old & healed",
         "30",
         "ok",
-        "all no",
+        "all_no",
         "yes",
     ])
     assert stored["confirmed"] is True
@@ -2280,7 +2290,7 @@ def test_pain_in_more_areas_asks_old_or_recent_and_confirm_pain_holds_the_day():
             "old",
             "30",
             "ok",
-            "all no",
+            "all_no",
             "yes",
         ])
         assert stored["confirmed"] is True, phrase
@@ -2319,3 +2329,40 @@ def test_an_emoji_on_an_old_answer_asks_again_and_yes_7_pm_stays_on_confirm():
     assert clock["answers"]["age"] == "25"
     assert clock_bots[-1].startswith("Plan for age 25.")
     assert _AGE_ASK not in clock_bots[-1]
+
+
+def test_free_text_does_not_confirm_and_a_sentence_is_not_an_old_injury():
+    from onboarding import _INJURY_ASK, _blank, apply_reply, submit_age, _ask_injury_when
+
+    blocked, _bots = run_chat([
+        "hello",
+        "hold, male, 80 kg, 180 cm, general training, 3 days 45 min, bodyweight, beginner, no injuries",
+        30,
+        "all no",
+        "4 days, my knee is wrecked",
+        "yes",
+    ])
+    assert blocked["confirmed"] is False
+    assert blocked["answers"].get("injuries") != "knee"
+    _drop_hold()
+    area = _blank()
+    area["phase"] = "intake"
+    area["awaiting"] = "injury"
+    area["error"] = _INJURY_ASK
+    apply_reply(area, "my knee hurts")
+    assert area["answers"].get("injuries") in (None, "")
+    assert area["answers"].get("injuries") != "old"
+    asked = _blank()
+    asked["pending_injury"] = "knee"
+    _ask_injury_when(asked, "")
+    apply_reply(asked, "old", {"minor_signal": False, "red_flag": "none", "injury": "old", "note_ok": "yes"})
+    assert asked["answers"].get("injuries") in (None, "")
+    assert "old" != asked["answers"].get("injuries")
+    _drop_hold()
+    aged = _blank()
+    assert submit_age(aged, "25") is True
+    assert aged["answers"].get("age") in (None, "")
+    assert submit_age(aged, "１５") is True
+    assert aged["answers"].get("age") in (None, "")
+    assert submit_age(aged, 25) is True
+    assert aged["answers"]["age"] == "25"

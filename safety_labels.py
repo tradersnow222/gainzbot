@@ -6,6 +6,7 @@ hard-stop keywords on the raw text, then red_flag, then minor_signal,
 then injury, then note_ok. One label is enough. The others do not have to agree.
 """
 
+import json
 import re
 import unicodedata
 
@@ -409,13 +410,25 @@ _INSTRUCTION_WORD = (
 
 
 def quoted_data(reply):
-    """The user reply with JSON blobs and classifier instructions removed.
+    """The user reply with label JSON and classifier instructions removed.
 
     What remains is data. A line that tells the classifier how to label is not a fact.
     The instruction words stop after a short prefix, so the rest of the message stays.
+    Braces that are not a label object stay, so '{knee hurts}' is still an injury.
     """
     text = reply if isinstance(reply, str) else ""
-    text = re.sub(r"\{[^{}]*\}", " ", text)
+
+    def _drop_label_json(match):
+        blob = match.group(0)
+        try:
+            obj = json.loads(blob)
+        except json.JSONDecodeError:
+            return blob
+        if isinstance(obj, dict) and any(key in obj for key in LABEL_KEYS):
+            return " "
+        return blob
+
+    text = re.sub(r"\{[^{}]*\}", _drop_label_json, text)
     text = re.sub(
         rf"(?i)\bclassifier\b[:\s]*(?:{_INSTRUCTION_WORD}\b[:\s]*){{0,8}}",
         " ",

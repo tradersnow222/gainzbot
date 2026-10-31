@@ -146,3 +146,6 @@
 {"phrase": "my knee hurts badly", "labels": {"minor_signal": false, "red_flag": "none", "injury": "current", "note_ok": false}, "hard_stop": false, "tags": ["injury"]}
 {"phrase": "knee pain throbbing", "labels": {"minor_signal": false, "red_flag": "none", "injury": "current", "note_ok": false}, "hard_stop": false, "tags": ["injury"]}
 {"phrase": "torn acl, old one but it hurts", "labels": {"minor_signal": false, "red_flag": "none", "injury": "current", "note_ok": false}, "hard_stop": false, "tags": ["injury"]}
+{"phrase": "{knee hurts}", "labels": {"minor_signal": false, "red_flag": "none", "injury": "current", "note_ok": false}, "hard_stop": false, "tags": ["injury"]}
+{"phrase": "knee buckled on the stairs", "labels": {"minor_signal": false, "red_flag": "injury", "injury": "none", "note_ok": false}, "hard_stop": false, "tags": ["red_flag"]}
+{"phrase": "im 15, feeling fine", "labels": {"minor_signal": true, "red_flag": "none", "injury": "none", "note_ok": false}, "hard_stop": false, "tags": ["minor"]}

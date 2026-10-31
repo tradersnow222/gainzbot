@@ -254,18 +254,57 @@ def _label_hold_text(reply, labels):
     return "Rest today. Come back tomorrow, or after you see a doctor."
 
 
-def _evening_explicit(reply):
-    """A did-it or food answer. A leftover remark is not one of these."""
+_EVENING_FOOD = frozenset({
+    "ate", "oats", "oatmeal", "breakfast", "lunch", "dinner", "coffee", "tea",
+    "salad", "chicken", "rice", "eggs", "toast", "yogurt", "banana", "apple",
+    "milk", "water", "juice", "protein", "shake", "snack", "food", "meal",
+})
+_EVENING_DID = frozenset({
+    "yes", "yep", "yeah", "yup", "no", "nope", "did", "didnt",
+})
+_EVENING_WORDS = _EVENING_FOOD | _EVENING_DID | frozenset({
+    "not", "it", "easy", "right", "hard", "the", "a", "workout", "and",
+})
+
+
+def _evening_exact(reply):
+    """The whole reply is a did or didn't answer and food tokens. Nothing else.
+
+    'no idea what I ate' is the closed food-unknown token. Extra words need labels.
+    """
     text = _fold(reply)
     if not text:
         return False
-    if re.search(r"\b(?:did not|didnt)\b", text):
-        return True
-    if re.search(r"\b(?:yes|yep|yeah|did|no|nope)\b", text):
-        return True
-    if re.search(r"\bate\b", text):
-        return True
-    return False
+    scan = text
+    if _food_unknown(text):
+        scan = _FOOD_DOUBT.sub(" ", text)
+        scan = re.sub(r"\bwhat i ate\b", " ", scan)
+    words = re.findall(r"[a-z0-9]+", scan)
+    if not words or any(word not in _EVENING_WORDS and not word.isdigit() for word in words):
+        return False
+    did = any(word in _EVENING_DID for word in words)
+    food = any(word in _EVENING_FOOD for word in words) or _food_unknown(text)
+    return did or food
+
+
+def _evening_explicit(reply):
+    """Kept for callers that only need the old word check. The engine uses _evening_exact."""
+    return _evening_exact(reply)
+
+
+def _score_exact(reply):
+    """Numbers and the short check-in words only. Extra words need labels."""
+    if not isinstance(reply, str) or not reply.strip():
+        return False
+    tokens = re.findall(r"[a-z]+|\d+(?:\.\d+)?", reply.lower().replace("'", ""))
+    if not tokens:
+        return False
+    for token in tokens:
+        if re.fullmatch(r"\d+(?:\.\d+)?", token):
+            continue
+        if token not in _CHECKIN_WORDS:
+            return False
+    return True
 
 
 def _remark_pause(note):
@@ -572,6 +611,9 @@ class DailyLoop:
         if hard_stop(reply):
             self.notes.setdefault(day, {})["reply"] = reply
             return self._remember_pause(day, _safety_line(reply))
+        gated = self._labels_before_workout(day, reply, labels)
+        if gated is not None:
+            return gated
         phase = self.phase.get(day)
         if phase == "symptom":
             self.notes.setdefault(day, {})["reply"] = reply
@@ -1018,17 +1060,63 @@ class DailyLoop:
         self.phase[day] = "workout"
         return text
 
-    def _evening(self, day, reply, labels=None):
-        if not _evening_explicit(reply):
+    def _labels_before_workout(self, day, reply, labels):
+        """Label action before any workout. Free text in later phases needs labels."""
+        phase = self.phase.get(day)
+        if labels is not None:
             action = label_action(labels, self._unclear_count(day))
             if action == "hold":
                 return self._remember_pause(day, _label_hold_text(reply, labels))
             if action == "clear_age":
                 return "How old are you? Please type the number."
-            if action != "note" and action != "pass" and action != "swap":
+            if action not in {"note", "pass", "swap"}:
+                count = self._unclear_count(day)
+                if count >= 1:
+                    return self._remember_pause(
+                        day, "Rest today. Come back tomorrow, or after you see a doctor."
+                    )
+                self._set_unclear(day, count + 1)
+                return self._phase_prompt(phase)
+        elif phase in {"morning2", "signals"} and not _score_exact(reply):
+            count = self._unclear_count(day)
+            if count >= 1:
+                return self._remember_pause(
+                    day, "Rest today. Come back tomorrow, or after you see a doctor."
+                )
+            self._set_unclear(day, count + 1)
+            return self._phase_prompt(phase)
+        elif phase == "evening" and not _evening_exact(reply):
+            count = self._unclear_count(day)
+            if count >= 1:
+                return self._remember_pause(
+                    day, "Rest today. Come back tomorrow, or after you see a doctor."
+                )
+            self._set_unclear(day, count + 1)
+            self.phase[day] = "evening"
+            return _EVENING
+        return None
+
+    def _phase_prompt(self, phase):
+        if phase == "evening":
+            return _EVENING
+        if phase == "morning2":
+            return _SECOND
+        return _SYMPTOM
+
+    def _evening(self, day, reply, labels=None):
+        if labels is not None:
+            action = label_action(labels, self._unclear_count(day))
+            if action == "hold":
+                return self._remember_pause(day, _label_hold_text(reply, labels))
+            if action == "clear_age":
+                return "How old are you? Please type the number."
+            if action not in {"note", "pass", "swap"}:
                 self._set_unclear(day, self._unclear_count(day) + 1)
                 self.phase[day] = "evening"
                 return _EVENING
+        elif not _evening_exact(reply):
+            self.phase[day] = "evening"
+            return _EVENING
         notes = self.notes.setdefault(day, {})
         parsed = parse_evening(reply)
         if parsed.get("ate") == "" and notes.get("ate"):

@@ -139,19 +139,24 @@ def check_configured_install(repo_path, expected_tag):
 
 
 def safety_label_gate(root=None):
-    """Score the safety-label prompt in this repo. The install path is not used."""
+    """Read the committed safety-label results for this repo.
+
+    The file must match the current prompt hash and be 100% on hard-stop,
+    red-flag, and minor rows. This does not write, and it does not score an
+    install tree. A caller that needs a fresh score uses a temp directory.
+    """
     root = ROOT if root is None else Path(root)
     script = root / "scripts" / "run_safety_evals.py"
     if not script.is_file():
         return False, "The safety label eval is missing. Stop and ask."
     import importlib.util
 
-    spec = importlib.util.spec_from_file_location("run_safety_evals", script)
+    spec = importlib.util.spec_from_file_location("run_safety_evals_gate", script)
     if spec is None or spec.loader is None:
         return False, "The safety label eval could not be loaded. Stop and ask."
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
-    return module.gate(root)
+    return module.committed_ok(root)
 
 
 def main(repo_path=None, expected_tag=None):
