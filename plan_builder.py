@@ -8,6 +8,7 @@ plan_check passes and record_confirmation covers that same plan.
 """
 
 from datetime import date, timedelta
+import copy
 import json
 import os
 
@@ -34,6 +35,11 @@ _WEEKDAYS = {
     "sun": 6,
 }
 _NO_INJURY = {"none", "no", "n/a", "na"}
+
+
+def week_to_confirm(plan, sessions):
+    """The object record_confirmation has to cover: the plan and the sessions."""
+    return {"plan": plan, "sessions": sessions}
 
 
 class PlanBuilder:
@@ -63,10 +69,23 @@ class PlanBuilder:
         sport_hours = self._sport_hours(profile)
         if isinstance(sport_hours, dict):
             return sport_hours
+        user = self._user(profile)
+        if isinstance(user, dict) and user.get("ok") is False:
+            return user
+        age = user["age"] if user else None
+        if age is None and not self._readiness_passes(readiness_result):
+            return self._no(
+                "An age or a passing readiness screen is required before this week is built. "
+                "A missing baseline does not get a plan."
+            )
+        if age is not None and age < PlanValidator.ADULT_AGE and not self._readiness_passes(readiness_result):
+            return self._no("A passing readiness screen is required before this week is built.")
         structured = len(days) * minutes / 60.0
         if structured + sport_hours > PlanValidator.MAX_WEEKLY_TRAINING_HOURS:
             return self._no("That week is over the 20 hour training cap.")
         load = 80 if experience == "beginner" else 100
+        if load is None or load <= 0:
+            return self._no("A baseline load is required.")
         note = None
         if injuries.strip().lower() not in _NO_INJURY:
             note = "Do not add load."
@@ -89,14 +108,9 @@ class PlanBuilder:
             "structured_hours": structured,
             "sport_hours": sport_hours,
         }
-        user = self._user(profile)
-        if isinstance(user, dict) and user.get("ok") is False:
-            return user
         plan = {"training": training}
         if user:
             plan = {"user": user, "training": training}
-            if user["age"] < PlanValidator.ADULT_AGE and not self._readiness_passes(readiness_result):
-                return self._no("A passing readiness screen is required before this week is built.")
         checked = PlanValidator().validate_plan(
             plan,
             readiness_result=readiness_result,
@@ -108,24 +122,45 @@ class PlanBuilder:
             "ok": True,
             "plan": plan,
             "sessions": sessions,
+            "confirm": week_to_confirm(plan, sessions),
             "applied": False,
-            "message": "The week passed plan_check. It is not saved until record_confirmation covers it.",
+            "message": "The week passed plan_check. It is not saved until record_confirmation covers the plan and the sessions.",
         }
 
-    def save(self, plan, confirmation, path, sessions=None):
+    def save(self, plan, confirmation, path, sessions=None, check_in_result=None, readiness_result=None):
         if path is None or (isinstance(path, str) and not path.strip()):
             return self._saved_no("A path is required.")
         if not isinstance(plan, dict) or not isinstance(plan.get("training"), dict):
             return self._saved_no("This week needs record_confirmation before it is saved.")
-        training = plan["training"]
-        if training.get("current_load") != training.get("previous_load"):
-            return self._saved_no("The first week does not raise the load.")
         if not isinstance(sessions, list) or not sessions or any(not isinstance(row, dict) for row in sessions):
             return self._saved_no("The week needs its sessions.")
+        training = plan["training"]
+        hours = self._session_hours(sessions)
+        if isinstance(hours, dict):
+            return hours
+        sport_hours = self._sport_hours_value(training.get("sport_hours", 0))
+        if isinstance(sport_hours, dict):
+            return sport_hours
+        if "previous_load" not in training or training.get("previous_load") in (None, ""):
+            return self._saved_no("A baseline load is required.")
+        checked_plan = copy.deepcopy(plan)
+        checked_plan["training"]["structured_hours"] = hours
+        checked_plan["training"]["sport_hours"] = sport_hours
+        checked = PlanValidator().validate_plan(
+            checked_plan,
+            readiness_result=readiness_result,
+            check_in_result=check_in_result,
+        )
+        if not checked.valid:
+            return self._saved_no(" ".join(checked.errors))
+        if training.get("current_load") != training.get("previous_load"):
+            return self._saved_no("The first week does not raise the load.")
         load = training.get("current_load")
         if any(row.get("load") != load for row in sessions):
             return self._saved_no("The first week does not raise the load.")
-        if not isinstance(confirmation, ConfirmationRecord) or not ConfirmationRecorder().covers(confirmation, plan):
+        if not isinstance(confirmation, ConfirmationRecord) or not ConfirmationRecorder().covers(
+            confirmation, week_to_confirm(plan, sessions)
+        ):
             return self._saved_no("This week needs record_confirmation before it is saved.")
         target = os.fspath(path)
         existing = {}
@@ -201,6 +236,25 @@ class PlanBuilder:
             return InputValidator.parse_number(value, "minutes")
         except ValidationError as exc:
             return self._no(str(exc))
+
+    def _session_hours(self, sessions):
+        total = 0.0
+        for row in sessions:
+            if "minutes" not in row:
+                return self._saved_no("Each session needs its minutes.")
+            try:
+                total += InputValidator.parse_number(row["minutes"], "minutes")
+            except ValidationError as exc:
+                return self._saved_no(str(exc))
+        return total / 60.0
+
+    def _sport_hours_value(self, value):
+        if value in (None, ""):
+            return 0
+        try:
+            return InputValidator.parse_number(value, "sport_hours", allow_zero=True)
+        except ValidationError as exc:
+            return self._saved_no(str(exc))
 
     def _sport_hours(self, profile):
         if "sport_hours" not in profile or profile.get("sport_hours") in (None, ""):

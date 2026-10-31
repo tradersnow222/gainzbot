@@ -4,7 +4,7 @@
 import json
 from pathlib import Path
 
-from plan_builder import PlanBuilder
+from plan_builder import PlanBuilder, week_to_confirm
 from plan_check import PlanValidator
 from readiness_screen import ReadinessScreen
 from record_confirmation import ConfirmationRecorder
@@ -103,22 +103,34 @@ def test_weekday_names_need_a_start_date():
     assert [row["date"] for row in built["sessions"]] == ["2026-10-26", "2026-10-28"]
 
 
+def _save(builder, built, confirmation, path, sessions=None, check_in=None):
+    return builder.save(
+        built["plan"],
+        confirmation,
+        path,
+        built["sessions"] if sessions is None else sessions,
+        check_in_result=passing_check_in() if check_in is None else check_in,
+    )
+
+
 def test_save_waits_for_a_recorded_yes_and_keeps_other_keys(tmp_path):
     builder = PlanBuilder()
-    built = builder.propose(profile(), passing_check_in())
+    check_in = passing_check_in()
+    built = builder.propose(profile(), check_in)
     path = tmp_path / "week.json"
     path.write_text(json.dumps({"coach": "sam", "plan": {"old": True}}), encoding="utf-8")
-    refused = builder.save(built["plan"], None, path, built["sessions"])
+    refused = builder.save(built["plan"], None, path, built["sessions"], check_in_result=check_in)
     assert refused["saved"] is False
     assert json.loads(path.read_text(encoding="utf-8"))["plan"] == {"old": True}
-    saved = builder.save(built["plan"], recorded(built["plan"]), path, built["sessions"])
+    yes = recorded(week_to_confirm(built["plan"], built["sessions"]))
+    saved = _save(builder, built, yes, path, check_in=check_in)
     assert saved["saved"] is True
     assert saved["applied"] is False
     stored = json.loads(path.read_text(encoding="utf-8"))
     assert stored["coach"] == "sam"
     assert stored["plan"]["training"]["current_load"] == 80
     raised = [dict(row, load=200) for row in built["sessions"]]
-    missed = builder.save(built["plan"], recorded(built["plan"]), path, raised)
+    missed = _save(builder, built, yes, path, sessions=raised, check_in=check_in)
     assert missed["saved"] is False
     assert json.loads(path.read_text(encoding="utf-8"))["sessions"][0]["load"] == 80
 
@@ -127,7 +139,10 @@ def test_a_corrupt_week_file_is_not_overwritten(tmp_path):
     built = PlanBuilder().propose(profile(), passing_check_in())
     path = tmp_path / "week.json"
     path.write_text("{", encoding="utf-8")
-    refused = PlanBuilder().save(built["plan"], recorded(built["plan"]), path, built["sessions"])
+    yes = recorded(week_to_confirm(built["plan"], built["sessions"]))
+    refused = PlanBuilder().save(
+        built["plan"], yes, path, built["sessions"], check_in_result=passing_check_in(),
+    )
     assert refused["saved"] is False
     assert path.read_text(encoding="utf-8") == "{"
 
@@ -152,14 +167,59 @@ def test_under_18_needs_a_passing_readiness_screen():
     assert PlanValidator.ADULT_AGE == 18
 
 
-def test_no_body_fields_still_builds_the_training_week():
+def test_a_profile_with_no_age_does_not_get_a_week(tmp_path):
     bare = profile()
     for key in ("sex", "weight_kg", "age", "height_cm"):
         del bare[key]
-    built = PlanBuilder().propose(bare, passing_check_in())
-    assert built["ok"] is True
-    assert "user" not in built["plan"]
-    assert built["sessions"]
+    refused = PlanBuilder().propose(bare, passing_check_in())
+    assert refused["ok"] is False
+    assert refused["plan"] is None
+    assert refused["sessions"] is None
+    assert "missing baseline" in refused["message"].lower()
+    path = tmp_path / "week.json"
+    assert PlanBuilder().save(None, None, path)["saved"] is False
+    assert not path.exists()
+
+
+def test_swapped_sessions_and_an_unchecked_plan_are_not_saved(tmp_path):
+    builder = PlanBuilder()
+    check_in = passing_check_in()
+    built = builder.propose(profile(injuries="left knee"), check_in)
+    path = tmp_path / "week.json"
+    yes = recorded(week_to_confirm(built["plan"], built["sessions"]))
+    assert _save(builder, built, yes, path, check_in=check_in)["saved"] is True
+    longer = []
+    for index in range(7):
+        longer.append({
+            "date": f"2026-11-0{index + 1}",
+            "load": 80,
+            "minutes": 600,
+            "equipment": "bodyweight",
+            "sport": "running",
+            "note": "Do not add load.",
+        })
+    swapped = _save(builder, built, yes, path, sessions=longer, check_in=check_in)
+    assert swapped["saved"] is False
+    assert json.loads(path.read_text(encoding="utf-8"))["sessions"][0]["minutes"] == 45
+    dropped = [dict(row) for row in built["sessions"]]
+    dropped[0].pop("note")
+    assert _save(builder, built, yes, path, sessions=dropped, check_in=check_in)["saved"] is False
+    assert "note" in json.loads(path.read_text(encoding="utf-8"))["sessions"][0]
+    bad_plan = {
+        "training": {
+            "previous_load": 100,
+            "current_load": 200,
+            "weeks_since_deload": 0,
+            "structured_hours": 1,
+            "sport_hours": 0,
+        }
+    }
+    bad_sessions = [{"date": "2026-10-26", "load": 200, "minutes": 45}]
+    bad_yes = recorded(week_to_confirm(bad_plan, bad_sessions))
+    bad_path = tmp_path / "bad.json"
+    refused = builder.save(bad_plan, bad_yes, bad_path, bad_sessions, check_in_result=check_in)
+    assert refused["saved"] is False
+    assert not bad_path.exists()
 
 
 def test_the_builder_does_not_use_the_log_store_and_the_guide_has_no_em_dash():

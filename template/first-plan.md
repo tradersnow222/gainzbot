@@ -10,6 +10,6 @@ If an injury is listed, keep the same load and do not add load.
 
 Do not set a calorie target in this first week.
 
-`propose` runs `plan_check`. If it does not pass, do not save the week and do not change anything.
+`propose` runs `plan_check`. If it does not pass, do not save the week and do not change anything. It needs an age, or a passing readiness screen, before it builds the week. A missing baseline does not get a plan.
 
-Then call `record_confirmation`. Save with `PlanBuilder.save` only when that record covers this exact plan. A vague yes does not save it. If the week file cannot be read, do not overwrite it.
+Then call `record_confirmation` on the plan and the sessions together (`week_to_confirm`). Save with `PlanBuilder.save` only when that record covers both. `save` runs `plan_check` again. The hours cap is computed from the sessions themselves, so a longer week swapped in after the yes is refused. A vague yes does not save it. If the week file cannot be read, do not overwrite it.
