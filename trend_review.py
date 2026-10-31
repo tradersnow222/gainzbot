@@ -6,51 +6,28 @@ Proposals stay inside the safety caps. Nothing is applied until a
 record_confirmation covers that exact proposal.
 
 A missing age blocks calorie and protein proposals. Under 18 gets no
-calorie targets. A load or calorie change is proposed only when the last
-confirmed change of that kind is at least 7 days old. A weight stall
-follows the goal: cut lowers calories, gain raises them, and hold or no
-goal changes nothing.
+calorie targets. A load or calorie change is proposed only from the shared
+confirmed-history reader, and only when that change is at least 7 days old
+in UTC. With no usable history the review does not move the load or the
+calories up. A weight stall follows the goal: cut or lose lowers calories,
+gain raises them, and hold or no goal changes nothing.
 """
 
-from datetime import date, datetime, timedelta
+from datetime import date, datetime, timedelta, timezone
 from typing import Dict, List, Optional
-import hashlib
-import json
 import os
-import re
 import sys
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+from confirmed_change import confirmed_baseline, confirmed_history, parse_utc
 from guardrails.validate import InputValidator, ValidationError
 from plan_check import PlanValidator
+from record_confirmation import ConfirmationRecord, ConfirmationRecorder, hash_plan
 
 
 WINDOWS = (7, 28, 90, 365)
 MIN_DAYS = {7: 4, 28: 8, 90: 14, 365: 28}
-CLEAR_YES = {
-    "yes",
-    "yes i confirm",
-    "yes i confirm this plan",
-    "yes i confirm this change",
-    "i confirm",
-    "i confirm this plan",
-    "i confirm this change",
-}
 NOT_ENOUGH = "not enough data yet"
-
-
-def hash_plan(plan) -> str:
-    """Same version hash record_confirmation uses for a plan or proposal."""
-    payload = json.dumps(plan, sort_keys=True, separators=(",", ":"), default=str)
-    return hashlib.sha256(payload.encode("utf-8")).hexdigest()
-
-
-def _normalize_reply(reply: str) -> str:
-    text = InputValidator.normalize_unicode(reply).lower().strip()
-    if len(text) >= 2 and text[0] == text[-1] and text[0] in {"'", '"'}:
-        text = text[1:-1].strip()
-    text = re.sub(r"[^a-z0-9'\s]", " ", text)
-    return re.sub(r"\s+", " ", text).strip()
 
 
 def _parse_date(value) -> Optional[date]:
@@ -86,12 +63,21 @@ class TrendReview:
         if window_days not in WINDOWS:
             return self._empty("Use a window of 7, 28, 90, or 365 days.")
         user = user if isinstance(user, dict) else {}
-        end = _parse_date(as_of) if as_of is not None else None
+        if as_of is not None:
+            as_of_dt = parse_utc(as_of)
+            if as_of_dt is None:
+                return self._empty("No change proposed.")
+            end = as_of_dt.date()
+        else:
+            as_of_dt = None
+            end = None
         rows = self._rows(logs)
         if end is None:
             dates = [row["date"] for row in rows]
             end = max(dates) if dates else None
-        if end is None:
+            if end is not None:
+                as_of_dt = datetime(end.year, end.month, end.day, tzinfo=timezone.utc)
+        if end is None or as_of_dt is None:
             return self._empty(NOT_ENOUGH)
         start = end - timedelta(days=window_days - 1)
         window_rows = [row for row in rows if start <= row["date"] <= end]
@@ -107,15 +93,16 @@ class TrendReview:
         blocked_calories = False
         # Missing age blocks calorie and protein the same way a missing sex
         # blocks a calorie target. Under 18 is handled below.
-        calorie_wait = self._change_is_too_soon(logs, user, "calories", end)
-        load_wait = self._change_is_too_soon(logs, user, "load", end)
+        history = confirmed_history(logs, user)
+        calorie_baseline = confirmed_baseline(history, "calories", as_of_dt)
+        load_baseline = confirmed_baseline(history, "load", as_of_dt)
 
         if age is None:
             weight_proposal = None
             protein_proposal = None
         else:
             weight_proposal = self._weight_proposal(
-                window_rows, weight, sex, age, goal, calorie_wait,
+                window_rows, weight, sex, age, goal, calorie_baseline,
             )
             if weight_proposal == "minor":
                 blocked_calories = True
@@ -128,7 +115,7 @@ class TrendReview:
             elif protein_proposal:
                 proposals.append(protein_proposal)
 
-        load_proposal = self._load_proposal(window_rows, end, load_wait)
+        load_proposal = self._load_proposal(window_rows, end, load_baseline)
         if load_proposal:
             proposals.append(load_proposal)
 
@@ -162,7 +149,13 @@ class TrendReview:
                 "message": "This proposal needs record_confirmation before it applies.",
                 "changes": {},
             }
-        if not self._confirmation_covers(proposal, confirmation):
+        if not isinstance(confirmation, ConfirmationRecord):
+            return {
+                "applied": False,
+                "message": "This proposal needs record_confirmation before it applies.",
+                "changes": {},
+            }
+        if not ConfirmationRecorder().covers(confirmation, proposal):
             return {
                 "applied": False,
                 "message": "This proposal needs record_confirmation before it applies.",
@@ -302,49 +295,15 @@ class TrendReview:
         if not isinstance(raw, str):
             return None
         text = raw.strip().lower()
-        if text in {"cut", "gain", "hold"}:
+        if text in {"cut", "lose"}:
+            return "cut"
+        if text in {"gain", "hold"}:
             return text
         return None
 
-    def _change_is_too_soon(self, logs, user, kind: str, end: date) -> bool:
-        """Weekly caps are per 7 days since the last confirmed change, not per review."""
-        last = self._last_confirmed(logs, user, kind)
-        if last is None:
-            return False
-        return (end - last).days < 7
-
-    def _last_confirmed(self, logs, user, kind: str) -> Optional[date]:
-        latest = None
-        sources = []
-        if isinstance(logs, dict):
-            sources.append(logs.get("confirmed_changes"))
-        if isinstance(user, dict):
-            sources.append(user.get("confirmed_changes"))
-        for entries in sources:
-            if isinstance(entries, dict):
-                entries = [entries]
-            if not isinstance(entries, list):
-                continue
-            for item in entries:
-                found = self._confirmed_on(item, kind)
-                if found is not None and (latest is None or found > latest):
-                    latest = found
-        return latest
-
-    def _confirmed_on(self, item, kind: str) -> Optional[date]:
-        if not isinstance(item, dict) or item.get("confirmed") is False:
-            return None
-        changes = item.get("changes")
-        if not isinstance(changes, dict):
-            changes = item
-        if kind not in changes and item.get("kind") != kind:
-            return None
-        return _parse_date(item.get("date") or item.get("day") or item.get("confirmed_on"))
-
-    def _weight_proposal(self, rows, weight, sex, age, goal, calorie_wait):
+    def _weight_proposal(self, rows, weight, sex, age, goal, calorie_baseline):
         points = self._series(rows, "weight")
-        intakes = self._series(rows, "calories")
-        if len(points) < 2 or not intakes or not weight:
+        if len(points) < 2 or not weight:
             return None
         start = points[0]
         end = points[-1]
@@ -353,14 +312,14 @@ class TrendReview:
         delta = end["weight"] - start["weight"]
         per_week = delta / weeks
         limit = weight * (PlanValidator.MAX_WEIGHT_LOSS_PERCENT / 100)
-        current = sum(row["calories"] for row in intakes) / len(intakes)
         floor = self._floor(sex)
         if age is not None and age < PlanValidator.ADULT_AGE:
             if abs(per_week) > limit or (span_days >= 14 and abs(delta) < 0.2):
                 return "minor"
             return None
-        if floor is None or calorie_wait:
+        if floor is None or calorie_baseline is None:
             return None
+        current = calorie_baseline
 
         if per_week < -limit:
             return self._calorie_step(
@@ -423,13 +382,15 @@ class TrendReview:
             return None
         return self._proposal(summary, {"protein_g": _whole(target)})
 
-    def _load_proposal(self, rows, end, load_wait):
+    def _load_proposal(self, rows, end, load_baseline):
+        if load_baseline is None:
+            return None
         loads = self._series(rows, "load")
         sessions = [row for row in rows if "completed" in row and row.get("planned", True)]
         planned = len(sessions)
         completed = sum(1 for row in sessions if row["completed"])
         missed = planned >= 4 and (completed / planned) < 0.75
-        current = loads[-1]["load"] if loads else None
+        current = load_baseline
         days_since_drop = None
         if len(loads) >= 2:
             reference = loads[0]["date"]
@@ -462,54 +423,4 @@ class TrendReview:
                 "Sessions are on track. The load can rise by about 10 percent.",
                 {"load": target},
             )
-        if proposal and load_wait and self._moves_load(proposal, current):
-            return None
         return proposal
-
-    def _moves_load(self, proposal, current) -> bool:
-        value = proposal["changes"].get("load")
-        if value is None or current is None:
-            return True
-        return abs(float(value) - float(current)) > 1e-9
-
-    def _confirmation_covers(self, proposal, confirmation) -> bool:
-        fields = self._confirmation_fields(confirmation)
-        if not fields:
-            return False
-        if fields["confirmed"] is not True:
-            return False
-        speaker = fields["speaker"].strip().lower()
-        if speaker not in {"user", "the user"}:
-            return False
-        if not isinstance(fields["quoted_words"], str):
-            return False
-        if _normalize_reply(fields["quoted_words"]) not in CLEAR_YES:
-            return False
-        try:
-            expected = hash_plan(proposal)
-        except (TypeError, ValueError):
-            return False
-        return bool(fields["plan_hash"]) and fields["plan_hash"] == expected
-
-    def _confirmation_fields(self, confirmation) -> Optional[Dict]:
-        if confirmation is None:
-            return None
-        if isinstance(confirmation, dict):
-            source = confirmation
-            confirmed = source.get("confirmed")
-            plan_hash = source.get("plan_hash", "")
-            quoted = source.get("quoted_words", source.get("reply", ""))
-            speaker = source.get("speaker", source.get("source", ""))
-        else:
-            confirmed = getattr(confirmation, "confirmed", False)
-            plan_hash = getattr(confirmation, "plan_hash", "")
-            quoted = getattr(confirmation, "quoted_words", "")
-            speaker = getattr(confirmation, "speaker", "")
-        if not isinstance(speaker, str):
-            speaker = ""
-        return {
-            "confirmed": confirmed,
-            "plan_hash": plan_hash,
-            "quoted_words": quoted,
-            "speaker": speaker,
-        }

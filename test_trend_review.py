@@ -6,7 +6,24 @@ from datetime import date, timedelta
 import pytest
 
 from plan_check import PlanValidator
+from record_confirmation import ConfirmationRecorder
+from red_flag_check import RedFlagChecker, is_passing_check_in
 from trend_review import NOT_ENOUGH, TrendReview, hash_plan
+
+
+def passing_check_in():
+    checker = RedFlagChecker()
+    answers = {aliases[0]: "no" for _flag, aliases in checker.CHECKLIST_GROUPS}
+    result = checker.scan_check_in({
+        "symptom_checklist": answers,
+        "notes": "Easy lift, slept fine.",
+    })
+    assert is_passing_check_in(result)
+    return result
+
+
+def recorded(proposal, reply="yes", speaker="user"):
+    return ConfirmationRecorder().record(proposal, reply, speaker, passing_check_in())
 
 
 def days(start, count):
@@ -21,6 +38,15 @@ def confirmation(proposal, reply="yes", speaker="user", confirmed=True):
         "quoted_words": reply,
         "speaker": speaker,
     }
+
+
+def prior(kind, value, as_of, days_ago=7, confirmed=True, change_key=None):
+    day = date.fromisoformat(str(as_of)[:10]) - timedelta(days=days_ago)
+    return [{
+        "date": day.isoformat() + "T00:00:00Z",
+        "confirmed": confirmed,
+        "changes": {(change_key or kind): value},
+    }]
 
 
 class TestWindowsAndData:
@@ -68,7 +94,11 @@ class TestSafetyCaps:
             weights.append({"date": day.isoformat(), "kg": 80 - (index * 0.25)})
             intake.append({"date": day.isoformat(), "calories": 2200, "protein_g": 144})
         result = TrendReview().review(
-            {"weights": weights, "intake": intake},
+            {
+                "weights": weights,
+                "intake": intake,
+                "confirmed_changes": prior("calories", 2200, dates[-1].isoformat()),
+            },
             self._adult(),
             7,
             dates[-1].isoformat(),
@@ -94,7 +124,11 @@ class TestSafetyCaps:
         user = self._adult()
         user["goal"] = "cut"
         result = TrendReview().review(
-            {"weights": weights, "intake": intake},
+            {
+                "weights": weights,
+                "intake": intake,
+                "confirmed_changes": prior("calories", 1600, dates[-1].isoformat()),
+            },
             user,
             28,
             dates[-1].isoformat(),
@@ -112,7 +146,11 @@ class TestSafetyCaps:
         weights = [{"date": dates[0].isoformat(), "kg": 60}, {"date": dates[-1].isoformat(), "kg": 60}]
         intake = [{"date": day.isoformat(), "calories": 1250, "protein_g": 110} for day in dates]
         result = TrendReview().review(
-            {"weights": weights, "intake": intake},
+            {
+                "weights": weights,
+                "intake": intake,
+                "confirmed_changes": prior("calories", 1250, dates[-1].isoformat()),
+            },
             {"sex": "F", "age": 40, "weight_kg": 60, "goal": "cut"},
             28,
             dates[-1].isoformat(),
@@ -184,7 +222,11 @@ class TestSafetyCaps:
             })
             loads.append({"date": day.isoformat(), "load": 100})
         result = TrendReview().review(
-            {"sessions": sessions, "loads": loads},
+            {
+                "sessions": sessions,
+                "loads": loads,
+                "confirmed_changes": prior("load", 100, dates[-1].isoformat()),
+            },
             self._adult(),
             28,
             dates[-1].isoformat(),
@@ -201,7 +243,11 @@ class TestSafetyCaps:
         sessions = [{"date": day.isoformat(), "planned": True, "completed": True} for day in dates]
         loads = [{"date": day.isoformat(), "load": 100} for day in dates]
         result = TrendReview().review(
-            {"sessions": sessions, "loads": loads},
+            {
+                "sessions": sessions,
+                "loads": loads,
+                "confirmed_changes": prior("load", 100, dates[-1].isoformat()),
+            },
             self._adult(),
             7,
             dates[-1].isoformat(),
@@ -221,7 +267,11 @@ class TestSafetyCaps:
                 loads.append({"date": day, "load": 100})
         as_of = (start + timedelta(days=49)).isoformat()
         result = TrendReview().review(
-            {"loads": loads, "sessions": sessions},
+            {
+                "loads": loads,
+                "sessions": sessions,
+                "confirmed_changes": prior("load", 100, as_of),
+            },
             self._adult(),
             90,
             as_of,
@@ -256,7 +306,11 @@ class TestSafetyCaps:
             weights.append({"date": day.isoformat(), "kg": 90 - week * 1.2})
             intake.append({"date": day.isoformat(), "calories": 2400, "protein_g": 160})
         result = TrendReview().review(
-            {"weights": weights, "intake": intake},
+            {
+                "weights": weights,
+                "intake": intake,
+                "confirmed_changes": prior("calories", 2400, weights[-1]["date"]),
+            },
             {"sex": "M", "age": 40, "weight_kg": 90},
             365,
             weights[-1]["date"],
@@ -292,7 +346,11 @@ class TestSafetyCaps:
         sessions = [{"date": day.isoformat(), "planned": True, "completed": True} for day in dates]
         loads = [{"date": day.isoformat(), "load": 100} for day in dates]
         result = TrendReview().review(
-            {"sessions": sessions, "loads": loads},
+            {
+                "sessions": sessions,
+                "loads": loads,
+                "confirmed_changes": prior("load", 100, dates[-1].isoformat()),
+            },
             {"sex": "M", "weight_kg": 80},
             7,
             dates[-1].isoformat(),
@@ -311,6 +369,7 @@ class TestSafetyCaps:
     def test_reviews_a_day_apart_do_not_stack_load(self):
         review = TrendReview()
         dates, logs = self._steady_load("2026-10-16", 7, 100)
+        logs["confirmed_changes"] = prior("load", 100, dates[-1].isoformat())
         user = self._adult()
         first = review.review(logs, user, 7, dates[-1].isoformat())
         assert next(item["changes"]["load"] for item in first["proposals"] if "load" in item["changes"]) == 110
@@ -333,6 +392,7 @@ class TestSafetyCaps:
         logs["confirmed_changes"] = [{
             "date": (day - timedelta(days=7)).isoformat(),
             "changes": {"load": 110},
+            "confirmed": True,
         }]
         result = TrendReview().review(logs, self._adult(), 7, day.isoformat())
         load = next(item["changes"]["load"] for item in result["proposals"] if "load" in item["changes"])
@@ -348,7 +408,11 @@ class TestSafetyCaps:
             weights.append({"date": day.isoformat(), "kg": 80 - (index * 0.25)})
             intake.append({"date": day.isoformat(), "calories": 2200, "protein_g": 144})
         first = review.review(
-            {"weights": weights, "intake": intake},
+            {
+                "weights": weights,
+                "intake": intake,
+                "confirmed_changes": prior("calories", 2200, first_dates[-1].isoformat()),
+            },
             user,
             7,
             first_dates[-1].isoformat(),
@@ -396,6 +460,7 @@ class TestSafetyCaps:
                 "confirmed_changes": [{
                     "date": (end - timedelta(days=7)).isoformat(),
                     "changes": {"calories": 2400},
+                    "confirmed": True,
                 }],
             },
             self._adult(),
@@ -414,7 +479,11 @@ class TestSafetyCaps:
         if goal is not None:
             user["goal"] = goal
         result = TrendReview().review(
-            {"weights": weights, "intake": intake},
+            {
+                "weights": weights,
+                "intake": intake,
+                "confirmed_changes": prior("calories", 2200, dates[-1].isoformat()),
+            },
             user,
             28,
             dates[-1].isoformat(),
@@ -442,6 +511,119 @@ class TestSafetyCaps:
     def test_stall_with_no_goal_proposes_nothing(self):
         assert self._stall(None) == []
 
+    def test_stall_on_lose_lowers_calories(self):
+        proposals = self._stall("lose")
+        assert proposals
+        assert proposals[0]["changes"]["calories"] < 2200
+        assert "lower" in proposals[0]["summary"].lower()
+
+    def _ready_load(self, as_of="2026-10-28"):
+        dates = days("2026-10-22", 7)
+        return {
+            "sessions": [
+                {"date": day.isoformat(), "planned": True, "completed": True}
+                for day in dates
+            ],
+            "loads": [{"date": day.isoformat(), "load": 100} for day in dates],
+        }, as_of
+
+    def test_no_history_proposes_no_load_or_calorie_change(self):
+        logs, as_of = self._ready_load()
+        logs["weights"] = [
+            {"date": "2026-10-22", "kg": 80},
+            {"date": "2026-10-28", "kg": 80},
+        ]
+        logs["intake"] = [
+            {"date": day, "calories": 2200, "protein_g": 144}
+            for day in ("2026-10-22", "2026-10-28")
+        ]
+        user = self._adult()
+        user["goal"] = "cut"
+        user["planned_load"] = 100
+        user["baseline_load"] = 100
+        result = TrendReview().review(logs, user, 7, as_of)
+        assert all("load" not in item["changes"] and "calories" not in item["changes"] for item in result["proposals"])
+
+    @pytest.mark.parametrize("stamp", ["10/20/2026", "yesterday", None])
+    def test_unreadable_confirmed_date_proposes_no_change(self, stamp):
+        logs, as_of = self._ready_load()
+        entry = {"confirmed": True, "changes": {"load": 100}}
+        if stamp is not None:
+            entry["date"] = stamp
+        logs["confirmed_changes"] = [entry]
+        result = TrendReview().review(logs, self._adult(), 7, as_of)
+        assert all("load" not in item["changes"] for item in result["proposals"])
+
+    def test_wrong_key_proposes_no_change(self):
+        logs, as_of = self._ready_load()
+        logs["confirmed_changes"] = prior("load", 100, as_of, change_key="training_load")
+        result = TrendReview().review(logs, self._adult(), 7, as_of)
+        assert all("load" not in item["changes"] for item in result["proposals"])
+
+    def test_non_list_history_proposes_no_change(self):
+        logs, as_of = self._ready_load()
+        logs["confirmed_changes"] = {"date": "2026-10-21T00:00:00Z", "confirmed": True, "changes": {"load": 100}}
+        result = TrendReview().review(logs, self._adult(), 7, as_of)
+        assert all("load" not in item["changes"] for item in result["proposals"])
+
+    def test_caller_baseline_is_ignored(self):
+        logs, as_of = self._ready_load()
+        for row in logs["loads"]:
+            row["load"] = 40
+        logs["confirmed_changes"] = prior("load", 100, as_of)
+        user = self._adult()
+        user["planned_load"] = 40
+        user["baseline_load"] = 40
+        result = TrendReview().review(logs, user, 7, as_of)
+        load = next(item["changes"]["load"] for item in result["proposals"] if "load" in item["changes"])
+        assert load == 110
+
+    def test_nothing_confirmed_does_not_move_the_load_up(self):
+        logs, as_of = self._ready_load()
+        logs["confirmed_changes"] = prior("load", 100, as_of, confirmed=False)
+        user = self._adult()
+        user["planned_load"] = 200
+        result = TrendReview().review(logs, user, 7, as_of)
+        assert all(item["changes"].get("load", 0) <= 100 for item in result["proposals"])
+        assert all("load" not in item["changes"] for item in result["proposals"])
+
+    def test_six_days_and_22_5_hours_does_not_pass(self):
+        as_of = "2026-10-29T00:30:00Z"
+        dates = days("2026-10-23", 7)
+        logs = {
+            "sessions": [
+                {"date": day.isoformat(), "planned": True, "completed": True}
+                for day in dates
+            ],
+            "loads": [{"date": day.isoformat(), "load": 100} for day in dates],
+            "confirmed_changes": [{
+                "date": "2026-10-22T02:00:00Z",
+                "confirmed": True,
+                "changes": {"load": 100},
+            }],
+        }
+        result = TrendReview().review(logs, self._adult(), 7, as_of)
+        assert all("load" not in item["changes"] for item in result["proposals"])
+
+    def test_exactly_seven_utc_days_can_rise(self):
+        as_of = "2026-10-29T02:00:00Z"
+        dates = days("2026-10-23", 7)
+        logs = {
+            "sessions": [
+                {"date": day.isoformat(), "planned": True, "completed": True}
+                for day in dates
+            ],
+            "loads": [{"date": day.isoformat(), "load": 40} for day in dates],
+            "confirmed_changes": [{
+                "date": "2026-10-22T02:00:00Z",
+                "confirmed": True,
+                "changes": {"load": 100},
+            }],
+        }
+        result = TrendReview().review(logs, self._adult(), 7, as_of)
+        load = next(item["changes"]["load"] for item in result["proposals"] if "load" in item["changes"])
+        assert load == 110
+
 
 class TestConfirmationGate:
     def test_review_does_not_apply(self):
@@ -449,7 +631,11 @@ class TestConfirmationGate:
         sessions = [{"date": day.isoformat(), "planned": True, "completed": True} for day in dates]
         loads = [{"date": day.isoformat(), "load": 80} for day in dates]
         result = TrendReview().review(
-            {"sessions": sessions, "loads": loads},
+            {
+                "sessions": sessions,
+                "loads": loads,
+                "confirmed_changes": prior("load", 80, dates[-1].isoformat()),
+            },
             {"sex": "F", "age": 30, "weight_kg": 60},
             7,
             dates[-1].isoformat(),
@@ -467,23 +653,28 @@ class TestConfirmationGate:
 
     def test_vague_confirmation_does_not_apply(self):
         proposal = {"summary": "Raise the load.", "changes": {"load": 110}}
-        applied = TrendReview().apply(proposal, confirmation(proposal, "sure I guess"))
+        applied = TrendReview().apply(proposal, recorded(proposal, "sure I guess"))
+        assert applied["applied"] is False
+
+    def test_a_lookalike_dict_does_not_apply(self):
+        proposal = {"summary": "Raise the load.", "changes": {"load": 110}}
+        applied = TrendReview().apply(proposal, confirmation(proposal, "yes"))
         assert applied["applied"] is False
 
     def test_matching_confirmation_applies(self):
         proposal = {"summary": "Raise the load.", "changes": {"load": 110}}
-        applied = TrendReview().apply(proposal, confirmation(proposal, "Yes, I confirm."))
+        applied = TrendReview().apply(proposal, recorded(proposal, "Yes, I confirm."))
         assert applied["applied"] is True
         assert applied["changes"] == {"load": 110}
 
     def test_edited_proposal_needs_a_new_confirmation(self):
         proposal = {"summary": "Raise the load.", "changes": {"load": 110}}
-        record = confirmation(proposal, "yes")
+        record = recorded(proposal, "yes")
         edited = {"summary": "Raise the load.", "changes": {"load": 140}}
         applied = TrendReview().apply(edited, record)
         assert applied["applied"] is False
 
     def test_non_user_confirmation_does_not_apply(self):
         proposal = {"summary": "Raise the load.", "changes": {"load": 110}}
-        applied = TrendReview().apply(proposal, confirmation(proposal, "yes", speaker="coach"))
+        applied = TrendReview().apply(proposal, recorded(proposal, "yes", speaker="coach"))
         assert applied["applied"] is False
