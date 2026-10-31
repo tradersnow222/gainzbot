@@ -1011,6 +1011,7 @@ def test_all_no_counts_only_when_the_whole_reply_is_that_phrase():
         "all no?!",
         "all no..",
         "all no!!",
+        "all no . .",
         "no to all?",
         "none?",
         "all no？",
@@ -1534,6 +1535,15 @@ def test_an_emergency_sign_holds_with_an_emergency_line():
         "hurt my back today, sharp pain",
         "slipped disc, lost bladder control",
         "slipped disc, cant feel my legs",
+        "peed myself",
+        "wet myself",
+        "incontinence",
+        "cant control bladder",
+        "tingling both legs",
+        "cant feel my feet",
+        "pain shooting down both legs",
+        "cracked rib",
+        "bruised ribs",
     )
     for phrase in phrases:
         paused = reply_pause(phrase)
@@ -1558,19 +1568,12 @@ def test_a_structural_injury_is_stored_and_does_not_hold_the_day():
     from onboarding import hold_is_active
 
     samples = (
-        ("torn acl", "knee"),
-        ("pulled hamstring", "hamstring"),
-        ("sprained ankle", "ankle"),
         ("old sprained ankle", "ankle"),
-        ("calf tear", "calf"),
         ("achilles", "achilles"),
-        ("groin strain", "hip"),
-        ("slipped disc", "back"),
-        ("shin splints", "ankle"),
         ("torn acl 2 years ago", "knee"),
         ("calf tear last year", "calf"),
         ("slipped disc in 2020", "back"),
-        ("torn rotator cuff", "shoulder"),
+        ("torn acl 2 years ago, fine now", "knee"),
     )
     for phrase, area in samples:
         state, bots = run_chat([
@@ -1624,7 +1627,8 @@ def test_a_decimal_kg_and_a_pound_weight_convert():
     named, named_bots = run_chat(["want 64 kg"])
     assert named["answers"].get("weight") in (None, "")
     assert named["answers"]["target"] == "64 kg"
-    assert named_bots[-1] == _WEIGHT_ASK
+    assert named_bots[-1] == "What's your current weight in kg?"
+    assert "looks off" not in named_bots[-1].lower()
 
 
 def test_a_symptom_at_the_par_q_step_holds_the_day():
@@ -1738,6 +1742,7 @@ def test_all_no_phrases_need_the_message_to_stay_free_of_symptoms():
         "all no ...",
         "all no..",
         "all no!!",
+        "all no . .",
     )
     assert read_par_q("all no, parkrun saturdays 30 min")[0] == "all_no"
     for reply in impure:
@@ -1752,3 +1757,200 @@ def test_all_no_phrases_need_the_message_to_stay_free_of_symptoms():
             continue
         assert bots[-2].startswith("Still need a yes or no:"), reply
         assert bots[-1].startswith("Still need a yes or no:"), reply
+
+
+def test_a_buckled_acl_on_crutches_holds_and_a_later_chat_stays_held():
+    from onboarding import hold_is_active
+
+    state, bots = run_chat([
+        "hello",
+        "cut, male, 60 kg, 170 cm, torn acl, knee buckled, on crutches",
+        "25",
+        "general training, 3 days 45 min, dumbbells, beginner, none",
+        "all no",
+        "yes",
+    ])
+    assert state["confirmed"] is False
+    assert state["phase"] == "symptom"
+    assert hold_is_active()
+    assert "one yes confirms the plan" not in bots[-1].lower()
+    again, again_bots = run_chat(["hello", "yes"])
+    assert again["confirmed"] is False
+    assert again["phase"] == "symptom"
+    assert hold_is_active()
+    assert "one yes confirms the plan" not in "\n".join(again_bots).lower()
+    _drop_hold()
+
+
+def test_acute_wording_holds_for_every_named_injury():
+    from onboarding import hold_is_active
+
+    body = [
+        "hello",
+        "cut, male, 60 kg, 170 cm, no injuries",
+        "25",
+        "general training, 3 days 45 min, dumbbells, beginner, none",
+        "all no",
+    ]
+    marks = (
+        "ballooned",
+        "puffy",
+        "black and blue",
+        "buckled",
+        "gave way",
+        "limping",
+        "cant bend it",
+        "on crutches",
+        "in a cast",
+        "heard a crack",
+        "excruciating",
+        "agony",
+        "10/10 pain",
+        "still hurts",
+        "during my run",
+        "hours ago",
+        "2 days ago",
+        "earlier",
+        "this morning",
+    )
+    bases = ("sprained ankle", "torn acl", "pulled hamstring", "torn rotator cuff")
+    phrases = [f"{base}, {mark}" for base in bases for mark in marks]
+    phrases.extend((
+        "calf tear this morning",
+        "groin strain 10/10",
+        "heard a pop in my achilles",
+    ))
+    for phrase in phrases:
+        state, bots = run_chat(body + [phrase, "yes"])
+        assert state["confirmed"] is False, phrase
+        assert state["phase"] == "symptom", phrase
+        assert hold_is_active(), phrase
+        assert "one yes confirms the plan" not in bots[-1].lower(), phrase
+        again, again_bots = run_chat(["hello", "yes"])
+        assert again["confirmed"] is False, phrase
+        assert again["phase"] == "symptom", phrase
+        assert hold_is_active(), phrase
+        assert "one yes confirms the plan" not in "\n".join(again_bots).lower(), phrase
+        _drop_hold()
+
+
+def test_an_untimed_named_injury_asks_then_old_stores_and_recent_holds():
+    from onboarding import _INJURY_WHEN, hold_is_active
+
+    for phrase in ("torn acl", "bad knees", "slipped disc", "pulled hamstring", "torn rotator cuff"):
+        state, bots = run_chat([f"hold, male, 80 kg, 180 cm, {phrase}"])
+        assert state["answers"].get("injuries") in (None, ""), phrase
+        assert state["phase"] != "symptom", phrase
+        assert hold_is_active() is False, phrase
+        assert bots[-1] == _INJURY_WHEN, phrase
+        _drop_hold()
+    stored, stored_bots = run_chat([
+        "hold, male, 80 kg, 180 cm, torn acl",
+        "old",
+        "30",
+        "ok",
+        "all no",
+        "yes",
+    ])
+    assert stored["answers"]["injuries"] == "knee"
+    assert stored["confirmed"] is True
+    assert hold_is_active() is False
+    assert "I kept weight off your knee." in "\n".join(stored_bots)
+    healed, _healed_bots = run_chat([
+        "hold, male, 80 kg, 180 cm, slipped disc",
+        "healed",
+        "30",
+        "ok",
+        "all no",
+        "yes",
+    ])
+    assert healed["answers"]["injuries"] == "back"
+    assert healed["confirmed"] is True
+    _drop_hold()
+    for answer in ("recent", "still painful", "still hurts", "maybe", "yes"):
+        held, held_bots = run_chat([
+            "hold, male, 80 kg, 180 cm, torn acl",
+            answer,
+        ])
+        assert held["confirmed"] is False, answer
+        assert held["phase"] == "symptom", answer
+        assert held["answers"].get("injuries") in (None, ""), answer
+        assert hold_is_active(), answer
+        assert "one yes confirms the plan" not in held_bots[-1].lower(), answer
+        _drop_hold()
+
+
+def test_a_clearly_old_injury_at_confirm_stores_and_reproposes():
+    from onboarding import hold_is_active
+
+    state, bots = run_chat(list(_AGE_25) + ["torn acl 2 years ago, fine now"])
+    assert state["confirmed"] is False
+    assert state["phase"] == "confirm"
+    assert hold_is_active() is False
+    assert state["answers"]["injuries"] == "knee"
+    assert state["answers"]["age"] == "25"
+    assert bots[-1].startswith("Plan for age 25.")
+    assert "I kept weight off your knee." in bots[-1]
+    assert "one yes confirms the plan" in bots[-1].lower()
+    done, _bots = run_chat(list(_AGE_25) + ["torn acl 2 years ago, fine now", "yes"])
+    assert done["confirmed"] is True
+    assert done["answers"]["injuries"] == "knee"
+
+
+def test_joined_age_cues_and_times_at_confirm():
+    from onboarding import _AGE_ASK
+
+    cues = (
+        "17yo",
+        "15yrs",
+        "15y",
+        "age15",
+        "under eighteen",
+        "not an adult",
+        "highschooler",
+        "my mom said i can",
+        "my dad said i can",
+        "16 am i allowed",
+    )
+    for cue in cues:
+        state, bots = run_chat(list(_AGE_25) + [cue])
+        assert state["confirmed"] is False, cue
+        assert state["answers"].get("age") in (None, ""), cue
+        assert bots[-1] == _AGE_ASK, cue
+        assert "one yes confirms the plan" not in bots[-1].lower(), cue
+    clock, clock_bots = run_chat(list(_AGE_25) + ["6:30"])
+    assert clock["confirmed"] is False
+    assert clock["phase"] == "confirm"
+    assert clock["answers"]["age"] == "25"
+    assert clock_bots[-1].startswith("Plan for age 25.")
+    assert _AGE_ASK not in clock_bots[-1]
+    days, days_bots = run_chat(list(_AGE_25) + ["mon wed fri"])
+    assert days["confirmed"] is False
+    assert days["phase"] == "confirm"
+    assert days["answers"]["age"] == "25"
+    assert days_bots[-1].startswith("Plan for age 25.")
+    assert _AGE_ASK not in days_bots[-1]
+    at_six, at_bots = run_chat(list(_AGE_25) + ["at 6 am"])
+    assert at_six["answers"]["age"] == "25"
+    assert at_six["confirmed"] is False
+
+
+def test_a_later_weight_is_bounded_against_the_target_and_a_lift_is_not_body_weight():
+    from onboarding import _CURRENT_WEIGHT_ASK, _WEIGHT_ASK
+
+    asked, asked_bots = run_chat(["want 64 kg"])
+    assert asked["answers"]["target"] == "64 kg"
+    assert asked["answers"].get("weight") in (None, "")
+    assert asked_bots[-1] == _CURRENT_WEIGHT_ASK
+    heavy, heavy_bots = run_chat(["want 64 kg", "200 kg"])
+    assert heavy["answers"]["target"] == "64 kg"
+    assert heavy["answers"].get("weight") in (None, "")
+    assert heavy_bots[-1] == _WEIGHT_ASK
+    fit, _fit_bots = run_chat(["want 64 kg", "80 kg"])
+    assert fit["answers"]["target"] == "64 kg"
+    assert fit["answers"]["weight"] == "80 kg"
+    lifted, lifted_bots = run_chat(["bench 100 kg, want 64 kg"])
+    assert lifted["answers"].get("weight") in (None, "")
+    assert lifted["answers"]["target"] == "64 kg"
+    assert lifted_bots[-1] == _CURRENT_WEIGHT_ASK
+    assert "looks off" not in lifted_bots[-1].lower()

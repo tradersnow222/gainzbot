@@ -296,14 +296,23 @@ class RedFlagChecker:
     _POP_NOISE = re.compile(r"\b(?:balloon|song|soda)\b")
     _CHEST_INJURY = re.compile(r"\bchest\s+injur(?:y|ies|ed)\b")
     _BROKEN_RIB = re.compile(
-        r"\b(?:broken|broke|fractured)\s+(?:a\s+|my\s+|the\s+|some\s+)?ribs?\b"
+        r"\b(?:broken|broke|fractured|cracked|bruised)\s+"
+        r"(?:a\s+|my\s+|the\s+|some\s+)?ribs?\b"
     )
     _BLADDER = re.compile(
         r"\b(?:loss\s+of|lost|losing|lose)\s+"
         r"(?:(?:bladder|bowel)\s+or\s+)?(?:bladder|bowel)\s+control\b"
+        r"|\b(?:peed|wet)\s+myself\b"
+        r"|\bincontinence\b"
+        r"|\b(?:can't|cannot|can\s+not|cant)\s+control\s+(?:my\s+)?bladder\b"
     )
     _CANT_FEEL_LEGS = re.compile(
-        r"\b(?:can't|cannot|couldn't|can\s+not)\s+feel\s+(?:my\s+|the\s+)?legs?\b"
+        r"\b(?:can't|cannot|couldn't|can\s+not|cant)\s+feel\s+"
+        r"(?:my\s+|the\s+)?(?:legs?|feet|foot)\b"
+    )
+    _BOTH_LEGS = re.compile(
+        r"\btingling\s+both\s+legs\b"
+        r"|\bpain\s+shooting\s+down\s+both\s+legs\b"
     )
     _HURT = re.compile(r"\bhurt(?:s|ing)?\b")
     _BACK = re.compile(r"\bback\b")
@@ -498,7 +507,7 @@ class RedFlagChecker:
             flags.add("extreme_fatigue")
         if self._active(text, self._BLADDER):
             flags.add("cauda_equina")
-        if self._active(text, self._CANT_FEEL_LEGS):
+        if self._active(text, self._CANT_FEEL_LEGS) or self._active(text, self._BOTH_LEGS):
             flags.add("numbness")
         if self._active(text, self._CHEST_INJURY) or self._active(text, self._BROKEN_RIB):
             flags.add("chest_pain")
