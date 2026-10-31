@@ -6,7 +6,14 @@ from pathlib import Path
 
 from plan_builder import PlanBuilder, week_to_confirm
 from plan_check import PlanValidator
-from readiness_screen import ReadinessScreen
+from readiness_screen import (
+    ClearanceLevel,
+    ReadinessScreen,
+    ScreeningResult,
+    passing_readiness,
+    screening_seal_matches,
+    subject_hash,
+)
 from record_confirmation import ConfirmationRecorder
 from red_flag_check import RedFlagChecker, is_passing_check_in
 
@@ -269,10 +276,24 @@ def test_a_hand_built_plan_with_no_user_is_not_saved(tmp_path):
     assert "missing baseline" in refused["message"].lower()
     screen = _adult_screen()
     assert screen.blocked is False
-    allowed = builder.save(
+    assert screening_seal_matches(screen)
+    refused_tie = builder.save(
         plan, yes, path, sessions, check_in_result=check_in, readiness_result=screen,
     )
-    assert allowed["saved"] is True
+    assert refused_tie["saved"] is False
+    assert not path.exists()
+    assert "tied" in refused_tie["message"].lower()
+    nameless = {
+        "user": {"medical_clearance": False},
+        "training": plan["training"],
+    }
+    nameless_yes = recorded(week_to_confirm(nameless, sessions))
+    still_open = builder.save(
+        nameless, nameless_yes, path, sessions, check_in_result=check_in, readiness_result=screen,
+    )
+    assert still_open["saved"] is False
+    assert not path.exists()
+    assert "tied" in still_open["message"].lower()
 
 
 def test_save_refuses_a_week_at_load_0(tmp_path):
@@ -280,7 +301,10 @@ def test_save_refuses_a_week_at_load_0(tmp_path):
     check_in = passing_check_in()
     plan = {
         "user": {"sex": "M", "weight_kg": 80, "age": 30, "height_cm": 180},
-        "par_q": clear_par_q(),
+        "par_q": {
+            **clear_par_q(),
+            "source": subject_hash({"sex": "M", "weight_kg": 80, "age": 30, "height_cm": 180}),
+        },
         "training": {
             "previous_load": 0,
             "current_load": 0,
@@ -404,10 +428,101 @@ def test_a_cleared_par_q_yes_is_allowed(tmp_path):
     assert not wrong_path.exists()
 
 
+def test_par_q_records_its_source_and_save_refuses_a_mismatch(tmp_path):
+    builder = PlanBuilder()
+    check_in = passing_check_in()
+    built = builder.propose(profile(), check_in)
+    assert built["ok"] is True
+    person = built["plan"]["user"]
+    assert built["plan"]["par_q"]["source"] == subject_hash(person)
+    assert built["plan"]["par_q"]["chest_pain_at_rest"] is False
+    path = tmp_path / "week.json"
+    yes = recorded(week_to_confirm(built["plan"], built["sessions"]))
+    assert _save(builder, built, yes, path, check_in=check_in)["saved"] is True
+    stolen = json.loads(json.dumps(built["plan"]))
+    stolen["user"]["age"] = 41
+    stolen_yes = recorded(week_to_confirm(stolen, built["sessions"]))
+    stolen_path = tmp_path / "stolen.json"
+    refused = builder.save(
+        stolen, stolen_yes, stolen_path, built["sessions"], check_in_result=check_in,
+    )
+    assert refused["saved"] is False
+    assert not stolen_path.exists()
+    assert "source" in refused["message"].lower()
+    missing = json.loads(json.dumps(built["plan"]))
+    del missing["par_q"]["source"]
+    missing_yes = recorded(week_to_confirm(missing, built["sessions"]))
+    missing_path = tmp_path / "missing.json"
+    no_source = builder.save(
+        missing, missing_yes, missing_path, built["sessions"], check_in_result=check_in,
+    )
+    assert no_source["saved"] is False
+    assert not missing_path.exists()
+    assert "source" in no_source["message"].lower()
+
+
+def test_a_readiness_result_built_in_code_does_not_pass(tmp_path):
+    user = {"sex": "M", "weight_kg": 80, "age": 30, "height_cm": 180}
+    forged = ScreeningResult(
+        ClearanceLevel.CLEAR,
+        ["No risk factors identified."],
+        False,
+        ["Safe to proceed with program design."],
+        subject_hash(user),
+    )
+    assert forged.issuer_seal == ""
+    assert passing_readiness(forged) is False
+    forged.issuer_seal = "deadbeef"
+    assert screening_seal_matches(forged) is False
+    skipped = profile()
+    del skipped["par_q"]
+    check_in = passing_check_in()
+    refused = PlanBuilder().propose(skipped, check_in, readiness_result=forged)
+    assert refused["ok"] is False
+    assert refused["plan"] is None
+    assert "issued" in refused["message"].lower()
+    real = screen_for(user)
+    assert passing_readiness(real) is True
+    real.blocked = True
+    assert screening_seal_matches(real) is False
+    real.blocked = False
+    assert passing_readiness(real) is True
+    rebuilt = ScreeningResult(
+        real.clearance,
+        list(real.reasons),
+        real.blocked,
+        list(real.recommendations),
+        real.subject_hash,
+    )
+    assert passing_readiness(rebuilt) is False
+    path = tmp_path / "forged.json"
+    plan = {
+        "user": user,
+        "training": {
+            "previous_load": 100,
+            "current_load": 100,
+            "weeks_since_deload": 0,
+            "structured_hours": 0.75,
+            "sport_hours": 0,
+        },
+    }
+    sessions = [{"date": "2026-10-26", "load": 100, "minutes": 45}]
+    yes = recorded(week_to_confirm(plan, sessions))
+    saved = PlanBuilder().save(
+        plan, yes, path, sessions, check_in_result=check_in, readiness_result=forged,
+    )
+    assert saved["saved"] is False
+    assert not path.exists()
+
+
 def test_the_builder_does_not_use_the_log_store_and_the_guide_has_no_em_dash():
     source = (ROOT / "plan_builder.py").read_text(encoding="utf-8")
     guide = (ROOT / "template" / "first-plan.md").read_text(encoding="utf-8")
     assert "A skipped or partial PAR-Q runs readiness_screen before propose()." in guide
+    assert "par_q` records `source` as that person's subject_hash" in guide
+    assert "save` refuses a `par_q` whose source does not match the user" in guide
+    assert "no body details cannot be tied to a readiness screen" in guide
+    assert "readiness result built in code does not pass" in guide
     assert "log_store" not in source
     assert "plan_check" in guide
     assert "record_confirmation" in guide

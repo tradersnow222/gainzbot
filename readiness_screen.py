@@ -11,6 +11,8 @@ from dataclasses import dataclass
 from typing import Dict, List, Tuple
 from enum import Enum
 import difflib
+import hashlib
+import hmac
 import json
 import re
 import sys
@@ -35,6 +37,7 @@ class ScreeningResult:
     blocked: bool
     recommendations: List[str]
     subject_hash: str = ""
+    issuer_seal: str = ""
 
     def to_dict(self) -> Dict:
         return {
@@ -66,6 +69,50 @@ def subject_hash(source) -> str:
                 continue
             payload[key] = int(number) if number == int(number) else number
     return hash_plan(payload)
+
+
+_READINESS_SECRET = b"gainzbot-readiness-screen-v1"
+
+
+def _screening_payload(result: ScreeningResult) -> str:
+    clearance = result.clearance.value if isinstance(result.clearance, ClearanceLevel) else result.clearance
+    body = {
+        "blocked": result.blocked,
+        "clearance": clearance,
+        "reasons": list(result.reasons or []),
+        "recommendations": list(result.recommendations or []),
+        "subject_hash": result.subject_hash or "",
+    }
+    return json.dumps(body, sort_keys=True, separators=(",", ":"), ensure_ascii=True)
+
+
+def _screening_seal(result: ScreeningResult) -> str:
+    return hmac.new(_READINESS_SECRET, _screening_payload(result).encode("utf-8"), hashlib.sha256).hexdigest()
+
+
+def screening_seal_matches(result) -> bool:
+    """True only when readiness_screen set the marker on this exact result."""
+    if not isinstance(result, ScreeningResult):
+        return False
+    seal = result.issuer_seal if isinstance(result.issuer_seal, str) else ""
+    if not seal:
+        return False
+    expected = _screening_seal(result)
+    if len(seal) != len(expected):
+        return False
+    return hmac.compare_digest(seal, expected)
+
+
+def passing_readiness(result) -> bool:
+    """True only for an issued clear or caution result that is not blocked."""
+    if not screening_seal_matches(result):
+        return False
+    if result.blocked is not False:
+        return False
+    clearance = result.clearance.value if hasattr(result.clearance, "value") else result.clearance
+    if not isinstance(clearance, str):
+        return False
+    return clearance.strip().lower() in {"clear", "caution"}
 
 
 class ReadinessScreen:
@@ -153,7 +200,7 @@ class ReadinessScreen:
                 age_raw, "age", allow_zero=False, allow_negative=False
             )
         except (ValidationError, ValueError, TypeError) as e:
-            return ScreeningResult(
+            return self._result(
                 clearance=ClearanceLevel.NEEDS_DOCTOR_CLEARANCE,
                 reasons=[f"Invalid age: {e}"],
                 blocked=True,
@@ -179,7 +226,7 @@ class ReadinessScreen:
             recommendations.append(
                 f"Users must be at least {self.MIN_AGE} years old."
             )
-            return ScreeningResult(
+            return self._result(
                 clearance=ClearanceLevel.NEEDS_DOCTOR_CLEARANCE,
                 reasons=reasons,
                 blocked=True,
@@ -193,7 +240,7 @@ class ReadinessScreen:
             recommendations.append(
                 f"Parental or guardian consent required for users under {self.ADULT_AGE}."
             )
-            return ScreeningResult(
+            return self._result(
                 clearance=ClearanceLevel.NEEDS_DOCTOR_CLEARANCE,
                 reasons=reasons,
                 blocked=True,
@@ -207,14 +254,14 @@ class ReadinessScreen:
             recommendations.append(
                 "Youth training program with appropriate modifications required."
             )
-            return ScreeningResult(
+            return self._result(
                 clearance=ClearanceLevel.CAUTION,
                 reasons=reasons,
                 blocked=False,
                 recommendations=recommendations
             )
         
-        return ScreeningResult(
+        return self._result(
             clearance=ClearanceLevel.CLEAR,
             reasons=[],
             blocked=False,
@@ -262,8 +309,14 @@ class ReadinessScreen:
             return f"Unknown key: '{key}' (did you mean '{suggestion[0]}'?)"
         return f"Unknown key: '{key}'"
 
+    def _result(self, *args, **kwargs) -> ScreeningResult:
+        kwargs.pop("issuer_seal", None)
+        result = ScreeningResult(*args, **kwargs)
+        result.issuer_seal = _screening_seal(result)
+        return result
+
     def _blocked(self, reasons: List[str], recommendations: List[str]) -> ScreeningResult:
-        return ScreeningResult(
+        return self._result(
             clearance=ClearanceLevel.NEEDS_DOCTOR_CLEARANCE,
             reasons=reasons,
             blocked=True,
@@ -302,7 +355,7 @@ class ReadinessScreen:
         reasons = []
         recommendations = []
         if red_flags and has_clearance and not (unknown or missing or parse_errors):
-            return ScreeningResult(
+            return self._result(
                 clearance=ClearanceLevel.CAUTION,
                 reasons=[f"Red flag responses with clearance: {', '.join(red_flags)}"],
                 blocked=False,
@@ -329,7 +382,7 @@ class ReadinessScreen:
         if reasons:
             return self._blocked(reasons, recommendations)
 
-        return ScreeningResult(
+        return self._result(
             clearance=ClearanceLevel.CLEAR,
             reasons=[],
             blocked=False,
@@ -347,7 +400,7 @@ class ReadinessScreen:
                 "Physician clearance required for pregnant individuals. "
                 "Exercise during pregnancy requires medical supervision."
             )
-            return ScreeningResult(
+            return self._result(
                 clearance=ClearanceLevel.NEEDS_DOCTOR_CLEARANCE,
                 reasons=reasons,
                 blocked=True,
@@ -360,14 +413,14 @@ class ReadinessScreen:
                 "Modified programming required for pregnancy. "
                 "Avoid supine exercises after first trimester, monitor intensity carefully."
             )
-            return ScreeningResult(
+            return self._result(
                 clearance=ClearanceLevel.CAUTION,
                 reasons=reasons,
                 blocked=False,
                 recommendations=recommendations
             )
         
-        return ScreeningResult(
+        return self._result(
             clearance=ClearanceLevel.CLEAR,
             reasons=[],
             blocked=False,
@@ -384,7 +437,7 @@ class ReadinessScreen:
         recommendations = []
         
         if not conditions:
-            return ScreeningResult(
+            return self._result(
                 clearance=ClearanceLevel.CLEAR,
                 reasons=[],
                 blocked=False,
@@ -412,7 +465,7 @@ class ReadinessScreen:
             recommendations.append(
                 "Please provide more details about these conditions for proper screening."
             )
-            return ScreeningResult(
+            return self._result(
                 clearance=ClearanceLevel.NEEDS_DOCTOR_CLEARANCE,
                 reasons=reasons,
                 blocked=True,
@@ -420,7 +473,7 @@ class ReadinessScreen:
             )
         
         if not normalized_conditions:
-            return ScreeningResult(
+            return self._result(
                 clearance=ClearanceLevel.CLEAR,
                 reasons=[],
                 blocked=False,
@@ -436,7 +489,7 @@ class ReadinessScreen:
             recommendations.append(
                 "Physician clearance required before beginning exercise with these conditions."
             )
-            return ScreeningResult(
+            return self._result(
                 clearance=ClearanceLevel.NEEDS_DOCTOR_CLEARANCE,
                 reasons=reasons,
                 blocked=True,
@@ -449,7 +502,7 @@ class ReadinessScreen:
         recommendations.append(
             "Modified programming may be required. Monitor symptoms closely."
         )
-        return ScreeningResult(
+        return self._result(
             clearance=ClearanceLevel.CAUTION,
             reasons=reasons,
             blocked=False,
@@ -546,7 +599,7 @@ class ReadinessScreen:
             all_reasons.append("No risk factors identified.")
             all_recommendations.append("Safe to proceed with program design.")
 
-        return ScreeningResult(
+        return self._result(
             clearance=highest_level,
             reasons=all_reasons,
             blocked=blocked,

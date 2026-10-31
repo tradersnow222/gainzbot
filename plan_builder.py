@@ -14,7 +14,12 @@ import os
 
 from guardrails.validate import InputValidator, ValidationError
 from plan_check import PlanValidator
-from readiness_screen import ReadinessScreen, ScreeningResult, subject_hash
+from readiness_screen import (
+    ReadinessScreen,
+    passing_readiness,
+    screening_seal_matches,
+    subject_hash,
+)
 from record_confirmation import ConfirmationRecord, ConfirmationRecorder
 
 
@@ -107,7 +112,7 @@ class PlanBuilder:
         if user:
             plan["user"] = user
         if answers is not None:
-            plan["par_q"] = answers
+            plan["par_q"] = self._with_source(answers, user)
         checked = PlanValidator().validate_plan(
             plan,
             readiness_result=readiness_result,
@@ -143,6 +148,9 @@ class PlanBuilder:
         age_gate, _answers = self._authorize(plan.get("user"), plan, readiness_result, self._saved_no)
         if age_gate is not None:
             return age_gate
+        source_error = self._par_q_source_error(plan, self._saved_no)
+        if source_error is not None:
+            return source_error
         if self._positive_load(training.get("previous_load")) is None or self._positive_load(training.get("current_load")) is None:
             return self._saved_no("A baseline load is required.")
         if any(self._positive_load(row.get("load")) is None for row in sessions):
@@ -310,6 +318,8 @@ class PlanBuilder:
 
     def _authorize(self, user, par_source, readiness_result, no):
         """Age or a passing screen, and a complete PAR-Q or that same screen."""
+        if readiness_result is not None and not screening_seal_matches(readiness_result):
+            return no("This readiness screen was not issued by readiness_screen."), None
         age = None
         if isinstance(user, dict) and user.get("age") not in (None, ""):
             try:
@@ -343,13 +353,33 @@ class PlanBuilder:
                 return mismatch, None
         return None, answers
 
-    def _different_person(self, result, user, no):
+    def _has_body_details(self, user):
         if not isinstance(user, dict):
-            return None
-        if not any(user.get(key) not in (None, "") for key in ("sex", "weight_kg", "age", "height_cm")):
-            return None
+            return False
+        return any(user.get(key) not in (None, "") for key in ("sex", "weight_kg", "age", "height_cm"))
+
+    def _different_person(self, result, user, no):
+        if not self._has_body_details(user):
+            return no("This readiness screen cannot be tied to a person.")
         if getattr(result, "subject_hash", "") != subject_hash(user):
             return no("This readiness screen is for a different person.")
+        return None
+
+    def _with_source(self, answers, user):
+        stamped = dict(answers)
+        stamped["source"] = subject_hash(user if isinstance(user, dict) else {})
+        return stamped
+
+    def _par_q_source_error(self, plan, no):
+        if not isinstance(plan, dict) or "par_q" not in plan:
+            return None
+        raw = plan.get("par_q")
+        user = plan.get("user")
+        if not isinstance(raw, dict) or not self._has_body_details(user):
+            return no("This PAR-Q cannot be tied to a person.")
+        source = raw.get("source")
+        if not isinstance(source, str) or source != subject_hash(user):
+            return no("This PAR-Q source does not match the user.")
         return None
 
     def _par_q_answers(self, source):
@@ -372,6 +402,8 @@ class PlanBuilder:
             return "missing", None
         parsed = {}
         for key, value in raw.items():
+            if key == "source":
+                continue
             if key not in flags:
                 return "partial", None
             if isinstance(value, bool):
@@ -397,14 +429,7 @@ class PlanBuilder:
         return number
 
     def _readiness_passes(self, result) -> bool:
-        if not isinstance(result, ScreeningResult):
-            return False
-        if result.blocked is not False:
-            return False
-        clearance = result.clearance
-        if hasattr(clearance, "value"):
-            clearance = clearance.value
-        return isinstance(clearance, str) and clearance.strip().lower() in {"clear", "caution"}
+        return passing_readiness(result)
 
     def _no(self, message):
         return {
