@@ -1020,6 +1020,10 @@ class TestNewStemsAndIdioms:
         mixed = RedFlagChecker().scan_text("finished the set \U0001F915")
         assert mixed.pause_plan
         assert "head_injury" in mixed.flags_detected
+        fever = RedFlagChecker().scan_text("\U0001F912")
+        dizzy = RedFlagChecker().scan_text("\U0001F635")
+        assert fever.pause_plan and "heat_illness" in fever.flags_detected
+        assert dizzy.pause_plan and "fainting" in dizzy.flags_detected
 
 
 if __name__ == "__main__":

@@ -234,6 +234,17 @@ class TestSuggestion:
         stepped = log.suggest_next("bench press", history(100), AS_OF, rep_top=10)
         assert stepped["suggestion"]["exercise"] == "benchpress"
         assert stepped["suggestion"]["weight"] == 72.5
+        for name in ("bench presses", "lunges", "lunge", "pullups", "pull-ups", "pull ups"):
+            saved = log.log_set(name, 70, 10, "2026-11-09")
+            if "bench" in name:
+                assert saved["entry"]["exercise"] == "benchpress", name
+            elif "lunge" in name:
+                assert saved["entry"]["exercise"] == "lunge", name
+            else:
+                assert saved["entry"]["exercise"] == "pullup", name
+        same = log.suggest_next("pull-ups", history(100), AS_OF, rep_top=10)
+        assert same["suggestion"]["exercise"] == "pullup"
+        assert same["suggestion"]["weight"] == 72.5
 
     def test_one_set_short_of_the_top_keeps_the_weight(self):
         log = SetLogger()

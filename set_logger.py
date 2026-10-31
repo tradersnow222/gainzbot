@@ -54,6 +54,15 @@ def _parse_day(value) -> Optional[date]:
     return None
 
 
+def _singular(name):
+    """One key for a plural. benchpresses, lunges, and pullups collapse."""
+    if len(name) > 4 and name.endswith("es") and name[:-2].endswith(("s", "x", "z", "ch", "sh")):
+        return name[:-2]
+    if len(name) > 3 and name.endswith("s") and not name.endswith("ss"):
+        return name[:-1]
+    return name
+
+
 def _whole(value: float):
     if abs(value - round(value)) < 1e-9:
         return int(round(value))
@@ -377,7 +386,8 @@ class SetLogger:
 
         NFKC, no zero-width characters, case and accents folded.
         Cyrillic and Greek lookalikes become Latin. Hyphens and spaces
-        are removed, so bench-press, benchpress, and bench press match.
+        are removed, and a trailing plural is singular, so bench presses,
+        lunges, and pull-ups share a key with bench press, lunge, and pullup.
         """
         if not isinstance(exercise, str):
             return None
@@ -387,6 +397,7 @@ class SetLogger:
         text = "".join(char for char in text if unicodedata.category(char) != "Mn")
         text = text.casefold().translate(_LOOKALIKES).translate(_KEY_GAP)
         text = "".join(text.split())
+        text = _singular(text)
         return text or None
 
     def _no(self, message: str) -> Dict:
