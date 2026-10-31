@@ -36,7 +36,7 @@ Safety bounds: 1,500/1,200 kcal floors, 10% weekly load cap, 200 kcal max step, 
 - Readiness screen in `readiness_screen.py`
 - Plan bounds in `plan_check.py`
 - Clear-yes confirmation in `record_confirmation.py`
-- Chart data in `dashboard.py`. The builder only reads logs. A calorie target is left off when age or sex is missing, when the user is under 18, or when the target is below the floor (1,500 for men, 1,200 for women). Under 18, no protein target is set. A protein target outside 1.6 to 2.2 g/kg is left off too. One log is not enough: the message stays "not enough data yet" until there are at least two. Windows are 7, 28, 90, and 365 days.
+- Chart data in `dashboard.py`. The builder only reads logs. A calorie target is left off when age or sex is missing, when the user is under 18, or when the target is below the floor (1,500 for men, 1,200 for women). When age is missing, or the user is under 18, no protein target is set. A protein target outside 1.6 to 2.2 g/kg is left off too. One log is not enough: the message stays "not enough data yet" until there are at least two. Windows are 7, 28, 90, and 365 days.
 
 ## Tests
 
