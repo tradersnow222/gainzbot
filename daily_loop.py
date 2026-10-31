@@ -165,8 +165,37 @@ def parse_evening(reply):
     return {"did_it": did_it, "felt": felt, "ate": ate}
 
 
+# Plan fields on the profile from onboarding._profile. Readiness does not screen them.
+_PLAN_PROFILE_KEYS = {
+    "days",
+    "minutes",
+    "equipment",
+    "experience",
+    "sport",
+    "injuries",
+    "goal",
+}
+
+
+def _readiness_intake(profile):
+    """Readiness fields from a readiness intake or from onboarding._profile."""
+    if not isinstance(profile, dict):
+        return profile
+    return {
+        key: value
+        for key, value in profile.items()
+        if key not in _PLAN_PROFILE_KEYS
+    }
+
+
 class DailyLoop:
-    """Morning, workout, evening, and a weekly review inside the load cap."""
+    """Morning, workout, evening, and a weekly review inside the load cap.
+
+    profile can be a readiness intake, or the profile onboarding._profile
+    returns. Plan keys on that profile (days, minutes, equipment, experience,
+    sport, injuries, goal) are accepted. Session length and the food goal
+    still come from the minutes and goal arguments.
+    """
 
     def __init__(self, load=80, minutes=45, calories=None, confirmed_at=None, goal="hold", signals=None, outreach=None, history=None, profile=None):
         self.load = load
@@ -367,9 +396,12 @@ class DailyLoop:
         if not isinstance(self.profile, dict):
             self.phase[day] = "paused"
             return "Readiness has to pass before training."
-        screen = ReadinessScreen().screen_intake(self.profile)
+        screen = ReadinessScreen().screen_intake(_readiness_intake(self.profile))
         if not passing_readiness(screen):
             self.phase[day] = "paused"
+            for reason in screen.reasons or []:
+                if isinstance(reason, str) and reason.startswith("Unknown key:"):
+                    return reason
             return "Readiness has to pass before training."
         return None
 
