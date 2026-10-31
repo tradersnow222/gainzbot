@@ -111,7 +111,7 @@ class MorningCheckIn:
             "needs_confirmation": True,
         }
         if log_path is not None:
-            saved = self._save_check_in(log_path, entry, as_of, parsed, day_name, load)
+            saved = self._save_check_in(log_path, entry, as_of, parsed, day_name)
             if not saved["ok"]:
                 return self._bad(saved["message"])
         return {
@@ -122,7 +122,7 @@ class MorningCheckIn:
             "message": f"Today is a {day_name} day. Nothing is applied until it is confirmed.",
         }
 
-    def _save_check_in(self, log_path, entry, as_of, parsed, day_name, load) -> Dict:
+    def _save_check_in(self, log_path, entry, as_of, parsed, day_name) -> Dict:
         when = None
         if isinstance(entry, dict) and entry.get("date") is not None:
             when = _parse_day(entry.get("date"))
@@ -140,8 +140,6 @@ class MorningCheckIn:
             "stress": parsed["stress"],
             "day": day_name,
         }
-        if load is not None:
-            row["load"] = load
         return LogStore(log_path).append("checkins", row)
 
     def _scaled_load(self, day_name, confirmed_changes, as_of):

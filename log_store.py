@@ -28,6 +28,45 @@ def _blank():
     return {kind: [] for kind in KINDS}
 
 
+def _trusted_change(row, changes):
+    """History only when this row is a record that covers the stored proposal."""
+    proposal = row.get("proposal")
+    if not isinstance(proposal, dict):
+        return None
+    record_id = row.get("record_id")
+    plan_hash = row.get("plan_hash")
+    quoted = row.get("quoted_words")
+    speaker = row.get("speaker")
+    if not all(isinstance(value, str) and value for value in (record_id, plan_hash, quoted, speaker)):
+        return None
+    from record_confirmation import ConfirmationRecord, ConfirmationRecorder
+
+    record = ConfirmationRecord(
+        confirmed=True,
+        plan_hash=plan_hash,
+        quoted_words=quoted,
+        speaker=speaker,
+        message=row.get("message") if isinstance(row.get("message"), str) else "",
+        errors=row.get("errors") if isinstance(row.get("errors"), list) else [],
+        record_id=record_id,
+    )
+    if not ConfirmationRecorder().covers(record, proposal):
+        return None
+    proposal_changes = proposal.get("changes")
+    if not isinstance(proposal_changes, dict):
+        return None
+    trusted = {}
+    for key in ("load", "calories"):
+        if key not in changes:
+            continue
+        if changes[key] != proposal_changes.get(key):
+            return None
+        trusted[key] = changes[key]
+    if not trusted:
+        return None
+    return {"date": row.get("date"), "confirmed": True, "changes": trusted}
+
+
 def _ready(value, depth=0):
     """JSON values only. Dates become strings. Anything else is refused."""
     if depth > 8:
@@ -145,9 +184,9 @@ class LogStore:
     def as_trend(self):
         """Rows trend_review.py already knows how to read.
 
-        Meal confirmations are not load or calorie history. A confirmation
-        that claims a load or calorie change, and is not a real history row,
-        fails the whole read.
+        Meal confirmations are not load or calorie history. A raw confirmed
+        dict does not count. Only a record that covers the stored proposal
+        is history. A confirmation that is not a real object still fails the read.
         """
         if self.error:
             return None
@@ -162,7 +201,10 @@ class LogStore:
                 return None
             if any(key not in ("load", "calories") for key in changes):
                 return None
-            history.append(row)
+            trusted = _trusted_change(row, changes)
+            if trusted is None:
+                continue
+            history.append(trusted)
         training = []
         for row in self.data["checkins"] + self.data["sessions"]:
             if isinstance(row, dict) and "load" in row:
