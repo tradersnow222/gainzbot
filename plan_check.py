@@ -388,7 +388,7 @@ class PlanValidator:
         """Check for unknown keys in the plan."""
         errors = []
         
-        known_top_level = {"user", "nutrition", "goals", "training"}
+        known_top_level = {"user", "nutrition", "goals", "training", "par_q"}
         known_user = {"sex", "weight_kg", "age", "height_cm", "medical_clearance"}
         known_nutrition = {"calories", "protein_g", "previous_calories"}
         known_goals = {"weight_loss_kg_per_week"}
@@ -417,6 +417,25 @@ class PlanValidator:
             for key in plan["training"].keys():
                 if key not in known_training:
                     errors.append(f"Unknown training key: '{key}' (did you mean 'sport_hours'?)")
+
+        if "par_q" in plan:
+            from readiness_screen import ReadinessScreen
+
+            raw = plan["par_q"]
+            if not isinstance(raw, dict):
+                errors.append("par_q must be an object.")
+            else:
+                known_flags = set(ReadinessScreen.PAR_Q_RED_FLAGS)
+                for key, value in raw.items():
+                    if key not in known_flags:
+                        errors.append(f"Unknown PAR-Q key: '{key}'")
+                        continue
+                    if isinstance(value, bool):
+                        continue
+                    try:
+                        InputValidator.parse_boolean(value, key)
+                    except ValidationError as exc:
+                        errors.append(str(exc))
         
         return errors
 

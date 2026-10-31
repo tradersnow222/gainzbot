@@ -15,13 +15,9 @@ import pytest
 
 ROOT = Path(__file__).resolve().parent
 
-# Named by the prompt or template.json, and not on main yet.
-# They arrive with the open plan_builder pull request.
+# Named by the prompt or template.json, and not in the repo yet.
 # strict xfail: delete a name once that file is in the repo so the check is required.
-PENDING_OPEN_PR_FILES = (
-    "plan_builder.py",
-    "template/first-plan.md",
-)
+PENDING_OPEN_PR_FILES = ()
 
 FILE_REF = re.compile(r"(?<![\w./-])((?:[\w.-]+/)*[\w.-]+\.(?:md|py))\b")
 
