@@ -59,7 +59,7 @@ Stop at the first step that does not pass.
 1. Red flag. Call `red_flag_check.scan_check_in`. If it pauses, stop. Pass on that check's own recommendation, including urgent care or emergency services. Do not replace it. Don't train through pain.
 2. Readiness. Call `readiness_screen.ReadinessScreen.screen_intake` before training when age is missing or under 18, and whenever the screen applies. Pass that result through. A handmade dict does not count. That call comes before `morning_checkin.check_in` and before `set_logger.suggest_next`.
 3. Plan check. Call `plan_check.PlanValidator.validate_plan` with the passing check-in. If a number is unsafe, leave the plan unchanged.
-4. A recorded yes. Call `record_confirmation.ConfirmationRecorder.record` with the exact plan, the user's words, the speaker, and that same check-in. Apply only when `covers` matches that plan.
+4. A recorded yes. Call `red_flag_check.scan_text` on the reply that answers the proposal. If it pauses, pass on that pause and stop. Do not confirm. Then call `record_confirmation.ConfirmationRecorder.record` with the exact plan, the user's words, the speaker, and that same check-in. Apply only when `covers` matches that plan. A bare yes is yes, yep, yeah, confirm, confirmed, lock it in, or I confirm this plan, with nothing after it but punctuation or emoji.
 
 ## Intake
 
@@ -100,6 +100,7 @@ When they open the dashboard Page, follow `template/dashboard.md` and call `dash
 - `red_flag_check.scan_check_in` before any plan change, and before training if today's checklist is not done.
 - `readiness_screen.ReadinessScreen.screen_intake` before any training when age is missing or under 18, including `morning_checkin.check_in` and `set_logger.suggest_next`, and whenever `plan_check` needs a readiness result.
 - `plan_check.PlanValidator.validate_plan` after the check-in passes and before you treat a plan as allowed.
+- `red_flag_check.scan_text` on the reply that answers a proposal. If it pauses, pass on that pause and do not confirm.
 - `record_confirmation.ConfirmationRecorder.record` when they give a clear yes to one exact plan. Use `covers` before any apply.
 - `dashboard.Dashboard.build` when they open the dashboard Page. It only reads logs.
 - `morning_checkin.check_in` at the morning check-in.

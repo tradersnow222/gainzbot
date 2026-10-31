@@ -4,7 +4,7 @@
 import json
 from pathlib import Path
 
-from plan_builder import PlanBuilder, week_to_confirm
+from plan_builder import PlanBuilder, session_volume, week_to_confirm
 from record_confirmation import hash_plan
 from plan_check import PlanValidator
 from readiness_screen import (
@@ -688,6 +688,132 @@ def test_a_failed_week_write_rolls_the_log_back(tmp_path, monkeypatch):
     kept = LogStore(log_path)
     assert kept.data["confirmations"] == []
     assert kept.data["meals"][0]["calories"] == 500
+
+
+def test_the_log_is_restored_when_the_rewrite_also_fails(tmp_path, monkeypatch):
+    """A failed week write must not keep the new rows when rewriting the log also fails."""
+    import os
+
+    import plan_builder
+    from log_store import LogStore
+
+    log_path = tmp_path / "log.json"
+    LogStore(log_path).append("meals", {"date": "2026-10-30", "calories": 500, "protein_g": 30})
+    before = log_path.read_bytes()
+    real_json = plan_builder._write_json
+    real_bytes = plan_builder._write_bytes
+    log_writes = {"n": 0}
+
+    def boom_json(path, payload):
+        if os.path.basename(path) == "week.json":
+            raise OSError("full")
+        real_json(path, payload)
+
+    def boom_bytes(path, raw):
+        if os.path.basename(path) == "log.json":
+            log_writes["n"] += 1
+            if log_writes["n"] > 1:
+                raise OSError("restore write failed")
+        real_bytes(path, raw)
+
+    monkeypatch.setattr(plan_builder, "_write_json", boom_json)
+    monkeypatch.setattr(plan_builder, "_write_bytes", boom_bytes)
+    builder = PlanBuilder()
+    check_in = passing_check_in()
+    built = builder.propose(profile(), check_in)
+    path = tmp_path / "week.json"
+    yes = recorded(week_to_confirm(built["plan"], built["sessions"]))
+    refused = _save(builder, built, yes, path, check_in=check_in)
+    assert refused["saved"] is False
+    assert not path.exists()
+    assert log_path.read_bytes() == before
+    assert LogStore(log_path).data["confirmations"] == []
+    assert LogStore(log_path).data["meals"][0]["calories"] == 500
+    assert not (tmp_path / "log.json.bak").exists()
+
+
+def test_advanced_work_fits_in_the_named_minutes():
+    built = PlanBuilder().propose(
+        profile(experience="advanced", minutes=61, equipment="full gym", sport="lifting"),
+        passing_check_in(),
+    )
+    assert built["ok"] is True, built["message"]
+    for row in built["sessions"]:
+        assert row["minutes"] == 61
+        assert session_volume(row["exercises"]) <= 61
+        assert len(row["exercises"]) <= 8
+        assert all(item["sets"] <= 6 for item in row["exercises"])
+
+
+def test_oversized_exercises_are_not_saved(tmp_path):
+    builder = PlanBuilder()
+    check_in = passing_check_in()
+    built = builder.propose(profile(), check_in)
+    monster = []
+    for _index in range(10):
+        monster.append({
+            "name": "Squat",
+            "sets": 40,
+            "reps": 50,
+            "rest": "30 sec",
+            "effort": "to failure",
+            "load_kg": 400,
+        })
+    sessions = json.loads(json.dumps(built["sessions"]))
+    sessions[0]["exercises"] = monster
+    path = tmp_path / "week.json"
+    yes = recorded(week_to_confirm(built["plan"], sessions))
+    refused = _save(builder, built, yes, path, sessions=sessions, check_in=check_in)
+    assert refused["saved"] is False
+    assert not path.exists()
+    assert not (tmp_path / "log.json").exists()
+    heavy = json.loads(json.dumps(built["sessions"]))
+    heavy[0]["exercises"] = [dict(item, load_kg=400) for item in built["sessions"][0]["exercises"]]
+    heavy_yes = recorded(week_to_confirm(built["plan"], heavy))
+    assert _save(builder, built, heavy_yes, path, sessions=heavy, check_in=check_in)["saved"] is False
+    assert not path.exists()
+
+
+def test_the_same_yes_does_not_double_and_an_older_yes_does_not_overwrite(tmp_path):
+    from log_store import LogStore
+
+    builder = PlanBuilder()
+    check_in = passing_check_in()
+    first = builder.propose(profile(goal="cut"), check_in)
+    path = tmp_path / "week.json"
+    yes = recorded(first["confirm"])
+    assert _save(builder, first, yes, path, check_in=check_in)["saved"] is True
+    log_path = tmp_path / "log.json"
+    rows = len(LogStore(log_path).data["confirmations"])
+    assert rows == 3
+    saved_log = LogStore(log_path)
+    assert saved_log.data["sessions"] == []
+    assert saved_log.as_trend()["sessions"] == []
+    assert saved_log.as_trend()["training"] == []
+    snapshot = path.read_bytes()
+    again = _save(builder, first, yes, path, check_in=check_in)
+    assert again["saved"] is True
+    assert path.read_bytes() == snapshot
+    assert len(LogStore(log_path).data["confirmations"]) == rows
+    later = builder.propose(profile(goal="gain"), check_in)
+    yes_later = recorded(later["confirm"])
+    assert _save(builder, later, yes_later, path, check_in=check_in)["saved"] is True
+    assert json.loads(path.read_text(encoding="utf-8"))["confirmation"]["record_id"] == yes_later.record_id
+    grown = len(LogStore(log_path).data["confirmations"])
+    assert grown == rows + 3
+    replay = builder.save(
+        first["plan"], yes, path, first["sessions"], check_in_result=check_in,
+    )
+    assert replay["saved"] is False
+    assert "older" in replay["message"].lower()
+    assert json.loads(path.read_text(encoding="utf-8"))["confirmation"]["record_id"] == yes_later.record_id
+    assert len(LogStore(log_path).data["confirmations"]) == grown
+    stale = recorded(first["confirm"])
+    stale.timestamp = "2020-01-01T00:00:00Z"
+    assert builder.save(
+        first["plan"], stale, path, first["sessions"], check_in_result=check_in,
+    )["saved"] is False
+    assert json.loads(path.read_text(encoding="utf-8"))["plan"]["goals"]["goal"] == "gain"
 
 
 def test_the_builder_does_not_use_the_log_store_and_the_guide_has_no_em_dash():

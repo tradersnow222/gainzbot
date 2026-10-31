@@ -160,14 +160,15 @@ class TestClearYes:
         "yep",
         "yeah",
         "confirm",
+        "confirmed",
         "lock it in",
-        "Yes, lock in this exact week",
-        "yes lock it in",
-        "Yes, I confirm.",
         "I confirm this plan",
-        "yes, what's for dinner?",
+        "Yes!",
+        "yes.",
+        "lock it in!",
+        "yes 👍",
     ])
-    def test_plain_yes_words_are_accepted(self, reply):
+    def test_bare_yes_words_are_accepted(self, reply):
         assert is_clear_yes(reply)
         record = ConfirmationRecorder().record(
             ADULT_PLAN, reply, "user", passing_check_in()
@@ -176,29 +177,45 @@ class TestClearYes:
         assert record.quoted_words == reply
 
     @pytest.mark.parametrize("reply", [
+        "yes, I have chest pain",
+        "yes, my knee hurts",
+        "yes stop",
+        "yes cancel",
+        "yes undo",
+        "yes never mind",
+        "yes, wait",
+        "yes later",
+        "yeah right",
+        "yes make it six days",
+        "yes, without squats",
+        "yes lighter please",
+        "yes to the old plan",
+        "yes for next week",
+        "yeah, though make it heavier",
         "sure I guess",
         "looks fine",
         "whatever",
         "maybe",
-        "sounds good, let's go",
         "do it",
-        "confirmed",
-        "yes but drop the last set",
-        "yes except legs",
-        "yes make it 4 days",
-        "yes, change the squat",
-        "yes?",
-        "no",
-        "not yet",
-        "yes, is 60 minutes enough?",
+        "yes, what's for dinner?",
     ])
-    def test_hedged_or_changed_replies_are_refused(self, reply):
+    def test_anything_past_a_bare_yes_is_refused(self, reply):
         assert not is_clear_yes(reply)
         record = ConfirmationRecorder().record(
             ADULT_PLAN, reply, "user", passing_check_in()
         )
-        assert not record.confirmed
+        assert record.confirmed is False
         assert record.quoted_words == reply
+
+    def test_a_red_flag_in_the_reply_is_the_pause(self):
+        reply = "yes, I have chest pain"
+        scanned = RedFlagChecker().scan_text(reply)
+        assert scanned.pause_plan
+        record = ConfirmationRecorder().record(
+            ADULT_PLAN, reply, "user", passing_check_in()
+        )
+        assert record.confirmed is False
+        assert scanned.message in record.message
 
 
 class TestPlanCheckFollowUps:

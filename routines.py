@@ -12,33 +12,37 @@ OFFERS = (
 )
 
 _YES = {"yes", "yes, i confirm."}
-_TIME = re.compile(
-    r"\d|morning|evening|afternoon|night|\bam\b|\bpm\b|"
-    r"sunday|monday|tuesday|wednesday|thursday|friday|saturday|"
-    r"daily|weekly|monthly|yearly"
+_CLOCK = re.compile(
+    r"\d|\bam\b|\bpm\b|\bmorning\b|\bevening\b|\bafternoon\b|\bnight\b|"
+    r"\bsunday\b|\bmonday\b|\btuesday\b|\bwednesday\b|\bthursday\b|\bfriday\b|\bsaturday\b"
 )
-_REFUSE = re.compile(r"\bno\b|\bnot\b|\bdon'?t\b|\blater\b|\bmaybe\b|\bsure\b|\bwhatever\b")
+_HEDGE = re.compile(
+    r"\b(?:no|not|never|stop|later|maybe|sure|whatever|nah|nope|"
+    r"don't|dont|won't|wont|can't|cant|think|guess)\b"
+)
 
 
 def _opted_in(choice, reply, item):
-    """A clear yes, or the routine and a time they already picked."""
+    """A plain yes, or this routine's name together with a time."""
     if not isinstance(reply, str):
         return False
     text = " ".join(reply.lower().split())
     if text in _YES:
         return True
-    if _REFUSE.search(text):
+    if _HEDGE.search(text):
         return False
     title = item["title"].lower()
     named = title in text or choice.replace("_", " ") in text
+    if not named:
+        return False
     names_another = any(
         other["title"].lower() in text
         for other in OFFERS
         if other["id"] != choice
     )
-    if names_another and not named:
+    if names_another:
         return False
-    return named or _TIME.search(text) is not None
+    return _CLOCK.search(text) is not None
 
 
 def offer():

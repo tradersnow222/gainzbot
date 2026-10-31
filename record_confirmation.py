@@ -7,6 +7,7 @@ one exact plan version. Any later edit needs a new confirmation.
 """
 
 from dataclasses import dataclass, field
+from datetime import datetime, timezone
 from typing import Dict, List, Optional
 import hashlib
 import json
@@ -17,7 +18,7 @@ import uuid
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from guardrails.validate import InputValidator
-from red_flag_check import is_passing_check_in
+from red_flag_check import RedFlagChecker, is_passing_check_in
 
 
 CLEAR_YES = {
@@ -46,97 +47,35 @@ def normalize_reply(reply: str) -> str:
     return re.sub(r"\s+", " ", text).strip()
 
 
-# A yes has to start with one of these. Longer phrases win so "confirm"
-# does not swallow "confirmed", and "i confirm" still matches the fixed lines.
-_YES_START = (
-    "yes i confirm this plan",
-    "yes i confirm this change",
-    "i confirm this plan",
-    "i confirm this change",
-    "yes i confirm",
-    "i confirm",
-    "lock it in",
-    "confirm",
-    "yeah",
+# Exact phrases only. Punctuation and emoji fold away. Any other word refuses.
+_BARE_YES = CLEAR_YES | {
     "yep",
-    "yes",
-)
-_BLOCK_WORDS = {
-    "but",
-    "except",
-    "maybe",
-    "guess",
-    "whatever",
-    "probably",
-    "change",
-    "changes",
-    "instead",
-    "swap",
-    "raise",
-    "lower",
-    "drop",
-    "increase",
-    "decrease",
-    "replace",
-    "skip",
-    "add",
-    "remove",
-    "no",
-    "not",
+    "yeah",
+    "confirm",
+    "confirmed",
+    "lock it in",
 }
 
 
-def _bare(reply: str) -> str:
-    text = InputValidator.normalize_unicode(reply).lower().strip()
-    if len(text) >= 2 and text[0] == text[-1] and text[0] in {"'", '"'}:
-        text = text[1:-1].strip()
-    return text
-
-
-def _starts_with_yes(folded: str) -> bool:
-    for phrase in _YES_START:
-        if folded == phrase or folded.startswith(phrase + " "):
-            return True
-    return False
-
-
-def _questioned_yes(reply: str) -> bool:
-    """A question mark on the yes itself is not a yes. A later question can be."""
-    raw = _bare(reply)
-    if re.match(r"^(yes|yep|yeah|confirm|lock it in|i confirm)\s*\?", raw):
-        return True
-    if raw.endswith("?") and raw.count("?") == 1:
-        head = normalize_reply(raw[:-1])
-        if head in CLEAR_YES or head in _YES_START:
-            return True
-    return False
-
-
 def is_clear_yes(reply) -> bool:
-    """True for an unhedged yes that answers the shown proposal.
+    """True only for a bare yes, with nothing after it but punctuation or emoji.
 
-    The reply has to start with yes, yep, yeah, confirm, or lock it in
-    (the fixed 'i confirm' lines still count). but, except, a number, or a
-    requested change refuses it. A trailing question is fine when it has
-    none of those.
+    Allowed words: yes, yep, yeah, confirm, confirmed, lock it in,
+    and the fixed lines in CLEAR_YES such as 'I confirm this plan'.
     """
     if not isinstance(reply, str) or not reply.strip():
         return False
-    if _questioned_yes(reply):
-        return False
-    folded = normalize_reply(reply)
-    if folded in CLEAR_YES:
-        return True
-    if not _starts_with_yes(folded):
-        return False
-    if re.search(r"\d", folded):
-        return False
-    words = set(folded.split())
-    if words & _BLOCK_WORDS:
-        return False
-    if any(phrase in folded for phrase in ("not yet", "kind of", "sort of", "i think", "i guess")):
-        return False
-    return True
+    return normalize_reply(reply) in _BARE_YES
+
+
+def reply_pause(reply):
+    """The red-flag result when this reply must pause, else None."""
+    if not isinstance(reply, str) or not reply.strip():
+        return None
+    scanned = RedFlagChecker().scan_text(reply)
+    if scanned.pause_plan:
+        return scanned
+    return None
 
 
 def new_record_id() -> str:
@@ -154,6 +93,7 @@ class ConfirmationRecord:
     message: str
     errors: List[str]
     record_id: str = field(default_factory=new_record_id)
+    timestamp: str = ""
 
     def to_dict(self) -> Dict:
         return {
@@ -164,6 +104,7 @@ class ConfirmationRecord:
             "message": self.message,
             "errors": self.errors,
             "record_id": self.record_id,
+            "timestamp": self.timestamp,
         }
 
 
@@ -205,8 +146,11 @@ class ConfirmationRecorder:
         else:
             errors.append("The plan has to be an object.")
 
+        paused = reply_pause(reply)
         if not isinstance(reply, str) or not reply.strip():
             errors.append("The confirmation has to be the user's own words.")
+        elif paused is not None:
+            errors.append(paused.message)
         elif not is_clear_yes(reply):
             errors.append(
                 "That reply is not a clear yes. "
@@ -221,6 +165,7 @@ class ConfirmationRecorder:
         elif not is_passing_check_in(check_in_result):
             errors.append("That check-in did not pass.")
 
+        stamp = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
         if errors:
             return ConfirmationRecord(
                 confirmed=False,
@@ -229,6 +174,7 @@ class ConfirmationRecorder:
                 speaker=speaker_text,
                 message="Not confirmed. " + " ".join(errors),
                 errors=errors,
+                timestamp=stamp,
             )
 
         return ConfirmationRecord(
@@ -238,6 +184,7 @@ class ConfirmationRecorder:
             speaker=speaker_text,
             message=f"Confirmed. Quoted words: {reply}",
             errors=[],
+            timestamp=stamp,
         )
 
     def covers(self, record: Optional[ConfirmationRecord], plan) -> bool:

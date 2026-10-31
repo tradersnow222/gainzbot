@@ -12,6 +12,7 @@ import copy
 import json
 import math
 import os
+import re
 
 from guardrails.validate import InputValidator, ValidationError
 from plan_check import PlanValidator
@@ -55,6 +56,11 @@ _DOSE = {
     "intermediate": (4, "6-10", "2 min", "Leave 2 reps in reserve"),
     "advanced": (5, "4-8", "3 min", "Leave 1 rep in reserve"),
 }
+_MAX_EXERCISES = 8
+_MAX_SETS = 6
+_MAX_REPS = 20
+_MAX_LOAD_KG = 300
+_SECONDS_PER_REP = 4
 _GYM = {
     "Full body": ("Back squat", "Bench press", "Barbell row", "Romanian deadlift", "Plank", "Farmer carry"),
     "Full body A": ("Back squat", "Bench press", "Barbell row", "Romanian deadlift", "Plank", "Farmer carry"),
@@ -199,6 +205,148 @@ def _sport_exercise(sport):
     return None
 
 
+def _rest_minutes(rest):
+    if not isinstance(rest, str):
+        return None
+    text = rest.strip().lower()
+    match = re.match(r"^(\d+(?:\.\d+)?)\s*(sec|min)$", text)
+    if match is None:
+        return None
+    number = float(match.group(1))
+    if match.group(2) == "sec":
+        return number / 60.0
+    return number
+
+
+def _is_duration(exercise):
+    reps = exercise.get("reps")
+    return isinstance(reps, str) and reps.strip().lower().endswith("min")
+
+
+def _high_reps(reps):
+    """The top of a rep range, or None when the text is not a rep count."""
+    if isinstance(reps, bool):
+        return None
+    if isinstance(reps, (int, float)):
+        return float(reps)
+    if not isinstance(reps, str) or not reps.strip():
+        return None
+    text = reps.strip().lower()
+    if "failure" in text:
+        return None
+    if text.endswith("min"):
+        return None
+    numbers = re.findall(r"\d+(?:\.\d+)?", text)
+    if not numbers:
+        return None
+    return float(numbers[-1])
+
+
+def _block_minutes(exercise):
+    sets = exercise.get("sets")
+    try:
+        sets = int(sets)
+    except (TypeError, ValueError):
+        return None
+    if _is_duration(exercise):
+        text = exercise["reps"].strip().lower().replace("min", "").strip()
+        try:
+            work = float(text)
+        except ValueError:
+            return None
+        return work if sets <= 1 else None
+    reps = _high_reps(exercise.get("reps"))
+    rest = _rest_minutes(exercise.get("rest"))
+    if reps is None or rest is None or sets < 1:
+        return None
+    work = sets * reps * _SECONDS_PER_REP / 60.0
+    if sets <= 1:
+        return work
+    return work + (sets - 1) * rest
+
+
+def session_volume(exercises):
+    """Minutes of work and rest in one session's exercises."""
+    total = 0.0
+    for exercise in exercises:
+        block = _block_minutes(exercise)
+        if block is None:
+            return None
+        total += block
+    return total
+
+
+def _fit_minutes(chosen, minutes):
+    """Drop or shorten work until it fits in the minutes they asked for."""
+    while len(chosen) > 1 and session_volume(chosen) > minutes:
+        if _is_duration(chosen[-1]) and len(chosen) > 1:
+            chosen.pop(-2 if len(chosen) > 2 else 0)
+        else:
+            chosen.pop()
+    while chosen and session_volume(chosen) > minutes:
+        shrunk = False
+        for row in chosen:
+            if not _is_duration(row) and row["sets"] > 1:
+                row["sets"] -= 1
+                shrunk = True
+                break
+        if not shrunk:
+            chosen.pop()
+    return chosen
+
+
+def _exercise_problem(sessions):
+    """A reason the exercises are outside the bounds, or None."""
+    for row in sessions:
+        if "exercises" not in row:
+            continue
+        exercises = row.get("exercises")
+        if not isinstance(exercises, list) or not exercises:
+            return "Each session needs its exercises."
+        if len(exercises) > _MAX_EXERCISES:
+            return "That session has too many exercises."
+        for exercise in exercises:
+            if not isinstance(exercise, dict):
+                return "Each exercise has to be an object."
+            name = exercise.get("name")
+            if not isinstance(name, str) or not name.strip():
+                return "Each exercise needs a name."
+            try:
+                sets = int(exercise.get("sets"))
+            except (TypeError, ValueError):
+                return "Each exercise needs its sets."
+            if sets < 1 or sets > _MAX_SETS:
+                return "That many sets is outside the bounds."
+            text = " ".join(
+                str(exercise.get(key, "")) for key in ("reps", "effort")
+            ).lower()
+            if "failure" in text:
+                return "Training to failure is outside the bounds."
+            if not _is_duration(exercise):
+                reps = _high_reps(exercise.get("reps"))
+                if reps is None or reps < 1 or reps > _MAX_REPS:
+                    return "Those reps are outside the bounds."
+            if _rest_minutes(exercise.get("rest")) is None:
+                return "Each exercise needs a rest."
+            if "load_kg" in exercise:
+                try:
+                    load_kg = float(exercise.get("load_kg"))
+                except (TypeError, ValueError):
+                    return "load_kg has to be a number."
+                if load_kg <= 0 or load_kg > _MAX_LOAD_KG:
+                    return "That load_kg is outside the bounds."
+            if _block_minutes(exercise) is None:
+                return "Those exercises could not be checked."
+        try:
+            minutes = float(row.get("minutes"))
+        except (TypeError, ValueError):
+            return "Each session needs its minutes."
+        volume = session_volume(exercises)
+        if volume is None or volume > minutes + 1e-6:
+            return "The exercises do not fit in the session minutes."
+    return None
+
+
 def _exercises(equipment, experience, minutes, sport, injuries, index, day_count):
     """Deterministic sets, reps, rest, and an effort cue for one session."""
     label = _split_name(day_count, index)
@@ -238,6 +386,7 @@ def _exercises(equipment, experience, minutes, sport, injuries, index, day_count
     sport_row = _sport_exercise(sport)
     if sport_row is not None:
         chosen.append(sport_row)
+    chosen = _fit_minutes(chosen, minutes)
     return label, chosen
 
 
@@ -266,15 +415,25 @@ def _read_log(path):
     return cleaned
 
 
-def _write_json(path, payload):
+def _write_bytes(path, raw):
     folder = os.path.dirname(path)
     if folder:
         os.makedirs(folder, exist_ok=True)
     temporary = path + ".tmp"
-    with open(temporary, "w", encoding="utf-8") as handle:
-        json.dump(payload, handle)
-        handle.write("\n")
+    with open(temporary, "wb") as handle:
+        handle.write(raw)
+        handle.flush()
+        os.fsync(handle.fileno())
     os.replace(temporary, path)
+
+
+def _write_json(path, payload):
+    _write_bytes(path, (json.dumps(payload) + "\n").encode("utf-8"))
+
+
+def _read_bytes(path):
+    with open(path, "rb") as handle:
+        return handle.read()
 
 
 class PlanBuilder:
@@ -337,9 +496,14 @@ class PlanBuilder:
                 "sport": sport,
                 "exercises": exercises,
             }
+            if not exercises:
+                return self._no("The exercises do not fit in the session minutes.")
             if note:
                 row["note"] = note
             sessions.append(row)
+        problem = _exercise_problem(sessions)
+        if problem:
+            return self._no(problem)
         training = {
             "previous_load": load,
             "current_load": load,
@@ -425,6 +589,9 @@ class PlanBuilder:
             confirmation, week_to_confirm(plan, sessions)
         ):
             return self._saved_no("This week needs record_confirmation before it is saved.")
+        problem = _exercise_problem(sessions)
+        if problem:
+            return self._saved_no(problem)
         target = os.fspath(path)
         log_path = os.path.join(os.path.dirname(target), "log.json")
         existing = {}
@@ -437,14 +604,69 @@ class PlanBuilder:
             if not isinstance(loaded, dict):
                 return self._saved_no("The week file could not be read.")
             existing = loaded
-        existing["plan"] = plan
-        existing["sessions"] = sessions
         log_existed = os.path.exists(log_path)
         loaded_log = _read_log(log_path)
         if loaded_log is None:
             return self._saved_no("The log could not be read.")
-        previous_log = copy.deepcopy(loaded_log)
-        stamp = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+        stamp = confirmation.timestamp if confirmation.timestamp else datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+        on_file = existing.get("confirmation") if isinstance(existing.get("confirmation"), dict) else {}
+        on_id = on_file.get("record_id") if isinstance(on_file.get("record_id"), str) else ""
+        on_at = on_file.get("saved_at") if isinstance(on_file.get("saved_at"), str) else ""
+        already = any(
+            isinstance(row, dict) and row.get("record_id") == confirmation.record_id
+            for row in loaded_log["confirmations"]
+        )
+        if already and on_id and on_id != confirmation.record_id:
+            return self._saved_no("An older yes does not replace the saved week.")
+        if on_at and stamp < on_at:
+            return self._saved_no("An older yes does not replace the saved week.")
+        if already and os.path.exists(target) and (on_id == confirmation.record_id or not on_id):
+            return {
+                "ok": True,
+                "saved": True,
+                "applied": False,
+                "message": "Week saved.",
+                "path": target,
+                "log_path": log_path,
+            }
+        if already and not os.path.exists(target):
+            newer = any(
+                isinstance(row, dict)
+                and row.get("record_id") != confirmation.record_id
+                and isinstance(row.get("date"), str)
+                and row["date"] > stamp
+                for row in loaded_log["confirmations"]
+            )
+            if newer:
+                return self._saved_no("An older yes does not replace the saved week.")
+            existing = {
+                "plan": plan,
+                "sessions": sessions,
+                "confirmation": {
+                    "record_id": confirmation.record_id,
+                    "plan_hash": confirmation.plan_hash,
+                    "saved_at": stamp,
+                },
+            }
+            try:
+                _write_json(target, existing)
+            except OSError:
+                return self._saved_no("The week could not be saved.")
+            return {
+                "ok": True,
+                "saved": True,
+                "applied": False,
+                "message": "Week saved.",
+                "path": target,
+                "log_path": log_path,
+            }
+        existing["plan"] = plan
+        existing["sessions"] = sessions
+        existing["confirmation"] = {
+            "record_id": confirmation.record_id,
+            "plan_hash": confirmation.plan_hash,
+            "saved_at": stamp,
+        }
         proposal = week_to_confirm(plan, sessions)
         loaded_log["confirmations"].append({
             "record_id": confirmation.record_id,
@@ -468,17 +690,42 @@ class PlanBuilder:
                 "quoted_words": confirmation.quoted_words,
                 "speaker": confirmation.speaker,
             })
-        for row in sessions:
-            loaded_log["sessions"].append(copy.deepcopy(row))
+        original_bytes = None
+        backup_path = log_path + ".bak"
+        if log_existed:
+            try:
+                original_bytes = _read_bytes(log_path)
+                _write_bytes(backup_path, original_bytes)
+            except OSError:
+                return self._saved_no("The log could not be saved.")
         try:
             _write_json(log_path, loaded_log)
         except OSError:
+            self._restore_log(log_path, original_bytes, log_existed, backup_path)
             return self._saved_no("The log could not be saved.")
         try:
             _write_json(target, existing)
         except OSError:
-            self._restore_log(log_path, previous_log, log_existed)
+            restored = self._restore_log(log_path, original_bytes, log_existed, backup_path)
+            if not restored:
+                restored = self._restore_log(log_path, None, log_existed, backup_path)
+            week_tmp = target + ".tmp"
+            if os.path.exists(week_tmp):
+                try:
+                    os.remove(week_tmp)
+                except OSError:
+                    pass
+            if os.path.exists(backup_path) and restored:
+                try:
+                    os.remove(backup_path)
+                except OSError:
+                    pass
             return self._saved_no("The week could not be saved.")
+        if os.path.exists(backup_path):
+            try:
+                os.remove(backup_path)
+            except OSError:
+                pass
         return {
             "ok": True,
             "saved": True,
@@ -576,19 +823,39 @@ class PlanBuilder:
             return self._no("Experience has to be beginner, intermediate, or advanced.")
         return key
 
-    def _restore_log(self, log_path, previous_log, log_existed):
-        """Put the log back when the week file did not save. Nothing stays half-written."""
-        try:
-            if not log_existed:
-                if os.path.exists(log_path):
-                    os.remove(log_path)
-                temporary = log_path + ".tmp"
-                if os.path.exists(temporary):
-                    os.remove(temporary)
-                return
-            _write_json(log_path, previous_log)
-        except OSError:
-            return
+    def _restore_log(self, log_path, original_bytes, log_existed, backup_path):
+        """Put the log back from the backup before a failure is reported.
+
+        The backup is renamed over the log. That still works when a fresh
+        write of the old bytes fails, which is the case that used to leave
+        the new rows in place.
+        """
+        for _attempt in range(3):
+            try:
+                if not log_existed:
+                    if os.path.exists(log_path):
+                        os.remove(log_path)
+                    temporary = log_path + ".tmp"
+                    if os.path.exists(temporary):
+                        os.remove(temporary)
+                    if not os.path.exists(log_path):
+                        return True
+                    continue
+                if backup_path and os.path.exists(backup_path):
+                    os.replace(backup_path, log_path)
+                    if original_bytes is None or _read_bytes(log_path) == original_bytes:
+                        return True
+                raw = original_bytes
+                if raw is None and backup_path and os.path.exists(backup_path):
+                    raw = _read_bytes(backup_path)
+                if raw is None:
+                    return False
+                _write_bytes(log_path, raw)
+                if _read_bytes(log_path) == raw:
+                    return True
+            except OSError:
+                continue
+        return False
 
     def _goal(self, value):
         if value in (None, ""):
