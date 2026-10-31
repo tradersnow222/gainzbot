@@ -14,7 +14,7 @@ import os
 
 from guardrails.validate import InputValidator, ValidationError
 from plan_check import PlanValidator
-from readiness_screen import ScreeningResult
+from readiness_screen import ReadinessScreen, ScreeningResult
 from record_confirmation import ConfirmationRecord, ConfirmationRecorder
 
 
@@ -80,6 +80,9 @@ class PlanBuilder:
             )
         if age is not None and age < PlanValidator.ADULT_AGE and not self._readiness_passes(readiness_result):
             return self._no("A passing readiness screen is required before this week is built.")
+        par_q = self._par_q_block(profile)
+        if par_q is not None:
+            return par_q
         structured = len(days) * minutes / 60.0
         if structured + sport_hours > PlanValidator.MAX_WEEKLY_TRAINING_HOURS:
             return self._no("That week is over the 20 hour training cap.")
@@ -142,6 +145,13 @@ class PlanBuilder:
         if isinstance(sport_hours, dict):
             return sport_hours
         if "previous_load" not in training or training.get("previous_load") in (None, ""):
+            return self._saved_no("A baseline load is required.")
+        age_gate = self._save_age_gate(plan, readiness_result)
+        if age_gate is not None:
+            return age_gate
+        if self._positive_load(training.get("previous_load")) is None or self._positive_load(training.get("current_load")) is None:
+            return self._saved_no("A baseline load is required.")
+        if any(self._positive_load(row.get("load")) is None for row in sessions):
             return self._saved_no("A baseline load is required.")
         checked_plan = copy.deepcopy(plan)
         checked_plan["training"]["structured_hours"] = hours
@@ -303,6 +313,48 @@ class PlanBuilder:
             return self._no(str(exc))
         user["age"] = age
         return user
+
+    def _save_age_gate(self, plan, readiness_result):
+        """Same gate as propose: an age on the plan user, or a passing readiness result."""
+        user = plan.get("user")
+        age = None
+        if isinstance(user, dict) and user.get("age") not in (None, ""):
+            try:
+                age = InputValidator.parse_number(user["age"], "age")
+            except ValidationError as exc:
+                return self._saved_no(str(exc))
+        if age is None and not self._readiness_passes(readiness_result):
+            return self._saved_no(
+                "An age or a passing readiness screen is required before this week is built. "
+                "A missing baseline does not get a plan."
+            )
+        if age is not None and age < PlanValidator.ADULT_AGE and not self._readiness_passes(readiness_result):
+            return self._saved_no("A passing readiness screen is required before this week is built.")
+        return None
+
+    def _positive_load(self, value):
+        try:
+            number = InputValidator.parse_number(value, "load", allow_zero=True)
+        except ValidationError:
+            return None
+        if number <= 0:
+            return None
+        return number
+
+    def _par_q_block(self, profile):
+        """A PAR-Q yes blocks the week in code. Missing answers are left to the caller."""
+        flags = ReadinessScreen.PAR_Q_RED_FLAGS
+        raw = profile.get("par_q")
+        if raw is None:
+            present = {key: profile[key] for key in flags if key in profile}
+            if not present:
+                return None
+            raw = present
+        result = ReadinessScreen().check_par_q(raw)
+        if not result.blocked:
+            return None
+        reasons = " ".join(result.reasons) if result.reasons else "A PAR-Q yes blocks this week."
+        return self._no(reasons)
 
     def _readiness_passes(self, result) -> bool:
         if not isinstance(result, ScreeningResult):

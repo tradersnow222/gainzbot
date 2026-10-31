@@ -222,6 +222,82 @@ def test_swapped_sessions_and_an_unchecked_plan_are_not_saved(tmp_path):
     assert not bad_path.exists()
 
 
+def _adult_screen():
+    return ReadinessScreen().screen_intake({
+        "age": 30,
+        "par_q": {flag: False for flag in ReadinessScreen.PAR_Q_RED_FLAGS},
+        "pregnant": False,
+        "medical_conditions": [],
+        "medical_clearance": False,
+    })
+
+
+def test_a_hand_built_plan_with_no_user_is_not_saved(tmp_path):
+    builder = PlanBuilder()
+    check_in = passing_check_in()
+    plan = {
+        "training": {
+            "previous_load": 100,
+            "current_load": 100,
+            "weeks_since_deload": 0,
+            "structured_hours": 0.75,
+            "sport_hours": 0,
+        }
+    }
+    sessions = [{"date": "2026-10-26", "load": 100, "minutes": 45}]
+    yes = recorded(week_to_confirm(plan, sessions))
+    path = tmp_path / "week.json"
+    refused = builder.save(plan, yes, path, sessions, check_in_result=check_in)
+    assert refused["saved"] is False
+    assert not path.exists()
+    assert "missing baseline" in refused["message"].lower()
+    screen = _adult_screen()
+    assert screen.blocked is False
+    allowed = builder.save(
+        plan, yes, path, sessions, check_in_result=check_in, readiness_result=screen,
+    )
+    assert allowed["saved"] is True
+
+
+def test_save_refuses_a_week_at_load_0(tmp_path):
+    builder = PlanBuilder()
+    check_in = passing_check_in()
+    plan = {
+        "user": {"sex": "M", "weight_kg": 80, "age": 30, "height_cm": 180},
+        "training": {
+            "previous_load": 0,
+            "current_load": 0,
+            "weeks_since_deload": 0,
+            "structured_hours": 0.75,
+            "sport_hours": 0,
+        },
+    }
+    sessions = [{"date": "2026-10-26", "load": 0, "minutes": 45}]
+    yes = recorded(week_to_confirm(plan, sessions))
+    path = tmp_path / "zero.json"
+    refused = builder.save(plan, yes, path, sessions, check_in_result=check_in)
+    assert refused["saved"] is False
+    assert not path.exists()
+    assert "baseline" in refused["message"].lower()
+
+
+def test_an_adult_par_q_yes_is_blocked_in_code():
+    yes_flags = {flag: False for flag in ReadinessScreen.PAR_Q_RED_FLAGS}
+    yes_flags["chest_pain_at_rest"] = True
+    refused = PlanBuilder().propose(profile(par_q=yes_flags), passing_check_in())
+    assert refused["ok"] is False
+    assert refused["plan"] is None
+    assert refused["sessions"] is None
+    assert "chest pain" in refused["message"].lower()
+    spread = profile()
+    spread["chest_pain_during_activity"] = True
+    also = PlanBuilder().propose(spread, passing_check_in())
+    assert also["ok"] is False
+    clear = {flag: False for flag in ReadinessScreen.PAR_Q_RED_FLAGS}
+    built = PlanBuilder().propose(profile(par_q=clear), passing_check_in())
+    assert built["ok"] is True
+
+
 def test_the_builder_does_not_use_the_log_store_and_the_guide_has_no_em_dash():
     source = (ROOT / "plan_builder.py").read_text(encoding="utf-8")
     guide = (ROOT / "template" / "first-plan.md").read_text(encoding="utf-8")
