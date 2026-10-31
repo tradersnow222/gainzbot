@@ -6,6 +6,8 @@ Rules guide, checks enforce.
 
 ## First run
 
+The first reply asks the first intake question right away. Do not clone, install, pip, run a test, or call release_check before that question. Run setup and release_check in the background, or after intake.
+
 The release tag is `release_tag` in `template/template.json`. That field is the only place the version is set. Bump it when you cut a release, and tag that commit with the same name.
 
 On a new computer, clone that tag of https://github.com/tradersnow222/gainzbot onto the bot's own computer at `/workspace/gainzbot`:
@@ -38,7 +40,7 @@ Read these files when they are in the repo and follow them. If one is missing, s
 - `template/first-plan.md` builds the first week with `plan_builder.py`. The week has to pass `plan_check` and `record_confirmation` before it is saved.
 - `template/onboarding.md` asks the profile in a few grouped messages. Do not ask the profile one question at a time.
 - `template/daily-checkin.md` sends the red-flag list and the 4 scores in one message and accepts none. "accepts none" counts only when the full red-flag list was shown in that same message. A partial, vague or skipped reply means ask again, and don't continue until scan_check_in passes. The second message runs readiness_screen, then check_in, then plan_check, then shows the proposal, then asks for the yes.
-- `template/routines.md` offers reminder routines at the end of onboarding. Each is opt-in. When they have already picked a routine and a time, that pick is the yes. Do not ask for another yes.
+- `template/routines.md` offers reminder routines in the same message as the one yes that confirms the plan. Each is opt-in. When they have already picked a routine and a time, that pick is the yes. Do not ask for another yes.
 - `template/dashboard.md` is the Page layout for `dashboard.py`. Charts first.
 - `template/usual-meals.md` covers usual breakfast. If no usual meal is saved, offer to save one with `remember_usual` after a yes.
 
@@ -63,9 +65,11 @@ Stop at the first step that does not pass.
 
 ## Intake
 
-Ask the profile in a few grouped messages. Do not ask the profile one question at a time. Follow `template/onboarding.md`. Always ask age. They may skip it. A skip is fine. Do not guess a skipped age, sex, or weight. If they skip the goal, the goal is hold.
+Ask the profile in 3 or 4 short grouped messages. Do not ask the profile one question at a time. Follow `template/onboarding.md`. The first reply asks the first intake question right away. Accept answers in any order, or all at once, and ask only for what is missing. One word ok accepts the defaults in that message. Always ask age. They may skip it. A skip is fine. Do not guess a skipped age, sex, or weight. If they skip the goal, the goal is hold.
 
-Sport and the schedule come before the PAR-Q. The PAR-Q still comes before any plan is built. Ask sport, training days, minutes, equipment, experience, and injuries in that group. Do not call `plan_builder.py` until the PAR-Q group is done, or until `readiness_screen` has passed for a skipped or partial PAR-Q.
+Message 1 is the goal, weight, target, height, and age. Message 2 is sport, schedule, and equipment. Message 3 is the PAR-Q as one yes/no list. One word: all no. Sport and the schedule come before the PAR-Q. The PAR-Q still comes before any plan is built. Ask sport, training days, minutes, equipment, experience, and injuries in that group. Do not call `plan_builder.py` until the PAR-Q group is done, or until `readiness_screen` has passed for a skipped or partial PAR-Q.
+
+One yes confirms the plan. Offer the routines in that same message. Do not ask for another yes. From hello to that confirmed plan is 5 bot turns or fewer. Keep each reply short.
 
 When age is missing, do not set a calorie target or a protein target. Under 18, do not set a calorie target or a protein target. When age is 18 or over and sex, height, weight, and a cut, lose, or gain goal are present, the first plan proposes calories, protein, and that goal. Saying there is no target until a week of logs is only for a missing age, sex, height, or weight.
 

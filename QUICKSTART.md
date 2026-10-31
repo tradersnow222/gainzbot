@@ -2,6 +2,8 @@
 
 From a fresh checkout to a Grok Bot you can message in under 5 minutes.
 
+The first reply asks the first intake question right away. Do not clone, install, pip, run a test, or call release_check before that question. Run setup and release_check in the background, or after intake. Intake is 3 short messages: goal, weight, target, height, and age; then sport, schedule, and equipment; then the PAR-Q as one yes/no list, where all no is one word. Answers can arrive in any order or all at once. Ask only for what is missing. One word ok accepts the defaults. One yes confirms the plan, and the routine offer is in that same message. From hello to a confirmed plan is 5 bot turns or fewer.
+
 ## 1. Put the repo on the bot's computer
 
 A fresh Grok Bot cannot see a laptop checkout. On the bot's own computer, clone the public repo to a fixed path:
