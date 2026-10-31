@@ -6,7 +6,7 @@ import os
 from pathlib import Path
 
 from dashboard import Dashboard
-from log_store import LogStore
+from log_store import LogStore, log_weight
 from morning_checkin import MorningCheckIn
 from photo_food_log import FoodLog
 from record_confirmation import ConfirmationRecorder
@@ -91,6 +91,27 @@ def test_a_write_failure_rolls_back(tmp_path, monkeypatch):
     refused = store.append("weights", {"date": "2026-10-30", "kg": 81})
     assert refused["ok"] is False
     assert store.data["weights"] == [{"date": "2026-10-29", "kg": 80}]
+
+
+def test_log_weight_writes_a_weigh_in_the_dashboard_can_read(tmp_path):
+    path = tmp_path / "log.json"
+    first = log_weight(80, "2026-10-28", path)
+    second = log_weight(80.4, "2026-10-29", path)
+    assert first["ok"] is True
+    assert second["ok"] is True
+    assert LogStore(path).data["weights"] == [
+        {"date": "2026-10-28", "kg": 80},
+        {"date": "2026-10-29", "kg": 80.4},
+    ]
+    built = Dashboard().build_saved(path, as_of="2026-10-29", window_days=7)
+    points = next(item["points"] for item in built["charts"] if item["id"] == "weight")
+    assert points[-1] == {"date": "2026-10-29", "kg": 80.4}
+    assert log_weight(0, "2026-10-30", path)["ok"] is False
+    assert log_weight(81, "tomorrow", path)["ok"] is False
+    guide = (ROOT / "template" / "saved-logs.md").read_text(encoding="utf-8")
+    prompt = (ROOT / "BOT_PROMPT.md").read_text(encoding="utf-8")
+    assert "log_store.log_weight" in guide
+    assert "log_store.log_weight" in prompt
 
 
 def test_dashboard_and_trend_read_the_saved_rows(tmp_path):

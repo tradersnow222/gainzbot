@@ -329,3 +329,48 @@ class TestLeftToday:
         )
         assert left["protein_left"] is None
         assert "1.6" in left["message"]
+
+
+def test_a_stated_total_logs_without_a_confirm_and_an_estimate_does_not(tmp_path):
+    log = fresh_log()
+    stated = log.log_stated("ate about 1900 cals, 150g protein", "2026-10-30")
+    assert stated["stored"] is True
+    assert stated["entry"]["calories"] == 1900
+    assert stated["entry"]["protein_g"] == 150
+    assert stated["entry"]["source"] == "stated"
+    assert log.used_ids == []
+    described = log.log_stated("ate chicken and rice", "2026-10-30")
+    assert described["stored"] is False
+    assert len(log.entries) == 1
+    meal = estimate()
+    guessed = log.store_estimate(meal, "2026-10-30")
+    assert guessed["stored"] is False
+    assert "record_confirmation" in guessed["message"]
+    path = tmp_path / "log.json"
+    saved = fresh_log().log_stated(
+        "ate about 1900 calories and 150 g protein",
+        "2026-10-30",
+        log_path=path,
+    )
+    assert saved["stored"] is True
+    from log_store import LogStore
+
+    assert LogStore(path).data["meals"][0]["source"] == "stated"
+    assert LogStore(path).data["confirmations"] == []
+
+
+def test_a_stated_total_with_a_symptom_is_a_red_flag(tmp_path):
+    from red_flag_check import RedFlagChecker
+
+    line = "ate about 1900 cals, 150g protein, and my chest hurts"
+    scanned = RedFlagChecker().scan_text(line)
+    assert scanned.pause_plan
+    log = fresh_log()
+    refused = log.log_stated(line, "2026-10-30")
+    assert refused["stored"] is False
+    assert refused["message"] == scanned.message
+    assert log.entries == []
+    path = tmp_path / "log.json"
+    saved = fresh_log().log_stated(line, "2026-10-30", log_path=path)
+    assert saved["stored"] is False
+    assert not path.exists()

@@ -282,6 +282,24 @@ def plan_schedule(reply):
     }
 
 
+def routine_cron(clock):
+    """A local wall-clock time as five-field cron. The hour is not converted to UTC.
+
+    6:30 AM daily is `30 6 * * *` before and after a daylight saving change.
+    The check that those local hours stay put uses the platform time zone
+    database. If that database is missing, do not invent a UTC hour.
+    """
+    if not isinstance(clock, str):
+        return None
+    match = re.fullmatch(r"(\d{1,2}):(\d{2})", clock.strip())
+    if match is None:
+        return None
+    hour, minute = int(match.group(1)), int(match.group(2))
+    if hour > 23 or minute > 59:
+        return None
+    return f"{minute} {hour} * * *"
+
+
 def first_checkin_day(week_start):
     """The Saturday on or before a Monday start. That is the first check-in."""
     from datetime import date, timedelta

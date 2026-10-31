@@ -28,6 +28,30 @@ def _blank():
     return {kind: [] for kind in KINDS}
 
 
+def log_weight(kg, day, log_path):
+    """Append one body-weight weigh-in. This is not a training load."""
+    from guardrails.validate import InputValidator, ValidationError
+
+    if isinstance(day, datetime):
+        when = day.date()
+    elif isinstance(day, date):
+        when = day
+    elif isinstance(day, str):
+        try:
+            when = date.fromisoformat(day[:10])
+        except ValueError:
+            when = None
+    else:
+        when = None
+    if when is None:
+        return {"ok": False, "stored": False, "message": "The day needs a real date."}
+    try:
+        weight = InputValidator.parse_number(kg, "kg")
+    except ValidationError as exc:
+        return {"ok": False, "stored": False, "message": str(exc)}
+    return LogStore(log_path).append("weights", {"date": when.isoformat(), "kg": weight})
+
+
 def _confirmation_ids(raw):
     if not raw:
         return set()

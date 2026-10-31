@@ -3,12 +3,14 @@
 Chart data for the dashboard.
 
 The spec is chart-first: weight, calories and protein against the target,
-adherence, and personal records. The window is 7, 28, 90, or 365 days.
-This builder only reads logs. It does not change the plan.
+adherence, personal records, and weekly volume. The window is 7, 28, 90,
+or 365 days. Ready means two logged days, not two rows. This builder only
+reads logs. It does not change the plan.
 """
 
 from datetime import date, datetime, timedelta
 from typing import Dict, List, Optional
+import json
 import os
 import sys
 
@@ -29,6 +31,7 @@ DASHBOARD_SPEC = {
         {"id": "protein", "title": "Protein vs target", "kind": "bar"},
         {"id": "adherence", "title": "Adherence", "kind": "bar"},
         {"id": "records", "title": "Personal records", "kind": "table"},
+        {"id": "volume", "title": "Weekly volume", "kind": "bar"},
     ],
 }
 
@@ -76,7 +79,7 @@ class Dashboard:
             return self._empty(NOT_ENOUGH, window_days, logs, user, as_of, targets, week)
         start = end - timedelta(days=window_days - 1)
         window = [row for row in rows if start <= row["date"] <= end]
-        if len(window) < 2:
+        if len({row["date"] for row in window}) < 2:
             return self._empty(NOT_ENOUGH, window_days, logs, user, as_of, targets, week)
 
         calorie_target, calorie_note = self._calorie_target(user, targets)
@@ -85,8 +88,9 @@ class Dashboard:
             self._weight_chart(window),
             self._intake_chart("calories", "Calories vs target", window, calorie_target),
             self._intake_chart("protein", "Protein vs target", window, protein_target),
-            self._adherence_chart(window),
+            self._adherence_chart(window, week, start, end),
             self._records_chart(window),
+            self._volume_chart(window),
         ]
         notes = [note for note in (calorie_note, protein_note) if note]
         result = {
@@ -101,14 +105,34 @@ class Dashboard:
             result["first_day"] = self._first_day(logs, user, as_of, targets, week)
         return result
 
-    def build_saved(self, path, user=None, window_days=28, as_of=None, targets=None) -> Dict:
-        """Read the on-disk log. A bad file does not become chart data."""
+    def build_saved(self, path, user=None, window_days=28, as_of=None, targets=None, week=None) -> Dict:
+        """Read the on-disk log and the confirmed week.json beside it."""
         from log_store import LogStore
 
         store = LogStore(path)
         if store.error or store.as_dashboard() is None:
             return self._empty(store.error or "The log could not be read.", window_days if window_days in WINDOWS else None)
-        return self.build(store.as_dashboard(), user, window_days, as_of, targets)
+        if week is None:
+            week = self._confirmed_week_beside(path)
+        return self.build(store.as_dashboard(), user, window_days, as_of, targets, week)
+
+    def _confirmed_week_beside(self, path):
+        """The confirmed week file saved next to the log, or None."""
+        folder = os.path.dirname(os.fspath(path))
+        week_path = os.path.join(folder, "week.json") if folder else "week.json"
+        if not os.path.exists(week_path):
+            return None
+        try:
+            with open(week_path, encoding="utf-8") as handle:
+                data = json.load(handle)
+        except (OSError, json.JSONDecodeError):
+            return None
+        if not isinstance(data, dict):
+            return None
+        confirmation = data.get("confirmation")
+        if not isinstance(confirmation, dict) or not confirmation.get("record_id"):
+            return None
+        return data
 
     def _empty(self, message: str, window_days, logs=None, user=None, as_of=None, targets=None, week=None) -> Dict:
         charts = []
@@ -185,8 +209,49 @@ class Dashboard:
             "next": self._next_log(logs, today),
         }
 
+    def _session_done(self, logs, today) -> bool:
+        """True when today's exercises each have a set, or the session says so."""
+        if not isinstance(today, dict):
+            return False
+        if today.get("completed") in (True, "yes", "true", 1):
+            return True
+        day = _parse_day(today.get("date"))
+        names = self._exercise_names(today)
+        logged = self._logged_names(logs, day)
+        if not names:
+            return bool(logged)
+        return all(name in logged for name in names)
+
+    def _exercise_names(self, session) -> List[str]:
+        names = []
+        exercises = session.get("exercises") if isinstance(session, dict) else None
+        if not isinstance(exercises, list):
+            return names
+        for item in exercises:
+            raw = item.get("name") if isinstance(item, dict) else item
+            if isinstance(raw, str) and raw.strip():
+                names.append(" ".join(raw.lower().split()))
+        return names
+
+    def _logged_names(self, logs, day):
+        found = set()
+        if not isinstance(logs, dict) or day is None:
+            return found
+        values = logs.get("sets")
+        if not isinstance(values, list):
+            return found
+        for item in values:
+            if not isinstance(item, dict):
+                continue
+            if _parse_day(item.get("date") or item.get("day")) != day:
+                continue
+            name = item.get("exercise")
+            if isinstance(name, str) and name.strip():
+                found.add(" ".join(name.lower().split()))
+        return found
+
     def _next_log(self, logs, today):
-        if isinstance(today, dict) and today.get("completed") not in (True, "yes", "true", 1):
+        if isinstance(today, dict) and not self._session_done(logs, today):
             return "Log today's session."
         if not self._has_rows(logs, ("weights", "weight")):
             return "Log a weight."
@@ -264,6 +329,9 @@ class Dashboard:
             row["exercise"] = " ".join(name.split())
             row["weight"] = weight
             row["reps"] = reps
+            count = _number(item.get("sets"))
+            if count is not None and count > 0:
+                row["count"] = count
         return row
 
     def _weight_chart(self, rows) -> Dict:
@@ -293,10 +361,53 @@ class Dashboard:
             })
         return {"id": key, "title": title, "kind": "bar", "points": points}
 
-    def _adherence_chart(self, rows) -> Dict:
-        sessions = [row for row in rows if row["kind"] == "session" and row.get("planned")]
-        planned = len(sessions)
-        completed = sum(1 for row in sessions if row["completed"])
+    def _week_is_confirmed(self, week) -> bool:
+        if not isinstance(week, dict):
+            return False
+        confirmation = week.get("confirmation")
+        return isinstance(confirmation, dict) and bool(confirmation.get("record_id"))
+
+    def _week_in_window(self, week, start, end):
+        if not self._week_is_confirmed(week) or start is None or end is None:
+            return None
+        sessions = week.get("sessions")
+        if not isinstance(sessions, list):
+            return []
+        chosen = []
+        for item in sessions:
+            if not isinstance(item, dict):
+                continue
+            day = _parse_day(item.get("date"))
+            if day is not None and start <= day <= end:
+                chosen.append(item)
+        return chosen
+
+    def _week_session_done(self, session, rows) -> bool:
+        day = _parse_day(session.get("date"))
+        if any(
+            row["kind"] == "session" and row["date"] == day and row.get("completed")
+            for row in rows
+        ):
+            return True
+        names = self._exercise_names(session)
+        logged = {
+            row["exercise"].strip().lower()
+            for row in rows
+            if row["kind"] == "set" and row["date"] == day
+        }
+        if not names:
+            return bool(logged)
+        return all(name in logged for name in names)
+
+    def _adherence_chart(self, rows, week=None, start=None, end=None) -> Dict:
+        planned_sessions = self._week_in_window(week, start, end)
+        if planned_sessions is not None:
+            planned = len(planned_sessions)
+            completed = sum(1 for item in planned_sessions if self._week_session_done(item, rows))
+        else:
+            sessions = [row for row in rows if row["kind"] == "session" and row.get("planned")]
+            planned = len(sessions)
+            completed = sum(1 for row in sessions if row["completed"])
         rate = None if planned == 0 else round(completed / planned, 2)
         return {
             "id": "adherence",
@@ -328,6 +439,19 @@ class Dashboard:
                 "date": row["date"].isoformat(),
             })
         return {"id": "records", "title": "Personal records", "kind": "table", "rows": table}
+
+    def _volume_chart(self, rows) -> Dict:
+        """Sets times reps times kilograms for each session date."""
+        totals: Dict[date, float] = {}
+        for row in rows:
+            if row["kind"] != "set":
+                continue
+            count = row.get("count", 1)
+            totals[row["date"]] = totals.get(row["date"], 0) + row["weight"] * row["reps"] * count
+        points = []
+        for day in sorted(totals):
+            points.append({"date": day.isoformat(), "volume": _whole(totals[day])})
+        return {"id": "volume", "title": "Weekly volume", "kind": "bar", "points": points}
 
     def _age(self, user) -> Optional[float]:
         if "age" not in user:

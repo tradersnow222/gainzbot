@@ -2,6 +2,6 @@
 
 The script is `/workspace/gainzbot/dashboard.py`.
 
-Call `dashboard.Dashboard.build` from `/workspace/gainzbot`. It only reads logs. Pass `log_path="/workspace/gainzbot/data/log.json"` when the saved log is what they want to see.
+Call `dashboard.Dashboard.build_saved` from `/workspace/gainzbot` with `/workspace/gainzbot/data/log.json`. It only reads logs. It reads `week.json` beside that log for adherence. A weigh-in is `log_store.log_weight`.
 
 If this script is missing, say so and skip that step.

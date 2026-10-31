@@ -28,6 +28,34 @@ def test_one_yes_starts_the_daily_loop_at_default_times():
     assert change_loop_time("morning 6:30 unless I'm busy", weekly)["daily_checkin"] == "06:30"
 
 
+def test_a_local_6_30_cron_does_not_shift_across_november_daylight_saving():
+    from datetime import datetime, timezone
+    from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
+
+    from routines import routine_cron
+
+    assert routine_cron("06:30") == "30 6 * * *"
+    guide = Path("template/routines.md").read_text(encoding="utf-8")
+    assert "30 6 * * *" in guide
+    assert "do not convert the hour to utc" in guide.lower()
+    assert "zoneinfo" in guide
+    try:
+        zone = ZoneInfo("America/Los_Angeles")
+    except ZoneInfoNotFoundError:
+        raise AssertionError(
+            "America/Los_Angeles is missing from the platform time zone database. "
+            "template/routines.md documents that this check cannot run without it. "
+            "Do not treat a UTC hour as the routine time."
+        )
+    before = datetime(2026, 10, 31, 6, 30, tzinfo=zone)
+    after = datetime(2026, 11, 2, 6, 30, tzinfo=zone)
+    assert routine_cron(before.strftime("%H:%M")) == "30 6 * * *"
+    assert routine_cron(after.strftime("%H:%M")) == "30 6 * * *"
+    assert before.astimezone(timezone.utc).hour != after.astimezone(timezone.utc).hour
+    assert before.astimezone(timezone.utc).hour == 13
+    assert after.astimezone(timezone.utc).hour == 14
+
+
 def test_the_first_check_in_is_the_saturday_before_a_monday_start():
     from routines import first_checkin_day
 
@@ -415,7 +443,6 @@ def test_a_no_with_anything_else_asks_the_symptom_line_again():
         "no, болит грудь",
         "no no 8 fine 45 (actually chest tight)",
         "no, but new pain in my knee",
-        "no 🤕",
         "no idea",
     )
     for reply in unclear:
@@ -425,6 +452,12 @@ def test_a_no_with_anything_else_asks_the_symptom_line_again():
         assert again == _SYMPTOM, reply
         assert loop.phase[day] == "symptom"
         assert day not in loop.workouts
+    bandage = DailyLoop(load=80, minutes=45, profile=adult_profile())
+    bandage.open_morning(day)
+    paused = bandage.hear(day, "no \U0001F915")
+    assert bandage.phase[day] == "paused"
+    assert day not in bandage.workouts
+    assert "head" in paused.lower() or "doctor" in paused.lower()
     for reply in ("no", "no 8 45", "no 8 fine 45"):
         loop = DailyLoop(load=80, minutes=45, profile=adult_profile())
         loop.open_morning(day)
