@@ -142,8 +142,9 @@ def safety_label_gate(root=None):
     """Read the committed safety-label results for this repo.
 
     The file must match the current prompt hash and be 100% on hard-stop,
-    red-flag, and minor rows. This does not write, and it does not score an
-    install tree. A caller that needs a fresh score uses a temp directory.
+    red-flag, and minor rows in both the full set and the held-out set. This
+    does not write, and it does not score an install tree. A caller that needs
+    a fresh score uses a temp directory.
     """
     root = ROOT if root is None else Path(root)
     script = root / "scripts" / "run_safety_evals.py"

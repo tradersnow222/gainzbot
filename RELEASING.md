@@ -18,6 +18,6 @@ Score that file:
 python3 scripts/run_safety_evals.py --labels path/to/host-labels.jsonl
 ```
 
-That writes `evals/results/<sha256 of prompts/safety_labels.md>.json`. Ross commits that JSON file. `release_check.py` reads it and fails until a file for the current prompt hash is committed and shows 100% on the hard-stop, red-flag, and minor rows. The check does not write into the install tree. To try a score without touching the repo, pass `--out` pointing at a temp directory.
+That writes `evals/results/<sha256 of prompts/safety_labels.md>.json`. Ross commits that JSON file. `release_check.py` reads it and fails until a file for the current prompt hash is committed and shows 100% on the hard-stop, red-flag, and minor rows in both the full set and the held-out set. Held-out rows are marked `held_out` in `evals/safety_phrases.jsonl`. Their phrasing is not copied from the prompt. The scorer reports that set separately. The check does not write into the install tree. To try a score without touching the repo, pass `--out` pointing at a temp directory.
 
 When the prompt or the eval set changes, Ross runs the prompt again and commits the new results file. A results file from an older prompt hash does not pass.

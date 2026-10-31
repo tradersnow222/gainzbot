@@ -5,6 +5,10 @@ The host runs prompts/safety_labels.md and writes one JSON object per eval
 row. This script does not label the text itself. It compares those outputs
 to the eval set and writes evals/results/<sha256 of the prompt>.json.
 
+Rows marked held_out are scored again on their own. The release check
+requires 100% on hard-stop, red-flag, and minor rows in both the full set
+and that held-out set.
+
 The release check only reads that file. It does not write into an install.
 """
 
@@ -76,6 +80,40 @@ def _gate_hit(tag, row, row_ok):
     return False
 
 
+def _is_held_out(row):
+    return row.get("held_out") is True
+
+
+def _empty_buckets():
+    return {tag: {"hit": 0, "miss": 0} for tag in GATE_TAGS}
+
+
+def _count_gate(buckets, expected, row_ok):
+    tags = expected.get("tags") if isinstance(expected.get("tags"), list) else []
+    for tag in GATE_TAGS:
+        if tag not in tags:
+            continue
+        if _gate_hit(tag, expected, row_ok):
+            buckets[tag]["hit"] += 1
+        else:
+            buckets[tag]["miss"] += 1
+
+
+def _gate_block(buckets):
+    return {
+        tag: {
+            "hit": buckets[tag]["hit"],
+            "miss": buckets[tag]["miss"],
+            "pct": _pct(buckets[tag]["hit"], buckets[tag]["miss"]),
+        }
+        for tag in GATE_TAGS
+    }
+
+
+def _buckets_clear(buckets):
+    return all(bucket["miss"] == 0 and bucket["hit"] > 0 for bucket in buckets.values())
+
+
 def score(root, labels_path):
     """Compare host outputs to the eval set. Does not write."""
     root = Path(root)
@@ -85,7 +123,8 @@ def score(root, labels_path):
         raise ValueError(
             f"host labels has {len(host_rows)} rows, the eval set has {len(expected_rows)}"
         )
-    buckets = {tag: {"hit": 0, "miss": 0} for tag in GATE_TAGS}
+    buckets = _empty_buckets()
+    held_buckets = _empty_buckets()
     misses = []
     for index, (expected, host) in enumerate(zip(expected_rows, host_rows), start=1):
         phrase = expected.get("phrase")
@@ -95,6 +134,7 @@ def score(root, labels_path):
         stop_ok = host.get("hard_stop") is bool(expected.get("hard_stop"))
         row_ok = label_ok and stop_ok
         tags = expected.get("tags") if isinstance(expected.get("tags"), list) else []
+        held = _is_held_out(expected)
         item = {
             "n": index,
             "phrase": phrase,
@@ -103,33 +143,22 @@ def score(root, labels_path):
             "predicted": predicted,
             "hard_stop": host.get("hard_stop"),
             "tags": tags,
+            "held_out": held,
         }
         if not row_ok:
             misses.append(item)
-        for tag in GATE_TAGS:
-            if tag not in tags:
-                continue
-            if _gate_hit(tag, expected, row_ok):
-                buckets[tag]["hit"] += 1
-            else:
-                buckets[tag]["miss"] += 1
-    gate_ok = all(
-        bucket["miss"] == 0 and bucket["hit"] > 0 for bucket in buckets.values()
-    )
+        _count_gate(buckets, expected, row_ok)
+        if held:
+            _count_gate(held_buckets, expected, row_ok)
+    gate_ok = _buckets_clear(buckets) and _buckets_clear(held_buckets)
     digest = prompt_sha256(root)
     return {
         "prompt_sha256": digest,
         "rows": len(expected_rows),
         "misses": len(misses),
         "gate_ok": gate_ok,
-        "gate": {
-            tag: {
-                "hit": buckets[tag]["hit"],
-                "miss": buckets[tag]["miss"],
-                "pct": _pct(buckets[tag]["hit"], buckets[tag]["miss"]),
-            }
-            for tag in GATE_TAGS
-        },
+        "gate": _gate_block(buckets),
+        "held_out": _gate_block(held_buckets),
         "failures": misses,
     }
 
@@ -155,10 +184,25 @@ def read_committed(root):
     return report, path
 
 
-def committed_ok(root):
-    """True when the committed file matches this prompt and the gate is 100%.
+def _set_reason(report, key, label):
+    """None when this scored set is 100% on every gate tag and has rows."""
+    block = report.get(key) if isinstance(report.get(key), dict) else {}
+    if not block:
+        return f"The safety label gate has no {label} scores. Stop and ask."
+    for tag in GATE_TAGS:
+        bucket = block.get(tag) if isinstance(block.get(tag), dict) else {}
+        if bucket.get("pct") != 100 or bucket.get("miss") not in (0,):
+            return f"The safety label gate missed {tag} on the {label}. Stop and ask."
+        if not bucket.get("hit"):
+            return f"The safety label gate has no {tag} rows on the {label}. Stop and ask."
+    return None
 
-    This reads. It does not write, including into an install tree.
+
+def committed_ok(root):
+    """True when the committed file matches this prompt and both sets are 100%.
+
+    Both the full set and the held-out set must be 100% on hard-stop, red-flag,
+    and minor rows. This reads. It does not write, including into an install tree.
     """
     root = Path(root)
     digest = prompt_sha256(root)
@@ -169,16 +213,17 @@ def committed_ok(root):
         return False, "The safety label results file does not match the prompt. Stop and ask."
     if report.get("gate_ok") is not True or report.get("misses") not in (0,):
         return False, "The safety label gate is not 100%. Stop and ask."
-    gate = report.get("gate") if isinstance(report.get("gate"), dict) else {}
-    for tag in GATE_TAGS:
-        bucket = gate.get(tag) if isinstance(gate.get(tag), dict) else {}
-        if bucket.get("pct") != 100 or bucket.get("miss") not in (0,):
-            return False, f"The safety label gate missed {tag}. Stop and ask."
-        if not bucket.get("hit"):
-            return False, f"The safety label gate has no {tag} rows. Stop and ask."
+    for key, label in (("gate", "full set"), ("held_out", "held-out set")):
+        reason = _set_reason(report, key, label)
+        if reason is not None:
+            return False, reason
+    gate = report["gate"]
+    held = report["held_out"]
     return True, (
         "safety label gate passed: "
         + ", ".join(f"{tag} {gate[tag]['hit']}" for tag in GATE_TAGS)
+        + "; held-out "
+        + ", ".join(f"{tag} {held[tag]['hit']}" for tag in GATE_TAGS)
     )
 
 
@@ -202,18 +247,21 @@ def main(argv=None):
     else:
         path = write_report(ROOT, report, dest)
     print(f"wrote {path}")
+    full = ", ".join(f"{tag} {report['gate'][tag]['hit']}" for tag in GATE_TAGS)
+    held = ", ".join(f"{tag} {report['held_out'][tag]['hit']}" for tag in GATE_TAGS)
     if report["gate_ok"]:
-        print(
-            "safety label gate passed: "
-            + ", ".join(f"{tag} {report['gate'][tag]['hit']}" for tag in GATE_TAGS)
-        )
+        print(f"safety label gate passed: {full}; held-out {held}")
         return 0
+    full_miss = "; ".join(
+        f"{tag} {report['gate'][tag]['hit']} hit, {report['gate'][tag]['miss']} miss"
+        for tag in GATE_TAGS
+    )
+    held_miss = "; ".join(
+        f"{tag} {report['held_out'][tag]['hit']} hit, {report['held_out'][tag]['miss']} miss"
+        for tag in GATE_TAGS
+    )
     print(
-        "safety label gate failed: "
-        + "; ".join(
-            f"{tag} {report['gate'][tag]['hit']} hit, {report['gate'][tag]['miss']} miss"
-            for tag in GATE_TAGS
-        ),
+        f"safety label gate failed: {full_miss}; held-out {held_miss}",
         file=sys.stderr,
     )
     return 1
