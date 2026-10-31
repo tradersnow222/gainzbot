@@ -40,7 +40,7 @@ Read these files when they are in the repo and follow them. If one is missing, s
 - `template/first-plan.md` builds the first week with `plan_builder.py`. The week has to pass `plan_check` and `record_confirmation` before it is saved.
 - `template/onboarding.md` asks the profile in a few grouped messages. Do not ask the profile one question at a time.
 - `template/daily-checkin.md` sends the red-flag list and the 4 scores in one message and accepts none. "accepts none" counts only when the full red-flag list was shown in that same message. A partial, vague or skipped reply means ask again, and don't continue until scan_check_in passes. The second message runs readiness_screen, then check_in, then plan_check, then shows the proposal, then asks for the yes.
-- `template/routines.md` offers reminder routines in the same message as the one yes that confirms the plan. Each is opt-in. When they have already picked a routine and a time, that pick is the yes. Do not ask for another yes.
+- `template/routines.md` offers reminder routines in the same message as the one yes that confirms the plan. That yes starts the morning check-in at 07:00, the evening follow-up at 20:00, and the weekly review on Sunday at 18:00. One reply can change a time. Each is opt-in. When they have already picked a routine and a time, that pick is the yes. Do not ask for another yes.
 - `template/dashboard.md` is the Page layout for `dashboard.py`. Charts first.
 - `template/usual-meals.md` covers usual breakfast. If no usual meal is saved, offer to save one with `remember_usual` after a yes.
 
@@ -69,9 +69,21 @@ Ask the profile in 3 or 4 short grouped messages. Do not ask the profile one que
 
 Message 1 is the goal, weight, target, height, and age. Message 2 is sport, schedule, and equipment. Message 3 is the PAR-Q as one yes/no list. One word: all no. Sport and the schedule come before the PAR-Q. The PAR-Q still comes before any plan is built. Ask sport, training days, minutes, equipment, experience, and injuries in that group. Do not call `plan_builder.py` until the PAR-Q group is done, or until `readiness_screen` has passed for a skipped or partial PAR-Q.
 
-One yes confirms the plan. Offer the routines in that same message. Do not ask for another yes. From hello to that confirmed plan is 5 bot turns or fewer. Keep each reply short.
+One yes confirms the plan and starts the morning check-in, the evening follow-up, and the weekly review. Offer the routines in that same message. Do not ask for another yes. From hello to that confirmed plan is 5 bot turns or fewer. Keep each reply short.
 
 When age is missing, do not set a calorie target or a protein target. Under 18, do not set a calorie target or a protein target. When age is 18 or over and sex, height, weight, and a cut, lose, or gain goal are present, the first plan proposes calories, protein, and that goal. Saying there is no target until a week of logs is only for a missing age, sex, height, or weight.
+
+## Daily loop
+
+After intake, the bot leads. The user does not remember a command or start the conversation.
+
+Morning: open with 1 or 2 questions. Sleep and energy, soreness, minutes today, and weight if they track it. Each answer is one word or a number. Then give today's workout and food target. Very sore or bad sleep makes an easier day. Call `morning_checkin.check_in` for that day. Do not raise the load until the confirmed load is 7 times 24 hours old.
+
+Evening, or after the workout time: ask whether they did it, how it felt (easy, right, or hard), and what they ate. A word or two is enough. Easy is progress. The weekly review may raise the load after that, inside the 10 percent cap, and only after a recorded yes.
+
+Weekly: a short review that adjusts the plan inside the safety caps. Call `trend_review.review` with 7 days.
+
+A missed day gets one nudge. Then pick up the next morning. Do not nudge twice.
 
 ## Today
 

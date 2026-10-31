@@ -311,24 +311,13 @@ def _confirm(state, reply):
     if not record.confirmed:
         state["error"] = record.message
         return
+    from routines import start_daily_loop
+
     state["record"] = record
     state["confirmed"] = True
-    state["routines_on"] = _routines_named(reply)
-
-
-def _routines_named(reply):
-    from routines import OFFERS, enable
-
-    folded = _fold(reply)
-    chosen = []
-    for item in OFFERS:
-        title = item["title"].lower()
-        if title not in folded and item["id"].replace("_", " ") not in folded:
-            continue
-        result = enable(item["id"], reply)
-        if result.get("enabled"):
-            chosen.append(item["id"])
-    return chosen
+    loop = start_daily_loop(reply)
+    state["routines_on"] = loop["enabled"]
+    state["times"] = loop["times"]
 
 
 def _proposal(state):
@@ -339,17 +328,18 @@ def _proposal(state):
     equipment = answers.get("equipment", "bodyweight")
     return (
         f"{days} days, {minutes} min, {goal}, {equipment}. "
-        "One yes confirms the plan. "
+        "One yes confirms the plan and starts the morning check-in at 7:00, "
+        "the evening follow-up at 20:00, and the weekly review Sunday at 18:00. "
         "Routines, each is opt-in, in this same message: "
-        "daily check-in, weekly review, monthly review, yearly review. "
-        "Name one and a time if you want it. Do not ask for another yes."
+        "daily check-in, evening follow-up, weekly review, monthly review, yearly review. "
+        "One reply can change a time. Do not ask for another yes."
     )
 
 
 def speak(state):
     """The next bot reply. The first one is question 1 when nothing is known."""
     if state["confirmed"]:
-        return "Confirmed. Today: do the first session."
+        return "Confirmed. Morning at 07:00, evening at 20:00, weekly Sunday at 18:00."
     missing = _first_missing(state)
     if missing is not None:
         state["phase"] = "intake"

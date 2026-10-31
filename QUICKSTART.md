@@ -2,7 +2,7 @@
 
 From a fresh checkout to a Grok Bot you can message in under 5 minutes.
 
-The first reply asks the first intake question right away. Do not clone, install, pip, run a test, or call release_check before that question. Run setup and release_check in the background, or after intake. Intake is 3 short messages: goal, weight, target, height, and age; then sport, schedule, and equipment; then the PAR-Q as one yes/no list, where all no is one word. Answers can arrive in any order or all at once. Ask only for what is missing. One word ok accepts the defaults. One yes confirms the plan, and the routine offer is in that same message. From hello to a confirmed plan is 5 bot turns or fewer.
+The first reply asks the first intake question right away. Do not clone, install, pip, run a test, or call release_check before that question. Run setup and release_check in the background, or after intake. Intake is 3 short messages: goal, weight, target, height, and age; then sport, schedule, and equipment; then the PAR-Q as one yes/no list, where all no is one word. Answers can arrive in any order or all at once. Ask only for what is missing. One word ok accepts the defaults. One yes confirms the plan, and the routine offer is in that same message. From hello to a confirmed plan is 5 bot turns or fewer. That yes also starts the morning check-in at 07:00, the evening follow-up at 20:00, and the weekly review on Sunday at 18:00. One reply can change a time. After that the bot opens each morning with 1 or 2 short questions, gives today's workout and food target, and follows up in the evening. A missed day gets one nudge, then the next morning. The user does not remember a command.
 
 ## 1. Put the repo on the bot's computer
 

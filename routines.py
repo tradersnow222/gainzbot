@@ -6,9 +6,26 @@ import re
 
 OFFERS = (
     {"id": "daily_checkin", "window_days": None, "title": "Daily check-in"},
+    {"id": "evening_followup", "window_days": None, "title": "Evening follow-up"},
     {"id": "weekly_review", "window_days": 7, "title": "Weekly review"},
     {"id": "monthly_review", "window_days": 28, "title": "Monthly review"},
     {"id": "yearly_review", "window_days": 365, "title": "Yearly review"},
+)
+
+# The plan yes turns these three on together. Monthly and yearly stay off.
+LOOP_IDS = ("daily_checkin", "evening_followup", "weekly_review")
+DEFAULT_LOOP_TIMES = {
+    "daily_checkin": "07:00",
+    "evening_followup": "20:00",
+    "weekly_review": "Sun 18:00",
+}
+_LOOP_SLOT = (
+    ("daily_checkin", re.compile(r"\b(?:morning|check-in|checkin)\b")),
+    ("evening_followup", re.compile(r"\b(?:evening|follow-up|follow up)\b")),
+    ("weekly_review", re.compile(r"\bweekly\b")),
+)
+_WEEKDAY = re.compile(
+    r"\b(sunday|monday|tuesday|wednesday|thursday|friday|saturday)\b"
 )
 
 _YES = {"yes", "yes, i confirm."}
@@ -90,3 +107,71 @@ def enable(choice, reply):
         "window_days": known[choice]["window_days"],
         "message": "That routine is on. The others stay off.",
     }
+
+
+def _clock_value(text):
+    """One real clock, or None. 25:99 is not a time. 6:30 and 8pm are."""
+    match = _CLOCK_TIME.search(text)
+    if match:
+        hour, minute = int(match.group(1)), int(match.group(2))
+        if hour > 23 or minute > 59:
+            return None
+        return f"{hour:02d}:{minute:02d}"
+    match = _CLOCK_AMPM.search(text)
+    if match:
+        hour = int(match.group(1))
+        if not 1 <= hour <= 12:
+            return None
+        if match.group(2) == "pm" and hour != 12:
+            hour += 12
+        if match.group(2) == "am" and hour == 12:
+            hour = 0
+        return f"{hour:02d}:00"
+    return None
+
+
+def start_daily_loop(reply):
+    """The plan yes starts morning, evening, and weekly. One reply can change a time later."""
+    from record_confirmation import is_clear_yes
+
+    if not is_clear_yes(reply):
+        return {
+            "ok": False,
+            "enabled": [],
+            "times": {},
+            "message": "The daily loop stays off until they say yes.",
+        }
+    return {
+        "ok": True,
+        "enabled": list(LOOP_IDS),
+        "times": dict(DEFAULT_LOOP_TIMES),
+        "message": (
+            "Morning check-in at 07:00, evening follow-up at 20:00, "
+            "weekly review Sunday at 18:00. One reply can change a time. "
+            "Monthly and yearly stay off."
+        ),
+    }
+
+
+def change_loop_time(reply, times):
+    """Change a default time in one reply. A bad clock or a hedge leaves the times alone."""
+    if not isinstance(reply, str) or not isinstance(times, dict):
+        return dict(times or {})
+    text = " ".join(reply.lower().split())
+    updated = dict(times)
+    if _HEDGE.search(text):
+        return updated
+    clock = _clock_value(text)
+    if clock is None:
+        return updated
+    named = [slot for slot, pattern in _LOOP_SLOT if pattern.search(text)]
+    if not named:
+        return updated
+    day = _WEEKDAY.search(text)
+    for slot in named:
+        if slot == "weekly_review":
+            prefix = day.group(1).title() if day else "Sun"
+            updated[slot] = f"{prefix} {clock}"
+        else:
+            updated[slot] = clock
+    return updated

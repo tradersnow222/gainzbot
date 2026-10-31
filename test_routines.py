@@ -13,11 +13,12 @@ def test_four_routines_start_off():
     shown = offer()
     assert [item["id"] for item in shown] == [
         "daily_checkin",
+        "evening_followup",
         "weekly_review",
         "monthly_review",
         "yearly_review",
     ]
-    assert [item["window_days"] for item in OFFERS] == [None, 7, 28, 365]
+    assert [item["window_days"] for item in OFFERS] == [None, None, 7, 28, 365]
     assert all(item["enabled"] is False for item in shown)
 
 
@@ -59,6 +60,7 @@ def test_the_guide_lists_each_routine_as_opt_in():
     assert "each is opt-in" in lowered
     assert "that pick is the yes" in lowered
     assert "daily check-in" in lowered
+    assert "evening follow-up" in lowered
     assert "weekly review" in lowered
     assert "monthly review" in lowered
     assert "yearly review" in lowered

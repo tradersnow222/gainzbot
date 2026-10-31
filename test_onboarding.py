@@ -101,7 +101,10 @@ def test_happy_path_confirms_in_five_bot_turns_or_fewer():
     state, bots = run_chat(HAPPY_PATH)
     assert state["confirmed"] is True
     assert state["record"].confirmed is True
-    assert state["routines_on"] == []
+    assert state["routines_on"] == ["daily_checkin", "evening_followup", "weekly_review"]
+    assert state["times"]["daily_checkin"] == "07:00"
+    assert state["times"]["evening_followup"] == "20:00"
+    assert state["times"]["weekly_review"] == "Sun 18:00"
     assert state["turns"] == len(bots)
     assert len(bots) <= 5
     assert bots[0] == question_one()
