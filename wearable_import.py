@@ -3,21 +3,25 @@
 Bring in wearable data by free routes only.
 
 Parse an Apple Health export, or check a screenshot summary the user
-already has. Garmin's personal API stays behind a flag and never connects
-without a real yes from the user. This script stores readings. It does
-not change the plan and it does not set a calorie target.
+already has. Each path needs record_confirmation for that source. A bare
+true flag does not count. Garmin's personal API stays behind a flag.
+Weight outside 25 to 350 kg, and more than 100000 steps in a day, are
+rejected. This script stores readings. It does not change the plan and
+it does not set a calorie target.
 """
 
-from datetime import datetime
+from datetime import date, datetime, timezone
 from typing import Dict, Optional
 from xml.etree import ElementTree
 import io
 import os
+import re
 import sys
 import zipfile
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from guardrails.validate import InputValidator, ValidationError
+from record_confirmation import ConfirmationRecord, ConfirmationRecorder
 
 
 GROK_SUMMARY_PROMPT = (
@@ -27,6 +31,48 @@ GROK_SUMMARY_PROMPT = (
 )
 
 _LB_PER_KG = 2.2046226218
+MIN_WEIGHT_KG = 25
+MAX_WEIGHT_KG = 350
+MAX_STEPS_PER_DAY = 100000
+_DATE = re.compile(r"^\d{4}-\d{2}-\d{2}$")
+_STAMP = re.compile(
+    r"^\d{4}-\d{2}-\d{2}[T ]\d{2}:\d{2}:\d{2}(?:\.\d+)?(?:Z|[+-]\d{2}:\d{2})$"
+)
+
+
+def _confirmed(confirmation, plan) -> bool:
+    return (
+        isinstance(confirmation, ConfirmationRecord)
+        and ConfirmationRecorder().covers(confirmation, plan)
+    )
+
+
+def _real_day(value) -> Optional[str]:
+    """A real calendar day. US dates and words like yesterday fail."""
+    if isinstance(value, datetime):
+        if value.tzinfo is None:
+            return value.date().isoformat()
+        return value.astimezone(timezone.utc).date().isoformat()
+    if isinstance(value, date):
+        return value.isoformat()
+    if not isinstance(value, str):
+        return None
+    text = value.strip()
+    if _DATE.fullmatch(text):
+        try:
+            return date.fromisoformat(text).isoformat()
+        except ValueError:
+            return None
+    if not _STAMP.fullmatch(text):
+        return None
+    iso = text[:-1] + "+00:00" if text.endswith("Z") else text
+    try:
+        parsed = datetime.fromisoformat(iso)
+    except ValueError:
+        return None
+    if parsed.tzinfo is None:
+        return None
+    return parsed.astimezone(timezone.utc).date().isoformat()
 
 
 def _apple_dt(value) -> Optional[datetime]:
@@ -50,7 +96,9 @@ def _whole(value: float):
 class WearableImport:
     """Local import plus an optional Garmin fetch that stays off by default."""
 
-    def parse_apple_health(self, source) -> Dict:
+    def parse_apple_health(self, source, confirmation=None) -> Dict:
+        if not _confirmed(confirmation, {"source": "apple_health"}):
+            return self._no("This Apple Health export needs record_confirmation before it is read.")
         raw = self._read_source(source)
         if isinstance(raw, dict):
             return raw
@@ -66,10 +114,15 @@ class WearableImport:
             kind = node.attrib.get("type", "")
             if kind == "HKQuantityTypeIdentifierBodyMass":
                 point = self._weight(node)
-                if point:
-                    weights.append(point)
+                if not point:
+                    continue
+                if point.get("error"):
+                    return self._no("Weight has to be between 25 and 350 kg.")
+                weights.append(point)
             elif kind == "HKQuantityTypeIdentifierStepCount":
-                self._add_steps(steps, node)
+                added = self._add_steps(steps, node)
+                if added == "too many":
+                    return self._no("Steps over 100,000 in a day are rejected.")
             elif kind == "HKCategoryTypeIdentifierSleepAnalysis":
                 self._add_sleep(sleep, node)
         for node in root.iter("Workout"):
@@ -88,10 +141,12 @@ class WearableImport:
             "workouts": workouts,
         }
 
-    def store_summary(self, reading, user_ok=False) -> Dict:
+    def store_summary(self, reading, confirmation=None) -> Dict:
         """Store a screenshot summary. This does not connect an account."""
-        if user_ok is not True:
-            return self._no("Nothing is connected without your OK.")
+        if not isinstance(reading, dict):
+            return self._no("The summary has to be an object.")
+        if not _confirmed(confirmation, reading):
+            return self._no("This summary needs record_confirmation before it is stored.")
         checked = self._summary(reading)
         if not checked["ok"]:
             return checked
@@ -104,12 +159,12 @@ class WearableImport:
             "reading": checked["reading"],
         }
 
-    def fetch_garmin(self, user_ok=False, fetcher=None, enabled=False) -> Dict:
-        """Optional personal API. Off unless the flag is on and the user agreed."""
+    def fetch_garmin(self, confirmation=None, fetcher=None, enabled=False) -> Dict:
+        """Optional personal API. Off unless the flag is on and the source is confirmed."""
         if enabled is not True:
             return self._no("Garmin personal API is off.")
-        if user_ok is not True:
-            return self._no("Nothing is connected without your OK.")
+        if not _confirmed(confirmation, {"source": "garmin"}):
+            return self._no("Garmin needs record_confirmation before anything is connected.")
         if not callable(fetcher):
             return self._no("No request was sent.")
         payload = fetcher()
@@ -163,18 +218,24 @@ class WearableImport:
             value = value / _LB_PER_KG
         elif unit not in {"kg", "kgm"}:
             return None
+        if value < MIN_WEIGHT_KG or value > MAX_WEIGHT_KG:
+            return {"error": "weight"}
         return {"date": when.date().isoformat(), "kg": _whole(value)}
 
-    def _add_steps(self, steps, node) -> None:
+    def _add_steps(self, steps, node) -> Optional[str]:
         when = _apple_dt(node.attrib.get("startDate"))
         if when is None:
-            return
+            return None
         try:
             value = InputValidator.parse_number(node.attrib.get("value"), "steps", allow_zero=True)
         except ValidationError:
-            return
+            return None
         day = when.date().isoformat()
-        steps[day] = steps.get(day, 0) + value
+        total = steps.get(day, 0) + value
+        if total > MAX_STEPS_PER_DAY:
+            return "too many"
+        steps[day] = total
+        return None
 
     def _add_sleep(self, sleep, node) -> None:
         value = node.attrib.get("value") or ""
@@ -215,6 +276,8 @@ class WearableImport:
         try:
             if reading.get("steps") is not None:
                 steps = InputValidator.parse_number(reading["steps"], "steps", allow_zero=True)
+                if steps > MAX_STEPS_PER_DAY:
+                    return self._no("Steps over 100,000 in a day are rejected.")
                 kept["steps"] = _whole(steps)
             if reading.get("sleep_hours") is not None:
                 hours = InputValidator.parse_number(reading["sleep_hours"], "sleep_hours", allow_zero=True)
@@ -228,13 +291,17 @@ class WearableImport:
                 kept["resting_hr"] = _whole(heart)
             if reading.get("weight_kg") is not None:
                 weight = InputValidator.parse_number(reading["weight_kg"], "weight_kg")
+                if weight < MIN_WEIGHT_KG or weight > MAX_WEIGHT_KG:
+                    return self._no("Weight has to be between 25 and 350 kg.")
                 kept["weight_kg"] = _whole(weight)
         except ValidationError as exc:
             return self._no(str(exc))
+        day = _real_day(reading.get("date"))
+        if day is None:
+            return self._no("The summary date needs a real date.")
         if not kept:
             return self._no("The summary has no usable numbers.")
-        if isinstance(reading.get("date"), str):
-            kept["date"] = reading["date"][:10]
+        kept["date"] = day
         return {"ok": True, "reading": kept}
 
     def _no(self, message: str) -> Dict:
