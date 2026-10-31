@@ -941,7 +941,7 @@ def test_a_crashed_save_is_recovered_on_the_next_load(tmp_path):
     (tmp_path / "log.json.bak").write_bytes(b'{"confirmations": []}\n')
     kept = LogStore(log_path)
     assert any(row.get("record_id") == record_id for row in kept.data["confirmations"])
-    assert not (tmp_path / "log.json.bak").exists()
+    assert (tmp_path / "log.json.bak").read_bytes() == b'{"confirmations": []}\n'
 
 
 def test_advanced_work_fits_in_the_named_minutes():
@@ -1134,3 +1134,21 @@ def test_an_orphan_backup_cannot_replace_a_log_with_more_rows(tmp_path):
     assert len(restored_plan["meals"]) == 2
     assert restored_plan["weights"][0]["kg"] == 80
     assert not (folder / "log.json.bak").exists()
+
+    same_log = tmp_path / "same.json"
+    same_log.write_bytes(live_bytes)
+    (tmp_path / "same.json.bak").write_bytes(live_bytes)
+    untouched = LogStore(same_log)
+    assert untouched.data["meals"][0]["calories"] == 500
+    assert (tmp_path / "same.json.bak").read_bytes() == live_bytes
+
+    shaped = json.loads(full_bytes.decode("utf-8"))
+    shaped["notes"] = []
+    shaped_bytes = (json.dumps(shaped) + "\n").encode("utf-8")
+    odd = tmp_path / "odd.json"
+    odd.write_bytes(live_bytes)
+    (tmp_path / "odd.json.bak").write_bytes(shaped_bytes)
+    kept_odd = LogStore(odd)
+    assert kept_odd.data["meals"][0]["calories"] == 500
+    assert len(kept_odd.data["meals"]) == 1
+    assert (tmp_path / "odd.json.bak").read_bytes() == shaped_bytes

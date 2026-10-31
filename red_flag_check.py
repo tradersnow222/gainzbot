@@ -18,10 +18,13 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from guardrails.validate import InputValidator, ValidationError
 
 
-def _check_in_seal(message: str) -> str:
+def _check_in_seal(message: str):
     from seal_secret import seal_hex
 
-    return seal_hex(b"check-in", message)
+    try:
+        return seal_hex(b"check-in", message)
+    except OSError:
+        return None
 
 
 def is_passing_check_in(result) -> bool:
@@ -34,6 +37,10 @@ def is_passing_check_in(result) -> bool:
         return False
     expected = _check_in_seal(result.message)
     seal = getattr(result, "issuer_seal", "") or ""
+    if not isinstance(expected, str) or not expected or not seal:
+        return False
+    if len(seal) != len(expected):
+        return False
     return hmac.compare_digest(seal, expected)
 
 
@@ -903,7 +910,15 @@ class RedFlagChecker:
         if questions:
             return self._with_question(result, " ".join(questions))
         if not result.pause_plan and not result.flags_detected:
-            result.issuer_seal = _check_in_seal(result.message)
+            from seal_secret import DATA_FILE_MESSAGE
+
+            seal = _check_in_seal(result.message)
+            if not seal:
+                result.pause_plan = True
+                result.message = DATA_FILE_MESSAGE
+                result.issuer_seal = ""
+                return result
+            result.issuer_seal = seal
         return result
 
     def _flatten(self, value) -> str:

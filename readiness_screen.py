@@ -94,10 +94,13 @@ def _screening_payload(result: ScreeningResult) -> str:
     return json.dumps(body, sort_keys=True, separators=(",", ":"), ensure_ascii=True)
 
 
-def _screening_seal(result: ScreeningResult) -> str:
+def _screening_seal(result: ScreeningResult):
     from seal_secret import seal_hex
 
-    return seal_hex(b"readiness", _screening_payload(result))
+    try:
+        return seal_hex(b"readiness", _screening_payload(result))
+    except OSError:
+        return None
 
 
 def screening_seal_matches(result) -> bool:
@@ -108,6 +111,8 @@ def screening_seal_matches(result) -> bool:
     if not seal:
         return False
     expected = _screening_seal(result)
+    if not isinstance(expected, str) or not expected or not seal:
+        return False
     if len(seal) != len(expected):
         return False
     return hmac.compare_digest(seal, expected)
@@ -405,7 +410,18 @@ class ReadinessScreen:
     def _result(self, *args, **kwargs) -> ScreeningResult:
         kwargs.pop("issuer_seal", None)
         result = ScreeningResult(*args, **kwargs)
-        result.issuer_seal = _screening_seal(result)
+        from seal_secret import DATA_FILE_MESSAGE
+
+        seal = _screening_seal(result)
+        if not seal:
+            result.issuer_seal = ""
+            result.blocked = True
+            reasons = list(result.reasons or [])
+            if DATA_FILE_MESSAGE not in reasons:
+                reasons.append(DATA_FILE_MESSAGE)
+            result.reasons = reasons
+            return result
+        result.issuer_seal = seal
         return result
 
     def _blocked(self, reasons: List[str], recommendations: List[str], **extra) -> ScreeningResult:

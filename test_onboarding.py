@@ -235,6 +235,14 @@ def test_all_no_counts_only_when_the_whole_reply_is_that_phrase():
         "not quite all no",
         "far from all no",
         "i take medication, all no",
+        "all no?",
+        "all no ?",
+        "all no??",
+        "all no?!",
+        "no to all?",
+        "none?",
+        "all no？",
+        "all no :(",
     )
     for reply in unclear:
         state, bots = run_chat(body + [reply, "yes"])
@@ -268,7 +276,6 @@ def test_all_no_counts_only_when_the_whole_reply_is_that_phrase():
         "all no!",
         "all no,",
         "  all no  ",
-        "all no?",
         "all no thanks",
         "all no lol",
         "all no 👍",
@@ -287,3 +294,36 @@ def test_all_no_counts_only_when_the_whole_reply_is_that_phrase():
     longest, asked = run_chat(body + ["chest pain at rest yes, rest no"])
     assert longest["par_q"]["chest_pain_at_rest"] is True
     assert "chest pain at rest" not in asked[-1].lower()
+
+
+def test_an_unreadable_seal_key_stops_without_a_crash(monkeypatch, tmp_path):
+    import os
+
+    from seal_secret import DATA_FILE_MESSAGE
+
+    path = tmp_path / "seal.key"
+    path.write_bytes(b"k" * 32)
+    before = path.read_bytes()
+    mode = path.stat().st_mode
+    monkeypatch.setattr("seal_secret._key_path", lambda: str(path))
+    real_open = open
+
+    def guarded(file, *args, **kwargs):
+        target = file if isinstance(file, (str, bytes)) else getattr(file, "name", None)
+        if target is not None and os.path.abspath(str(target)) == os.path.abspath(path):
+            raise PermissionError("blocked")
+        return real_open(file, *args, **kwargs)
+
+    monkeypatch.setattr("builtins.open", guarded)
+    state, bots = run_chat(list(HAPPY_PATH))
+    assert state["confirmed"] is False
+    assert bots[-1] == DATA_FILE_MESSAGE
+    assert "stop" in bots[-1].lower()
+    assert "data file" in bots[-1].lower()
+    assert "check" in bots[-1].lower()
+    descriptor = os.open(path, os.O_RDONLY)
+    try:
+        assert os.read(descriptor, 64) == before
+    finally:
+        os.close(descriptor)
+    assert path.stat().st_mode == mode

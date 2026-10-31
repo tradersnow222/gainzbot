@@ -407,6 +407,14 @@ def test_seal_key_is_mode_0600_and_an_unreadable_key_is_not_overwritten(tmp_path
     assert path.stat().st_mode & 0o777 == 0o600
     assert install_secret() == key
 
+    loose = tmp_path / "loose.key"
+    loose.write_bytes(b"m" * 32)
+    os.chmod(loose, 0o644)
+    monkeypatch.setattr("seal_secret._key_path", lambda: str(loose))
+    assert install_secret() == b"m" * 32
+    assert loose.stat().st_mode & 0o777 == 0o600
+    assert loose.read_bytes() == b"m" * 32
+
     short = tmp_path / "short.key"
     short.write_bytes(b"tiny")
     monkeypatch.setattr("seal_secret._key_path", lambda: str(short))
@@ -416,6 +424,7 @@ def test_seal_key_is_mode_0600_and_an_unreadable_key_is_not_overwritten(tmp_path
     blocked = tmp_path / "blocked.key"
     original = b"k" * 32
     blocked.write_bytes(original)
+    blocked_mode = blocked.stat().st_mode
     monkeypatch.setattr("seal_secret._key_path", lambda: str(blocked))
     real_open = open
 
@@ -439,3 +448,10 @@ def test_seal_key_is_mode_0600_and_an_unreadable_key_is_not_overwritten(tmp_path
     except OSError:
         raised = True
     assert raised
+    assert blocked.stat().st_mode == blocked_mode
+    from record_confirmation import ConfirmationRecorder
+    from seal_secret import DATA_FILE_MESSAGE
+
+    record = ConfirmationRecorder().record({"changes": {"load": 80}}, "yes", "user", None)
+    assert record.confirmed is False
+    assert record.message == DATA_FILE_MESSAGE

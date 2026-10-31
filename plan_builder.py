@@ -561,8 +561,30 @@ def _backup_can_replace(backup_bytes, live_bytes):
     return backup_total > live_total
 
 
+def _log_bytes_valid(raw):
+    """True when these bytes are a log this builder can keep."""
+    if not raw:
+        return False
+    try:
+        data = json.loads(raw.decode("utf-8"))
+    except (UnicodeDecodeError, json.JSONDecodeError, AttributeError):
+        return False
+    if not isinstance(data, dict):
+        return False
+    for key, value in data.items():
+        if key not in _LOG_KINDS or not isinstance(value, list):
+            return False
+        if any(not isinstance(item, dict) for item in value):
+            return False
+    return True
+
+
 def _reconcile_backup(log_path):
-    """Put a crashed log back, or drop the backup once the week file has landed."""
+    """Recover a crashed log only after the recovered bytes validate.
+
+    A plain read never removes log.json.bak. The backup is removed only
+    after those bytes have been validated and written over the live log.
+    """
     backup_path = log_path + ".bak"
     if not os.path.exists(backup_path):
         return
@@ -575,21 +597,14 @@ def _reconcile_backup(log_path):
     landed = _week_landed(os.path.dirname(log_path), new_ids)
     try:
         if landed or backup_bytes == live_bytes:
-            os.remove(backup_path)
             return
         if not _backup_can_replace(backup_bytes, live_bytes):
             return
-        if backup_bytes == b"":
-            if os.path.exists(log_path):
-                os.remove(log_path)
-            temporary = log_path + ".tmp"
-            if os.path.exists(temporary):
-                os.remove(temporary)
-            if os.path.exists(backup_path):
-                os.remove(backup_path)
+        if not _log_bytes_valid(backup_bytes):
             return
         _write_bytes(log_path, backup_bytes)
-        if _read_bytes(log_path) == backup_bytes and os.path.exists(backup_path):
+        written = _read_bytes(log_path)
+        if written == backup_bytes and _log_bytes_valid(written) and os.path.exists(backup_path):
             os.remove(backup_path)
     except OSError:
         return

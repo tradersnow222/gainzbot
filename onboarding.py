@@ -245,17 +245,36 @@ def _all_no_attempt(tokens):
     return False
 
 
+def _asks_instead(text):
+    """A question mark or a frown is unclear before any punctuation is removed."""
+    return "?" in text or "？" in text or ":(" in text
+
+
 def bare_all_no(text):
     """True only when the whole reply is an all-no phrase.
 
     Fillers, a thumb emoji, punctuation, and whitespace may sit beside it.
+    A question mark, a full-width question mark, or ':(' is unclear even
+    when the words underneath are an all-no phrase.
     None means this is not an all-no reply. False means the reply tried to
     say all no and also said something else, so nothing is stored as no.
     """
+    if not isinstance(text, str):
+        return None
+    if _asks_instead(text):
+        asked = text.replace("?", " ").replace("？", " ").replace(":(", " ")
+        asked_tokens = _all_no_tokens(asked)
+        if asked_tokens is None:
+            return None
+        asked_phrase = " ".join(asked_tokens)
+        if asked_phrase in _CLEAN_ALL_NO or _all_no_attempt(asked_tokens):
+            return False
+        return None
     tokens = _all_no_tokens(text)
     if tokens is None:
         return None
-    if " ".join(tokens) in _CLEAN_ALL_NO:
+    phrase = " ".join(tokens)
+    if phrase in _CLEAN_ALL_NO:
         return True
     if _all_no_attempt(tokens):
         return False
@@ -626,6 +645,11 @@ def _unclear_par_q(state):
 
 def speak(state):
     """The next bot reply. The first one is question 1 when nothing is known."""
+    from seal_secret import DATA_FILE_MESSAGE
+
+    error = state.get("error")
+    if isinstance(error, str) and DATA_FILE_MESSAGE in error:
+        return DATA_FILE_MESSAGE
     if state["confirmed"]:
         return "Confirmed. Morning at 07:00, evening at 20:00, weekly Sunday at 18:00."
     missing = _first_missing(state)

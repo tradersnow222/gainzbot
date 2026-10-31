@@ -156,6 +156,16 @@ def test_a_symptom_in_the_morning_pauses_before_the_workout():
         assert parsed["ate"] == "", words
         assert parsed["did_it"] is False, words
     assert parse_evening("did not chicken")["ate"] == "chicken"
+    salad = parse_evening("did not, ate salad")
+    assert salad["did_it"] is False
+    assert salad["ate"] == "salad"
+    logged = DailyLoop(load=80, minutes=45, profile=adult_profile())
+    logged.open_morning(day)
+    logged.hear(day, "no 8 fine 45")
+    logged.open_evening(day)
+    logged.hear(day, "did not, ate salad")
+    assert logged.notes[day]["did_it"] is False
+    assert logged.notes[day]["ate"] == "salad"
     assert "sealed_load_history" not in Path(__file__).resolve().parent.joinpath("daily_loop.py").read_text(encoding="utf-8")
     assert missed.startswith("Logged the miss")
     evening = DailyLoop(load=80, minutes=45, profile=adult_profile())
@@ -217,3 +227,35 @@ def test_weekly_ignores_an_unsealed_history():
     review = loop.weekly("2026-11-02T07:00:00Z")
     assert review["changed"] is False
     assert review["load"] == 80
+
+
+def test_an_unreadable_seal_key_stops_the_morning(monkeypatch, tmp_path):
+    import os
+
+    from daily_loop import adult_profile
+    from seal_secret import DATA_FILE_MESSAGE
+
+    path = tmp_path / "seal.key"
+    path.write_bytes(b"k" * 32)
+    before = path.read_bytes()
+    monkeypatch.setattr("seal_secret._key_path", lambda: str(path))
+    real_open = open
+
+    def guarded(file, *args, **kwargs):
+        target = file if isinstance(file, (str, bytes)) else getattr(file, "name", None)
+        if target is not None and os.path.abspath(str(target)) == os.path.abspath(path):
+            raise PermissionError("blocked")
+        return real_open(file, *args, **kwargs)
+
+    monkeypatch.setattr("builtins.open", guarded)
+    day = "2026-10-26"
+    loop = DailyLoop(load=80, minutes=45, profile=adult_profile())
+    loop.open_morning(day)
+    text = loop.hear(day, "no 8 fine 45")
+    assert text == DATA_FILE_MESSAGE
+    assert day not in loop.workouts
+    descriptor = os.open(path, os.O_RDONLY)
+    try:
+        assert os.read(descriptor, 64) == before
+    finally:
+        os.close(descriptor)

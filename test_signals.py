@@ -182,16 +182,40 @@ def test_none_is_not_fresh_and_out_of_range_values_still_ask():
     high_open = _loop(high).open_morning(DAY)
     assert "Resting heart rate?" in high_open
     assert "easy day" not in high_open.lower()
-    for book in (racing, high):
-        for reply in ("no", "no 55", "no 190", "no fine"):
-            fresh = _loop(book)
+    def heart_book(rate):
+        book = SignalBook()
+        book.connect("oura")
+        book.record("sleep", FRESH, 8)
+        book.record("resting_hr", FRESH, rate)
+        book.record("hrv", FRESH, 50)
+        return book
+
+    for wearable in (130, 190):
+        for reply in ("no", "no 190", "no fine"):
+            fresh = _loop(heart_book(wearable))
             fresh.open_morning(DAY)
             day_text = fresh.hear(DAY, reply)
-            assert "easy day" in day_text.lower(), reply
-            assert fresh.workouts[DAY]["day"] == "easy", reply
-            assert fresh.workouts[DAY]["load"] == 72, reply
-            assert "If you feel unwell, check with a doctor." in day_text, reply
-        muddy = _loop(book)
+            assert "lighter" in day_text.lower(), (wearable, reply)
+            assert "on plan. easy day" not in day_text.lower(), (wearable, reply)
+            assert "easy day" in day_text.lower(), (wearable, reply)
+            assert fresh.workouts[DAY]["day"] == "easy", (wearable, reply)
+            assert fresh.workouts[DAY]["load"] == 72, (wearable, reply)
+            assert "If you feel unwell, check with a doctor." in day_text, (wearable, reply)
+            if reply == "no 190":
+                assert "190" in day_text, (wearable, reply)
+            else:
+                assert str(wearable) in day_text, (wearable, reply)
+        corrected = _loop(heart_book(wearable))
+        corrected.open_morning(DAY)
+        corrected_text = corrected.hear(DAY, "no 55")
+        assert corrected.notes[DAY]["resting_hr"] == 55
+        assert corrected.workouts[DAY]["day"] != "easy"
+        assert corrected.workouts[DAY]["load"] == 80
+        assert "lighter" not in corrected_text.lower()
+        assert "on plan. easy day" not in corrected_text.lower()
+        assert "check with a doctor" not in corrected_text.lower()
+        assert f"resting heart rate {wearable}" not in corrected_text.lower()
+        muddy = _loop(heart_book(wearable))
         muddy.open_morning(DAY)
         again = muddy.hear(DAY, "no idea")
         assert again == _SYMPTOM

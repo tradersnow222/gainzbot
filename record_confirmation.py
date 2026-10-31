@@ -160,10 +160,13 @@ def _confirmation_payload(record) -> str:
     return json.dumps(body, sort_keys=True, separators=(",", ":"), ensure_ascii=True)
 
 
-def _confirmation_seal(record) -> str:
+def _confirmation_seal(record):
     from seal_secret import seal_hex
 
-    return seal_hex(b"confirmation", _confirmation_payload(record))
+    try:
+        return seal_hex(b"confirmation", _confirmation_payload(record))
+    except OSError:
+        return None
 
 
 def confirmation_seal_matches(record) -> bool:
@@ -174,6 +177,8 @@ def confirmation_seal_matches(record) -> bool:
     if not seal:
         return False
     expected = _confirmation_seal(record)
+    if not isinstance(expected, str) or not expected or not seal:
+        return False
     if len(seal) != len(expected):
         return False
     return hmac.compare_digest(seal, expected)
@@ -195,7 +200,16 @@ def timestamp_is_current(stamp, now=None) -> bool:
 
 def _issue(record):
     """Mark a record this module just built. A copy with edited fields will not match."""
-    record.issuer_seal = _confirmation_seal(record)
+    from seal_secret import DATA_FILE_MESSAGE
+
+    seal = _confirmation_seal(record)
+    if not seal:
+        record.confirmed = False
+        record.issuer_seal = ""
+        record.errors = list(record.errors) + [DATA_FILE_MESSAGE]
+        record.message = DATA_FILE_MESSAGE
+        return record
+    record.issuer_seal = seal
     return record
 
 

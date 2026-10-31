@@ -257,6 +257,16 @@ class SignalBook:
         if self.hrv_down(as_of):
             parts.append("HRV down")
             lighter = True
+        if self._recent("resting_hr", as_of):
+            value = self.readings["resting_hr"].get("value")
+            try:
+                number = float(value)
+            except (TypeError, ValueError):
+                number = None
+            if number is not None and number > 120:
+                shown = int(number) if number == int(number) else number
+                parts.append(f"Resting heart rate {shown}")
+                lighter = True
         if not parts:
             return "Today is on plan."
         if not lighter:

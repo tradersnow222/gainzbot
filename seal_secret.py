@@ -12,8 +12,24 @@ import hmac
 import os
 
 
+DATA_FILE_MESSAGE = "Stop. The bot's data file can't be read. Please check it."
+
+
 def _key_path():
     return os.path.join(os.path.dirname(os.path.abspath(__file__)), "data", "seal.key")
+
+
+def _tighten_key(path):
+    """Mode 0600 when the file is looser. A failure leaves the bytes alone."""
+    try:
+        mode = os.stat(path).st_mode & 0o777
+    except OSError:
+        return
+    if mode & ~0o600:
+        try:
+            os.chmod(path, 0o600)
+        except OSError:
+            return
 
 
 def _read_installed(path):
@@ -36,7 +52,11 @@ def install_secret():
     """
     path = _key_path()
     if os.path.exists(path):
-        return _read_installed(path)
+        secret = _read_installed(path)
+        if secret is None:
+            return None
+        _tighten_key(path)
+        return secret
     folder = os.path.dirname(path)
     try:
         os.makedirs(folder, exist_ok=True)
@@ -66,7 +86,7 @@ def seal_hex(domain, payload):
     """Hex HMAC for one domain. domain is a short label such as b'readiness'."""
     secret = install_secret()
     if not secret:
-        raise OSError("data/seal.key is missing or unreadable.")
+        raise OSError(DATA_FILE_MESSAGE)
     if isinstance(domain, str):
         domain = domain.encode("utf-8")
     if isinstance(payload, str):

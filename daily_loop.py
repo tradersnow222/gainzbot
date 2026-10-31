@@ -109,25 +109,38 @@ def symptom_is_clear(reply):
     return True
 
 
+def _ate_text(text):
+    for word in ("yes", "yep", "yeah", "did", "didnt", "no", "not", "nt", "easy", "right", "hard", "ate"):
+        text = re.sub(rf"\b{word}\b", " ", text)
+    text = " ".join(text.split())
+    if text in {"not", "nt", "didnt"}:
+        return ""
+    return text
+
+
 def parse_evening(reply):
+    """Workout words and food are separate. 'ate' starts the food."""
     text = _fold(reply)
-    if re.search(r"\bdid\s+not\b", text) or re.search(r"\bdidnt\b", text):
+    workout = text
+    food = None
+    ate_at = re.search(r"\bate\b", text)
+    if ate_at:
+        workout = text[:ate_at.start()]
+        food = text[ate_at.end():]
+    elif "," in text:
+        workout, food = text.split(",", 1)
+    if re.search(r"\bdid\s+not\b", workout) or re.search(r"\bdidnt\b", workout):
         did_it = False
-    elif re.search(r"\bno\b", text):
+    elif re.search(r"\bno\b", workout):
         did_it = False
     else:
-        did_it = bool(re.search(r"\b(?:yes|yep|yeah|did)\b", text))
+        did_it = bool(re.search(r"\b(?:yes|yep|yeah|did)\b", workout))
     felt = None
     for word in ("easy", "right", "hard"):
-        if re.search(rf"\b{word}\b", text):
+        if re.search(rf"\b{word}\b", workout):
             felt = word
             break
-    ate = text
-    for word in ("yes", "yep", "yeah", "did", "didnt", "no", "not", "nt", "easy", "right", "hard"):
-        ate = re.sub(rf"\b{word}\b", " ", ate)
-    ate = " ".join(ate.split())
-    if ate in {"not", "nt", "didnt"}:
-        ate = ""
+    ate = _ate_text(food if food is not None else text)
     return {"did_it": did_it, "felt": felt, "ate": ate}
 
 
@@ -202,6 +215,7 @@ class DailyLoop:
                 self.phase[day] = "paused"
                 return paused
             self.notes[day].update(read_gap_reply(pending["gaps"], reply))
+            self._use_hr_answer(day, f"{day}T08:00:00Z")
             for key in pending["personal"]:
                 self.signals.settle(key)
             self._seed(day, f"{day}T08:00:00Z")
@@ -258,6 +272,7 @@ class DailyLoop:
                 return _SECOND
             return self._workout(day)
         self.notes[day].update(read_gap_reply(pending["gaps"], reply))
+        self._use_hr_answer(day, as_of)
         abnormal = set(self.signals.abnormal(as_of)) if self.signals is not None else set()
         unanswered = [
             gap for gap in pending["gaps"]
@@ -276,6 +291,15 @@ class DailyLoop:
             return " ".join(asked)
         self._seed(day, as_of)
         return self._workout(day)
+
+    def _use_hr_answer(self, day, as_of):
+        """The resting heart rate they just gave is the one the day uses."""
+        if self.signals is None:
+            return
+        value = self.notes.get(day, {}).get("resting_hr")
+        if isinstance(value, bool) or not isinstance(value, (int, float)):
+            return
+        self.signals.record("resting_hr", as_of, value)
 
     def _seed(self, day, as_of):
         book = self.signals
