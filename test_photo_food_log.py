@@ -357,3 +357,20 @@ def test_a_stated_total_logs_without_a_confirm_and_an_estimate_does_not(tmp_path
 
     assert LogStore(path).data["meals"][0]["source"] == "stated"
     assert LogStore(path).data["confirmations"] == []
+
+
+def test_a_stated_total_with_a_symptom_is_a_red_flag(tmp_path):
+    from red_flag_check import RedFlagChecker
+
+    line = "ate about 1900 cals, 150g protein, and my chest hurts"
+    scanned = RedFlagChecker().scan_text(line)
+    assert scanned.pause_plan
+    log = fresh_log()
+    refused = log.log_stated(line, "2026-10-30")
+    assert refused["stored"] is False
+    assert refused["message"] == scanned.message
+    assert log.entries == []
+    path = tmp_path / "log.json"
+    saved = fresh_log().log_stated(line, "2026-10-30", log_path=path)
+    assert saved["stored"] is False
+    assert not path.exists()

@@ -3,8 +3,9 @@
 Read the last confirmed load or calorie change.
 
 Fail closed. A missing history, a history that is not a list, an unreadable
-date, a date with no clock time, or a wrong key means no load or calorie
-change. Dates are compared in UTC. Seven days means seven times 24 hours, so
+date, a date with no clock time, a wrong key, or a plan confirmation row
+with no changes field means no load or calorie change. Dates are compared
+in UTC. Seven days means seven times 24 hours, so
 6 days and 22.5 hours is not enough. A calendar date is not midnight UTC.
 Caller baselines and planned values are not read here.
 """
@@ -86,11 +87,11 @@ def last_confirmed_change(history, kind: str, as_of) -> ConfirmedChange:
     for item in history:
         if not isinstance(item, dict):
             return ConfirmedChange(False, None, None, "bad row")
-        # A plan confirmation has no changes field. Skip it before the date
-        # check so that row cannot hide a later load or calorie change.
+        # A plan confirmation has no changes field. That row fails the read.
+        # Skipping it would let a later load through.
         if "changes" not in item:
             if any(key in item for key in ("record_id", "plan_hash", "quoted_words")):
-                continue
+                return ConfirmedChange(False, None, None, "plan row")
             return ConfirmedChange(False, None, None, "wrong key")
         changes = item.get("changes")
         if not isinstance(changes, dict) or not changes:

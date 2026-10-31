@@ -16,6 +16,7 @@ A single item over 3000 kcal or over 300 g protein is rejected for a
 re-check, and a day stops at 10000 kcal. Missing age and under 18 set no
 protein target. usual breakfast needs a confirmation. A total the user
 states, calories and protein in their own words, logs with no confirm.
+That line is scanned for symptoms first. A red flag is not logged.
 The bot's own estimate still needs one. Logging a meal does not change
 the plan.
 """
@@ -148,7 +149,16 @@ class FoodLog:
         return stored
 
     def log_stated(self, line, day, log_path=None) -> Dict:
-        """Log a calorie and protein total the user stated. No confirm."""
+        """Log a calorie and protein total the user stated. No confirm.
+
+        A symptom in the line is a red flag. Nothing is logged.
+        """
+        if isinstance(line, str) and line.strip():
+            from red_flag_check import RedFlagChecker
+
+            scanned = RedFlagChecker().scan_text(line)
+            if scanned.pause_plan:
+                return self._no(scanned.message)
         parsed = self._stated(line)
         if not parsed["ok"]:
             return parsed

@@ -18,6 +18,7 @@ from typing import Dict, List, Optional
 import math
 import os
 import sys
+import unicodedata
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from confirmed_change import last_confirmed_change
@@ -115,8 +116,8 @@ class SetLogger:
                 return self._no(str(exc))
         else:
             asked = None
-        # A plan confirmation has no changes field. Skip that row. The load
-        # value is the session index, not the kilogram on this exercise.
+        # A plan confirmation row fails this read closed. The load value is
+        # the session index, not the kilogram on this exercise.
         found = last_confirmed_change(confirmed_changes, "load", as_of)
         done = [
             item for item in self.sets
@@ -361,9 +362,14 @@ class SetLogger:
         return value
 
     def _name(self, exercise) -> Optional[str]:
+        """One history key: NFKC, no zero-width characters, case and accents folded."""
         if not isinstance(exercise, str):
             return None
-        text = " ".join(exercise.split())
+        text = unicodedata.normalize("NFKC", exercise)
+        text = "".join(char for char in text if unicodedata.category(char) != "Cf")
+        text = unicodedata.normalize("NFKD", text)
+        text = "".join(char for char in text if unicodedata.category(char) != "Mn")
+        text = " ".join(text.casefold().split())
         return text or None
 
     def _no(self, message: str) -> Dict:

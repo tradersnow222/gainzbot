@@ -189,7 +189,7 @@ class TestSuggestion:
         assert found.ok is False
         assert found.reason == "wrong key"
 
-    def test_a_plan_row_without_changes_does_not_hide_the_load(self):
+    def test_a_plan_row_without_changes_fails_closed(self):
         prior = [
             {
                 "record_id": "rec-1",
@@ -205,18 +205,27 @@ class TestSuggestion:
             },
         ]
         found = last_confirmed_change(prior, "load", AS_OF)
-        assert found.ok is True
-        assert found.value == 100
+        assert found.ok is False
+        assert found.value is None
+        assert found.reason == "plan row"
         log = SetLogger()
         log.log_set("bench", 70, 10, "2026-11-09")
         result = log.suggest_next("bench", prior, AS_OF, rep_top="6-10")
-        assert result["ok"] is True
-        assert result["suggestion"]["weight"] == 72.5
-        assert result["suggestion"]["weight"] != 77
-        assert "72.5" in result["message"]
-        assert "stays at this weight" not in result["message"]
-        assert "wrong key" not in result["message"].lower()
+        assert result["suggestion"] is None
         assert result["proposal"] is None
+        assert "What load is confirmed?" in result["message"]
+        assert "72.5" not in result["message"]
+        assert "77" not in result["message"]
+
+    def test_exercise_names_share_one_history_key(self):
+        log = SetLogger()
+        stored = log.log_set("Squ\u00e1t\u200b", 70, 10, "2026-11-09")
+        assert stored["entry"]["exercise"] == "squat"
+        again = log.log_set("SQUAT", 70, 10, "2026-11-09")
+        assert again["entry"]["exercise"] == "squat"
+        result = log.suggest_next("squat", history(100), AS_OF, rep_top=10)
+        assert result["suggestion"]["weight"] == 72.5
+        assert result["suggestion"]["exercise"] == "squat"
 
     def test_one_set_short_of_the_top_keeps_the_weight(self):
         log = SetLogger()
