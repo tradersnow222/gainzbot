@@ -133,6 +133,19 @@ def is_plan_yes(reply, proposal_hash) -> bool:
     return is_clear_yes(reply)
 
 
+def _first_plan_confirm(plan) -> bool:
+    """True for the first week object: a plan plus its sessions.
+
+    A load or calorie proposal is a changes object. A schedule sentence
+    does not confirm that.
+    """
+    if not isinstance(plan, dict):
+        return False
+    if not isinstance(plan.get("plan"), dict):
+        return False
+    return isinstance(plan.get("sessions"), list)
+
+
 def reply_pause(reply):
     """The red-flag result when this reply must pause, else None."""
     if not isinstance(reply, str) or not reply.strip():
@@ -280,7 +293,9 @@ class ConfirmationRecorder:
 
         paused = reply_pause(reply)
         schedule = None
-        if paused is None:
+        # A routine-time yes confirms the first week only. A later load or
+        # calorie proposal still needs a bare yes.
+        if paused is None and _first_plan_confirm(plan):
             from routines import plan_schedule
 
             schedule = plan_schedule(reply)

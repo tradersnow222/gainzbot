@@ -150,6 +150,38 @@ def test_a_yes_with_only_a_schedule_edit_confirms_in_the_same_turn():
     assert "medical emergency" in refused_bots[-1].lower()
 
 
+def test_an_age_correction_under_18_at_confirm_refuses_the_plan():
+    state, bots = run_chat(list(HAPPY_PATH[:-1]) + ["wait, I'm actually 15"])
+    assert state["confirmed"] is False
+    assert state["answers"]["age"] == "15"
+    assert state["record"] is None
+    text = bots[-1].lower()
+    assert "under 18" in text
+    assert "training" in text
+    assert "calorie" in text
+    assert "protein" in text
+    assert "one yes confirms the plan" not in text
+    later, later_bots = run_chat(list(HAPPY_PATH[:-1]) + ["wait, I'm actually 15", "yes"])
+    assert later["confirmed"] is False
+    assert later["answers"]["age"] == "15"
+    assert later["record"] is None or later["record"].confirmed is False
+    assert "training" in later_bots[-1].lower()
+    assert "calorie" in later_bots[-1].lower()
+
+
+def test_make_it_4_days_at_confirm_updates_the_profile_and_reproposes():
+    state, bots = run_chat(list(HAPPY_PATH[:-1]) + ["make it 4 days"])
+    assert state["confirmed"] is False
+    assert state["answers"]["training_days"] == "4"
+    assert len(state["answers"]["days"]) == 4
+    assert "4 days" in bots[-1]
+    assert "one yes confirms the plan" in bots[-1].lower()
+    done, _bots = run_chat(list(HAPPY_PATH[:-1]) + ["make it 4 days", "yes"])
+    assert done["confirmed"] is True
+    assert done["answers"]["training_days"] == "4"
+    assert len(done["record"].plan_hash) > 0
+
+
 def test_happy_path_confirms_in_five_bot_turns_or_fewer():
     state, bots = run_chat(HAPPY_PATH)
     assert state["confirmed"] is True

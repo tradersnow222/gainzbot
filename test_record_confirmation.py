@@ -264,7 +264,7 @@ class TestClearYes:
         "yes but no evening one",
         "yes, review sunday 7pm",
     ])
-    def test_a_yes_plus_only_a_schedule_edit_confirms_without_widening_a_bare_yes(self, reply):
+    def test_a_schedule_edit_is_not_a_bare_yes_for_a_generic_plan(self, reply):
         from routines import plan_schedule
 
         assert not is_clear_yes(reply)
@@ -273,8 +273,35 @@ class TestClearYes:
         record = ConfirmationRecorder().record(
             ADULT_PLAN, reply, "user", passing_check_in()
         )
-        assert record.confirmed
+        assert record.confirmed is False
         assert record.quoted_words == reply
+
+    def test_record_on_a_load_proposal_refuses_a_schedule_yes(self):
+        load = {"summary": "Raise the load 10 percent.", "changes": {"load": 110}}
+        calories = {"summary": "Raise calories.", "changes": {"calories": 2400}}
+        for proposal, reply in (
+            (load, "yes, morning 6:30"),
+            (calories, "yes, evening 9pm"),
+        ):
+            record = ConfirmationRecorder().record(
+                proposal, reply, "user", passing_check_in()
+            )
+            assert record.confirmed is False
+            assert record.quoted_words == reply
+            assert "clear yes" in record.message.lower()
+            bare = ConfirmationRecorder().record(
+                proposal, "yes", "user", passing_check_in()
+            )
+            assert bare.confirmed is True
+        first = {
+            "plan": {"user": {"age": 30}},
+            "sessions": [{"date": "2026-11-02", "name": "Upper"}],
+        }
+        scheduled = ConfirmationRecorder().record(
+            first, "yes, morning 6:30", "user", passing_check_in()
+        )
+        assert scheduled.confirmed is True
+        assert scheduled.quoted_words == "yes, morning 6:30"
 
     def test_a_schedule_yes_with_a_symptom_stays_a_red_flag(self):
         reply = "yes, morning 6:30, but my chest hurts"

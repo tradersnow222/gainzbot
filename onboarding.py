@@ -425,6 +425,8 @@ def _parse_explicit(state, reply):
             answers["goal"] = goal
             break
     age = re.search(r"\bage\s+(\d{1,3})\b", folded)
+    if not age:
+        age = re.search(r"\b(?:im|i am)\s+actually\s+(\d{1,3})\b", folded)
     if age:
         answers["age"] = age.group(1)
     height = re.search(r"\b(\d{2,3})\s*cm\b", folded)
@@ -488,7 +490,7 @@ def _remember_skip(state):
 
 def apply_reply(state, reply):
     folded = _fold(reply)
-    if state["phase"] == "confirm":
+    if state["phase"] == "confirm" and _is_plan_yes(reply):
         _confirm(state, reply)
         return
     if folded == "skip":
@@ -498,6 +500,28 @@ def apply_reply(state, reply):
         _fill_group(state, state["asked"])
         return
     _parse_explicit(state, reply)
+    if state["phase"] == "confirm":
+        _review_confirm_edit(state, reply)
+
+
+def _review_confirm_edit(state, reply):
+    """A confirm-step reply that is not a yes still updates the profile."""
+    from record_confirmation import reply_pause
+
+    paused = reply_pause(reply)
+    if paused is not None:
+        state["confirmed"] = False
+        state["error"] = paused.message
+        return
+    age = _number(state["answers"].get("age"))
+    if age is not None and age < 18:
+        from readiness_screen import ReadinessScreen
+
+        screen = ReadinessScreen().screen_intake(_readiness_intake(state))
+        state["readiness"] = screen
+        state["confirmed"] = False
+        state["record"] = None
+        state["error"] = _under_18_message(screen)
 
 
 def _is_plan_yes(reply):
@@ -507,6 +531,15 @@ def _is_plan_yes(reply):
     if reply_pause(reply) is not None:
         return False
     return is_clear_yes(reply) or plan_schedule(reply) is not None
+
+
+def _under_18_message(screen):
+    text = " ".join(screen.reasons) if getattr(screen, "reasons", None) else (
+        "There is no training plan for anyone under 18."
+    )
+    if "calorie" not in text.lower() or "protein" not in text.lower():
+        text += " No calorie target and no protein target."
+    return text
 
 
 def _number(text):
@@ -598,7 +631,11 @@ def _confirm(state, reply):
     screen = ReadinessScreen().screen_intake(_readiness_intake(state))
     state["readiness"] = screen
     if not passing_readiness(screen):
-        state["error"] = " ".join(screen.reasons) or "Readiness has to pass before a plan is built."
+        age = _number(state["answers"].get("age"))
+        if age is not None and age < 18:
+            state["error"] = _under_18_message(screen)
+        else:
+            state["error"] = " ".join(screen.reasons) or "Readiness has to pass before a plan is built."
         return
     check_in = _check_in(state)
     if not is_passing_check_in(check_in):
