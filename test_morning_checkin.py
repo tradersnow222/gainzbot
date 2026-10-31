@@ -89,12 +89,9 @@ class TestDayType:
 
     def test_a_push_after_a_rewrite_to_110_does_not_propose_121(self):
         rewritten = rewrite(week())
-        later = [
-            item for item in rewritten["proposal"]["changes"]["sessions"]
-            if item["date"] > "2026-10-27"
-        ]
-        assert later
-        assert all(item["load"] == 110 for item in later)
+        by_date = {item["date"]: item for item in rewritten["proposal"]["changes"]["sessions"]}
+        assert by_date["2026-10-28"]["load"] == 110
+        assert by_date["2026-10-29"]["load"] == 100
         history = [{
             "date": "2026-10-28T00:00:00Z",
             "confirmed": True,
@@ -133,8 +130,8 @@ class TestMissedSession:
         assert by_date["2026-10-27"]["load"] == 0
         assert by_date["2026-10-26"]["load"] == 100
         assert by_date["2026-10-28"]["load"] == 110
-        assert by_date["2026-10-29"]["load"] == 110
-        assert result["proposal"]["changes"]["left_out"] == 80
+        assert by_date["2026-10-29"]["load"] == 100
+        assert result["proposal"]["changes"]["left_out"] == 90
         for item in sessions:
             if not item["missed"]:
                 assert item["load"] <= 110
@@ -155,7 +152,7 @@ class TestMissedSession:
         by_date = {item["date"]: item for item in sessions}
         assert by_date["2026-10-26"]["load"] == 100
         assert by_date["2026-10-28"]["load"] == 110
-        assert by_date["2026-10-29"]["load"] == 110
+        assert by_date["2026-10-29"]["load"] == 100
         assert all(item["load"] != 200 for item in sessions)
         assert all(item["load"] != 220 for item in sessions)
 
@@ -174,6 +171,12 @@ class TestMissedSession:
         assert result["proposal"] is None
         assert result["applied"] is False
 
+    def test_a_week_sent_at_200_with_a_miss_after_the_check_does_not_return_200(self):
+        result = rewrite(week(200), "2026-10-29", as_of="2026-10-26")
+        assert result["ok"] is False
+        assert result["proposal"] is None
+        assert result["applied"] is False
+
     def test_sessions_before_the_miss_are_not_rewritten(self):
         sessions = week(100)
         sessions[0]["load"] = 80
@@ -181,7 +184,7 @@ class TestMissedSession:
         by_date = {item["date"]: item for item in result["proposal"]["changes"]["sessions"]}
         assert by_date["2026-10-26"]["load"] == 80
         assert by_date["2026-10-28"]["load"] == 110
-        assert by_date["2026-10-29"]["load"] == 110
+        assert by_date["2026-10-29"]["load"] == 100
 
     def test_an_unknown_session_is_not_rewritten(self):
         result = rewrite(week(), "2026-10-30")
@@ -216,7 +219,7 @@ class TestConfirmation:
         assert refused["applied"] is False
         applied = MorningCheckIn().apply(proposal, confirm(proposal))
         assert applied["applied"] is True
-        assert applied["changes"]["left_out"] == 80
+        assert applied["changes"]["left_out"] == 90
 
     def test_a_different_proposal_is_not_covered(self):
         proposal = check(PUSH)["proposal"]
