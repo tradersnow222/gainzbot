@@ -96,8 +96,9 @@ class TestCharts:
             logs(), user, 28, "2026-10-28", {"calories": 2200, "protein_g": 110},
         )
         assert chart(result, "calories")["points"][0]["target"] is None
+        assert chart(result, "protein")["points"][0]["target"] is None
         assert "18" in result["message"]
-        assert chart(result, "protein")["points"][0]["target"] == 110
+        assert "protein" in result["message"].lower()
 
     def test_missing_age_has_no_calorie_target(self):
         result = Dashboard().build(
@@ -105,6 +106,40 @@ class TestCharts:
         )
         assert chart(result, "calories")["points"][0]["target"] is None
         assert "age" in result["message"].lower()
+
+    def test_a_single_log_is_not_dashboard_ready(self):
+        one = {"intake": [{"date": "2026-10-28", "calories": 2000, "protein_g": 140}]}
+        result = Dashboard().build(one, ADULT, 28, "2026-10-28", TARGETS)
+        assert result["enough_data"] is False
+        assert result["message"] == NOT_ENOUGH
+        assert "Dashboard ready" not in result["message"]
+        two = {
+            "intake": [
+                {"date": "2026-10-27", "calories": 2000, "protein_g": 140},
+                {"date": "2026-10-28", "calories": 2100, "protein_g": 150},
+            ],
+        }
+        ready = Dashboard().build(two, ADULT, 28, "2026-10-28", TARGETS)
+        assert ready["message"] == "Dashboard ready."
+
+    def test_a_womens_target_under_1200_is_not_drawn(self):
+        user = {"sex": "F", "age": 34, "weight_kg": 60}
+        low = Dashboard().build(
+            logs(), user, 28, "2026-10-28", {"calories": 1199, "protein_g": 120},
+        )
+        assert chart(low, "calories")["points"][0]["target"] is None
+        assert "1200" in low["message"]
+        kept = Dashboard().build(
+            logs(), user, 28, "2026-10-28", {"calories": 1200, "protein_g": 120},
+        )
+        assert chart(kept, "calories")["points"][0]["target"] == 1200
+
+    def test_missing_sex_has_no_calorie_target(self):
+        result = Dashboard().build(
+            logs(), {"age": 34, "weight_kg": 80}, 28, "2026-10-28", TARGETS,
+        )
+        assert chart(result, "calories")["points"][0]["target"] is None
+        assert "sex" in result["message"].lower()
 
     def test_a_target_under_the_floor_is_not_drawn(self):
         result = Dashboard().build(
