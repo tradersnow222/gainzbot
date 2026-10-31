@@ -3,8 +3,10 @@
 Log food from a photo estimate or a remembered usual meal.
 
 The Grok vision prompt asks for items, calories, and protein. This script
-does not call the model. It checks the estimate, stores it, and reports
-what is left today. Logging a meal does not change the plan.
+does not call the model. store_estimate logs a meal only after
+record_confirmation covers that exact estimate. A single item over 3000
+kcal or over 300 g protein is rejected for a re-check. Under 18, no
+protein target is set. Logging a meal does not change the plan.
 """
 
 from datetime import date, datetime
@@ -15,6 +17,10 @@ import sys
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from guardrails.validate import InputValidator, ValidationError
 from plan_check import PlanValidator
+from record_confirmation import ConfirmationRecord, ConfirmationRecorder
+
+MAX_ITEM_CALORIES = 3000
+MAX_ITEM_PROTEIN_G = 300
 
 
 GROK_VISION_PROMPT = (
@@ -77,7 +83,7 @@ class FoodLog:
             return self._no(f"No usual {name} is remembered yet.")
         return self._store(meal, day, "usual")
 
-    def store_estimate(self, estimate, day) -> Dict:
+    def store_estimate(self, estimate, day, confirmation=None) -> Dict:
         if not isinstance(estimate, dict):
             return self._no("The photo estimate has to be an object.")
         parsed = self._meal(
@@ -87,6 +93,8 @@ class FoodLog:
         )
         if not parsed["ok"]:
             return parsed
+        if not isinstance(confirmation, ConfirmationRecord) or not ConfirmationRecorder().covers(confirmation, estimate):
+            return self._no("This estimate needs record_confirmation before it is logged.")
         return self._store(parsed["meal"], day, "photo")
 
     def left_today(self, day, user=None, targets=None) -> Dict:
@@ -155,6 +163,8 @@ class FoodLog:
             protein = InputValidator.parse_number(protein_g, "protein_g", allow_zero=True)
         except ValidationError as exc:
             return self._no(str(exc))
+        if kcal > MAX_ITEM_CALORIES or protein > MAX_ITEM_PROTEIN_G:
+            return self._no("That estimate is too high. Re-check it before logging.")
         return {
             "ok": True,
             "meal": {"items": names, "calories": kcal, "protein_g": protein},
@@ -223,6 +233,9 @@ class FoodLog:
         return calories, ""
 
     def _protein_target(self, user, targets):
+        age = self._age(user)
+        if age is not None and age < PlanValidator.ADULT_AGE:
+            return None, "No protein target is set under 18."
         if "weight_kg" not in user:
             return None, "No protein target is set when weight is missing."
         try:
