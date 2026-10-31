@@ -4,9 +4,11 @@ Log food from a photo estimate or a remembered usual meal.
 
 The Grok vision prompt asks for items, calories, and protein. This script
 does not call the model. store_estimate logs a meal only after
-record_confirmation covers that exact estimate. A single item over 3000
-kcal or over 300 g protein is rejected for a re-check. Under 18, no
-protein target is set. Logging a meal does not change the plan.
+record_confirmation covers that exact estimate. Each confirmation logs
+one meal. A single item over 3000 kcal or over 300 g protein is rejected
+for a re-check, and a day stops at 10000 kcal. Missing age and under 18
+set no protein target. usual breakfast needs a confirmation. Logging a
+meal does not change the plan.
 """
 
 from datetime import date, datetime
@@ -21,6 +23,7 @@ from record_confirmation import ConfirmationRecord, ConfirmationRecorder
 
 MAX_ITEM_CALORIES = 3000
 MAX_ITEM_PROTEIN_G = 300
+MAX_DAILY_CALORIES = 10000
 
 
 GROK_VISION_PROMPT = (
@@ -56,6 +59,7 @@ class FoodLog:
     def __init__(self):
         self.entries: List[Dict] = []
         self.usuals: Dict[str, Dict] = {}
+        self.used_confirmations: List[ConfirmationRecord] = []
 
     def remember_usual(self, name, items, calories, protein_g) -> Dict:
         key = self._usual_name(name)
@@ -73,7 +77,7 @@ class FoodLog:
             "meal": parsed["meal"],
         }
 
-    def log_line(self, line, day) -> Dict:
+    def log_line(self, line, day, confirmation=None) -> Dict:
         """Log one remembered meal from a line such as 'usual breakfast'."""
         name = self._line_usual(line)
         if not name:
@@ -81,7 +85,20 @@ class FoodLog:
         meal = self.usuals.get(name)
         if not meal:
             return self._no(f"No usual {name} is remembered yet.")
-        return self._store(meal, day, "usual")
+        plan = {
+            "usual": name,
+            "items": list(meal["items"]),
+            "calories": meal["calories"],
+            "protein_g": meal["protein_g"],
+        }
+        if not self._covers_fresh(confirmation, plan):
+            if self._already_used(confirmation):
+                return self._no("That confirmation was already used for one log.")
+            return self._no("This usual meal needs record_confirmation before it is logged.")
+        stored = self._store(meal, day, "usual")
+        if stored.get("stored"):
+            self.used_confirmations.append(confirmation)
+        return stored
 
     def store_estimate(self, estimate, day, confirmation=None) -> Dict:
         if not isinstance(estimate, dict):
@@ -93,9 +110,14 @@ class FoodLog:
         )
         if not parsed["ok"]:
             return parsed
-        if not isinstance(confirmation, ConfirmationRecord) or not ConfirmationRecorder().covers(confirmation, estimate):
+        if not self._covers_fresh(confirmation, estimate):
+            if self._already_used(confirmation):
+                return self._no("That confirmation was already used for one log.")
             return self._no("This estimate needs record_confirmation before it is logged.")
-        return self._store(parsed["meal"], day, "photo")
+        stored = self._store(parsed["meal"], day, "photo")
+        if stored.get("stored"):
+            self.used_confirmations.append(confirmation)
+        return stored
 
     def left_today(self, day, user=None, targets=None) -> Dict:
         """Calories and protein still left today. No plan change is applied."""
@@ -136,6 +158,9 @@ class FoodLog:
         when = _parse_day(day)
         if when is None:
             return self._no("The day needs a real date.")
+        already = sum(entry["calories"] for entry in self.entries if entry["date"] == when)
+        if already + meal["calories"] > MAX_DAILY_CALORIES:
+            return self._no("That day is over the 10,000 kcal cap.")
         entry = {
             "date": when,
             "items": list(meal["items"]),
@@ -232,9 +257,19 @@ class FoodLog:
             return None, f"Calorie target is below the floor of {floor}."
         return calories, ""
 
+    def _covers_fresh(self, confirmation, plan) -> bool:
+        if self._already_used(confirmation):
+            return False
+        return isinstance(confirmation, ConfirmationRecord) and ConfirmationRecorder().covers(confirmation, plan)
+
+    def _already_used(self, confirmation) -> bool:
+        return any(confirmation is used for used in self.used_confirmations)
+
     def _protein_target(self, user, targets):
         age = self._age(user)
-        if age is not None and age < PlanValidator.ADULT_AGE:
+        if age is None:
+            return None, "No protein target is set when age is missing."
+        if age < PlanValidator.ADULT_AGE:
             return None, "No protein target is set under 18."
         if "weight_kg" not in user:
             return None, "No protein target is set when weight is missing."
