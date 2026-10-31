@@ -118,7 +118,8 @@ def _git(repo, *args):
     subprocess.run(["git", "-C", str(repo), *args], check=True, env=env, capture_output=True)
 
 
-def test_main_exits_nonzero_and_writes_the_reason(tmp_path, capsys):
+def test_main_exits_nonzero_and_writes_the_reason(tmp_path, capsys, monkeypatch):
+    monkeypatch.setattr("release_check.safety_label_gate", lambda root=None: (True, "passed"))
     missing = tmp_path / "absent"
     code = main(str(missing), "v0.1.0")
     err = capsys.readouterr().err
@@ -168,6 +169,7 @@ def test_main_exits_nonzero_and_writes_the_reason(tmp_path, capsys):
 
 
 def test_a_blank_refusal_still_prints_and_exits_nonzero(monkeypatch, capsys):
+    monkeypatch.setattr("release_check.safety_label_gate", lambda root=None: (True, "passed"))
     monkeypatch.setattr(
         "release_check.check_configured_install",
         lambda repo_path, expected_tag: (False, "   "),
@@ -179,9 +181,12 @@ def test_a_blank_refusal_still_prints_and_exits_nonzero(monkeypatch, capsys):
 
 
 def test_running_the_script_matches_the_configured_install():
+    from release_check import safety_label_gate
+
     repo = configured_repo_path()
     tag = expected_release_tag()
     ok, reason = check_configured_install(repo, tag)
+    gate_ok, gate_reason = safety_label_gate()
     proc = subprocess.run(
         [sys.executable, str(ROOT / "release_check.py")],
         capture_output=True,
@@ -189,6 +194,10 @@ def test_running_the_script_matches_the_configured_install():
         cwd=ROOT,
         check=False,
     )
+    if not gate_ok:
+        assert proc.returncode != 0
+        assert proc.stderr.strip() == gate_reason.strip()
+        return
     if ok:
         assert proc.returncode == 0
         assert proc.stderr.strip() == ""

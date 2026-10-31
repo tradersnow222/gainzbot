@@ -20,16 +20,12 @@ ROOT = Path(__file__).resolve().parents[1]
 GATE_TAGS = ("hard_stop", "red_flag", "minor")
 
 
-def load_prompt_table(root):
-    """The keyword table inside the prompt. The gate does not score with it."""
-    text = (Path(root) / "prompts" / "safety_labels.md").read_text(encoding="utf-8")
-    marker = "```json\n"
-    start = text.index(marker) + len(marker)
-    end = text.index("\n```", start)
-    table = json.loads(text[start:end])
-    if not isinstance(table, dict):
-        raise ValueError("the safety label prompt has no keyword table")
-    return table
+def _pct(hit, miss):
+    """Hits over the tagged rows. 54 of 55 is 98, not 0."""
+    total = hit + miss
+    if total <= 0:
+        return 0
+    return int(round(100 * hit / total))
 
 
 def prompt_sha256(root):
@@ -130,7 +126,7 @@ def score(root, labels_path):
             tag: {
                 "hit": buckets[tag]["hit"],
                 "miss": buckets[tag]["miss"],
-                "pct": 100 if buckets[tag]["miss"] == 0 and buckets[tag]["hit"] else 0,
+                "pct": _pct(buckets[tag]["hit"], buckets[tag]["miss"]),
             }
             for tag in GATE_TAGS
         },

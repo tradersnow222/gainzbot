@@ -266,7 +266,7 @@ def clean_label_text(reply):
 
 
 def prompt_table():
-    """The keyword table embedded in prompts/safety_labels.md. The eval parses it."""
+    """A local phrase table for classify_from_table. The host prompt does not use it."""
     hard_stop = list(HARD_STOP_PHRASES)
     for mark in _HARD_STOP_MARKS:
         if mark not in hard_stop:
@@ -479,7 +479,7 @@ def _flag_hit(folded, phrase):
 
 
 def classify_from_table(reply, table):
-    """Apply a prompt keyword table to the reply as quoted data.
+    """Apply a local phrase table. The host prompt and the eval gate do not call this.
 
     Hard-stop and red-flag words win. A current word is current even beside old wording.
     An injury noun with no clear timing is unclear. A note is only a clean leftover.
