@@ -6,13 +6,14 @@ Fail closed. Only a clear yes from the user, in their exact words, confirms
 one exact plan version. Any later edit needs a new confirmation.
 """
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Dict, List, Optional
 import hashlib
 import json
 import os
 import re
 import sys
+import uuid
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from guardrails.validate import InputValidator
@@ -45,6 +46,11 @@ def normalize_reply(reply: str) -> str:
     return re.sub(r"\s+", " ", text).strip()
 
 
+def new_record_id() -> str:
+    """One id for one yes. A copy keeps this id. A new yes gets a new one."""
+    return str(uuid.uuid4())
+
+
 @dataclass
 class ConfirmationRecord:
     """One confirmation attempt. confirmed is true only when every check passed."""
@@ -54,6 +60,7 @@ class ConfirmationRecord:
     speaker: str
     message: str
     errors: List[str]
+    record_id: str = field(default_factory=new_record_id)
 
     def to_dict(self) -> Dict:
         return {
@@ -63,6 +70,7 @@ class ConfirmationRecord:
             "speaker": self.speaker,
             "message": self.message,
             "errors": self.errors,
+            "record_id": self.record_id,
         }
 
 

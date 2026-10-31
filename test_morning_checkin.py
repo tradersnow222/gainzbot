@@ -166,10 +166,28 @@ class TestMissedSession:
         assert all(item["load"] != 110 for item in sessions)
 
     def test_a_missed_date_after_as_of_is_rejected(self):
-        result = rewrite(week(), "2026-10-29", as_of="2026-10-28T00:00:00Z")
+        # 11:30 PM Pacific on Oct 28 is Oct 29 in UTC. The user's day is still Oct 28.
+        result = rewrite(week(), "2026-10-29", as_of="2026-10-28T23:30:00-07:00")
         assert result["ok"] is False
         assert result["proposal"] is None
         assert result["applied"] is False
+        same_evening = rewrite(week(), "2026-10-28", as_of="2026-10-28T23:30:00-07:00")
+        assert same_evening["ok"] is True
+        assert same_evening["proposal"] is not None
+
+    def test_days_between_a_past_miss_and_the_check_stay_as_planned(self):
+        result = rewrite(week(100), "2026-10-26", as_of="2026-10-28T00:00:00Z")
+        by_date = {item["date"]: item for item in result["proposal"]["changes"]["sessions"]}
+        assert by_date["2026-10-26"]["missed"] is True
+        assert by_date["2026-10-27"]["load"] == 100
+        assert by_date["2026-10-27"]["load"] != 110
+        assert by_date["2026-10-28"]["load"] == 110
+        assert by_date["2026-10-29"]["load"] == 100
+        light = week(100)
+        light[1]["load"] = 80
+        kept = rewrite(light, "2026-10-26", as_of="2026-10-28T00:00:00Z")
+        kept_day = {item["date"]: item for item in kept["proposal"]["changes"]["sessions"]}
+        assert kept_day["2026-10-27"]["load"] == 80
 
     def test_a_week_sent_at_200_with_a_miss_after_the_check_does_not_return_200(self):
         result = rewrite(week(200), "2026-10-29", as_of="2026-10-26")

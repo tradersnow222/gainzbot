@@ -5,14 +5,17 @@ Log food from a photo estimate or a remembered usual meal.
 The Grok vision prompt asks for items, calories, and protein. This script
 does not call the model. store_estimate logs a meal only after
 record_confirmation covers that exact estimate. Each confirmation logs
-one meal. A single item over 3000 kcal or over 300 g protein is rejected
-for a re-check, and a day stops at 10000 kcal. Missing age and under 18
-set no protein target. usual breakfast needs a confirmation. Logging a
-meal does not change the plan.
+one meal. The check is the record id, and those ids are saved, so a copy
+or a restart cannot log that same yes again. A new yes can log the meal.
+A single item over 3000 kcal or over 300 g protein is rejected for a
+re-check, and a day stops at 10000 kcal. Missing age and under 18 set no
+protein target. usual breakfast needs a confirmation. Logging a meal does
+not change the plan.
 """
 
 from datetime import date, datetime
 from typing import Dict, List, Optional
+import json
 import os
 import sys
 
@@ -56,10 +59,18 @@ def _whole(value: float):
 class FoodLog:
     """Stores meal estimates and remembered usual meals."""
 
-    def __init__(self):
+    def __init__(self, used_path=None):
         self.entries: List[Dict] = []
         self.usuals: Dict[str, Dict] = {}
-        self.used_confirmations: List[ConfirmationRecord] = []
+        self.used_path = None if used_path is None else os.fspath(used_path)
+        self.used_ids: List[str] = []
+        self._used_error = None
+        if used_path is not None:
+            loaded = self._read_used(used_path)
+            if isinstance(loaded, str):
+                self._used_error = loaded
+            else:
+                self.used_ids = loaded
 
     def remember_usual(self, name, items, calories, protein_g) -> Dict:
         key = self._usual_name(name)
@@ -91,13 +102,18 @@ class FoodLog:
             "calories": meal["calories"],
             "protein_g": meal["protein_g"],
         }
+        if self._used_error:
+            return self._no(self._used_error)
         if not self._covers_fresh(confirmation, plan):
             if self._already_used(confirmation):
                 return self._no("That confirmation was already used for one log.")
             return self._no("This usual meal needs record_confirmation before it is logged.")
         stored = self._store(meal, day, "usual")
         if stored.get("stored"):
-            self.used_confirmations.append(confirmation)
+            saved = self._remember(confirmation)
+            if not saved["ok"]:
+                self.entries.pop()
+                return saved
         return stored
 
     def store_estimate(self, estimate, day, confirmation=None) -> Dict:
@@ -110,13 +126,18 @@ class FoodLog:
         )
         if not parsed["ok"]:
             return parsed
+        if self._used_error:
+            return self._no(self._used_error)
         if not self._covers_fresh(confirmation, estimate):
             if self._already_used(confirmation):
                 return self._no("That confirmation was already used for one log.")
             return self._no("This estimate needs record_confirmation before it is logged.")
         stored = self._store(parsed["meal"], day, "photo")
         if stored.get("stored"):
-            self.used_confirmations.append(confirmation)
+            saved = self._remember(confirmation)
+            if not saved["ok"]:
+                self.entries.pop()
+                return saved
         return stored
 
     def left_today(self, day, user=None, targets=None) -> Dict:
@@ -262,8 +283,53 @@ class FoodLog:
             return False
         return isinstance(confirmation, ConfirmationRecord) and ConfirmationRecorder().covers(confirmation, plan)
 
+    def _record_id(self, confirmation) -> Optional[str]:
+        if not isinstance(confirmation, ConfirmationRecord):
+            return None
+        record_id = confirmation.record_id
+        if not isinstance(record_id, str) or not record_id.strip():
+            return None
+        return record_id
+
     def _already_used(self, confirmation) -> bool:
-        return any(confirmation is used for used in self.used_confirmations)
+        record_id = self._record_id(confirmation)
+        return record_id is not None and record_id in self.used_ids
+
+    def _remember(self, confirmation) -> Dict:
+        record_id = self._record_id(confirmation)
+        if record_id is None:
+            return self._no("That confirmation has no record id.")
+        self.used_ids.append(record_id)
+        if self.used_path is None:
+            return {"ok": True}
+        try:
+            self._write_used(self.used_path, self.used_ids)
+        except OSError:
+            self.used_ids.pop()
+            return self._no("The used confirmation list could not be saved.")
+        return {"ok": True}
+
+    def _read_used(self, path):
+        if not os.path.exists(path):
+            return []
+        try:
+            with open(path, encoding="utf-8") as handle:
+                data = json.load(handle)
+        except (OSError, json.JSONDecodeError):
+            return "The used confirmation list could not be read."
+        if not isinstance(data, list) or any(not isinstance(item, str) or not item for item in data):
+            return "The used confirmation list could not be read."
+        return data
+
+    def _write_used(self, path, used_ids: List[str]) -> None:
+        folder = os.path.dirname(path)
+        if folder:
+            os.makedirs(folder, exist_ok=True)
+        temporary = path + ".tmp"
+        with open(temporary, "w", encoding="utf-8") as handle:
+            json.dump(used_ids, handle)
+            handle.write("\n")
+        os.replace(temporary, path)
 
     def _protein_target(self, user, targets):
         age = self._age(user)
