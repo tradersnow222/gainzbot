@@ -252,7 +252,7 @@ def _loads_calf(name):
 
 
 def _no_running(text):
-    return any(part in text for part in ("ankle", "calf", "achilles", "shin"))
+    return any(part in text for part in ("ankle", "calf", "achilles", "shin", "knee", "hip"))
 
 
 def _loads_neck(name):
@@ -554,23 +554,53 @@ def _weeks_until(event, today=None):
     return max(0, (when - current).days / 7.0)
 
 
-def _run_lengths(experience, minutes, weeks):
-    """Easy and long run minutes that fit inside the session, warmup included."""
+def _build_factor(weeks):
+    """0 when the event is far, 1 at the peak two weeks out."""
+    if weeks is None or weeks >= 12:
+        return 0.0
+    if weeks <= 2:
+        return 1.0
+    return (12.0 - float(weeks)) / 10.0
+
+
+def _fit_run(easy, long, room):
+    easy = min(int(round(easy)), room)
+    long = min(int(round(long)), room)
+    if room >= 10:
+        easy = max(10, easy)
+    else:
+        easy = min(easy, room)
+    long = max(easy, long)
+    return int(easy), int(long)
+
+
+def _run_lengths(experience, minutes, weeks, returning=False):
+    """Easy and long run minutes that fit inside the session, warmup included.
+
+    Far from the event the week uses the base. Closer than 12 weeks it may
+    build, and that build is at most 10% above the base. Race week, under
+    one week out, tapers below the base. Beginners stay on the beginner cap
+    even when the event is close. An old running injury starts shorter and
+    uses that same 10% build on the way back.
+    """
     room = int(minutes) - _WARMUP_MINUTES
     if room < 1:
         room = max(1, int(minutes))
-    near = weeks is not None and weeks <= 8
     beginner = experience not in {"intermediate", "advanced"}
-    if beginner:
-        easy, long = (min(30, room), room) if near else (min(25, room), min(30, room))
-    else:
-        easy, long = (min(35, room), room) if near else (min(30, room), min(40, room))
-    if room >= 10:
-        easy = max(10, min(easy, room))
-    else:
-        easy = min(easy, room)
-    long = max(easy, min(long, room))
-    return int(easy), int(long)
+    base_easy, base_long = (25, 30) if beginner else (30, 40)
+    rise = 0.0 if beginner else 0.10
+    if returning:
+        base_easy = max(10, int(round(base_easy * 0.6)))
+        base_long = max(base_easy, int(round(base_long * 0.6)))
+        rise = 0.10
+    if weeks is not None and weeks < 1:
+        return _fit_run(base_easy * 0.6, base_long * 0.6, room)
+    factor = _build_factor(weeks)
+    return _fit_run(
+        base_easy * (1 + rise * factor),
+        base_long * (1 + rise * factor),
+        room,
+    )
 
 
 def _run_roles(days):
@@ -601,7 +631,7 @@ def running_week(profile, today=None):
 
     A running sport or a running event schedules those sessions only when an
     event is on record or the injury is already marked old. A fresh ankle,
-    calf, achilles, or shin keeps the week off running.
+    calf, achilles, shin, knee, or hip keeps the week off running.
     """
     if not isinstance(profile, dict):
         return None
@@ -635,7 +665,13 @@ def running_week(profile, today=None):
     if not math.isfinite(minutes) or minutes <= 0:
         return None
     experience = profile.get("experience") if isinstance(profile.get("experience"), str) else "beginner"
-    easy, long = _run_lengths(experience.strip().lower(), minutes, _weeks_until(event, today))
+    returning = injury_old and _no_running(_injury_text(injuries))
+    easy, long = _run_lengths(
+        experience.strip().lower(),
+        minutes,
+        _weeks_until(event, today),
+        returning=returning,
+    )
     return {"roles": _run_roles(parsed), "easy": easy, "long": long}
 
 

@@ -2959,17 +2959,71 @@ def _clock_hhmm(value):
     return f"{hour:02d}:{minute:02d}"
 
 
+_WEEKDAY_CLOCK = {
+    "sun": "Sun",
+    "sunday": "Sun",
+    "mon": "Mon",
+    "monday": "Mon",
+    "tue": "Tue",
+    "tues": "Tue",
+    "tuesday": "Tue",
+    "wed": "Wed",
+    "wednesday": "Wed",
+    "thu": "Thu",
+    "thur": "Thu",
+    "thurs": "Thu",
+    "thursday": "Thu",
+    "fri": "Fri",
+    "friday": "Fri",
+    "sat": "Sat",
+    "saturday": "Sat",
+}
+
+
+def _weekly_clock(value):
+    """A weekday plus a clock, or None. A bare word is not a weekly time."""
+    if not isinstance(value, str):
+        return None
+    match = re.fullmatch(
+        r"([A-Za-z]+) (\d{1,2}):(\d{2})",
+        " ".join(value.split()),
+    )
+    if match is None:
+        return None
+    day = _WEEKDAY_CLOCK.get(match.group(1).lower())
+    if day is None:
+        return None
+    hour = int(match.group(2))
+    minute = int(match.group(3))
+    if hour > 23 or minute > 59:
+        return None
+    return f"{day} {hour:02d}:{minute:02d}"
+
+
 def _overlay_routine_times(state, times):
+    """Keep a valid clock. A bad value falls back to that routine's default."""
+    from routines import DEFAULT_LOOP_TIMES
+
+    current = dict(DEFAULT_LOOP_TIMES)
+    saved = state.get("times") if isinstance(state.get("times"), dict) else {}
+    for key, default in DEFAULT_LOOP_TIMES.items():
+        if saved.get(key):
+            current[key] = saved[key]
     if not isinstance(times, dict):
+        state["times"] = current
         return
-    current = dict(state.get("times") or {})
-    for key, value in times.items():
-        if key in {"daily_checkin", "evening_followup"}:
-            clock = _clock_hhmm(value)
-            if clock:
-                current[key] = clock
-        elif key == "weekly_review" and isinstance(value, str) and value.strip():
-            current[key] = " ".join(value.split())
+    if "daily_checkin" in times:
+        current["daily_checkin"] = (
+            _clock_hhmm(times.get("daily_checkin")) or DEFAULT_LOOP_TIMES["daily_checkin"]
+        )
+    if "evening_followup" in times:
+        current["evening_followup"] = (
+            _clock_hhmm(times.get("evening_followup")) or DEFAULT_LOOP_TIMES["evening_followup"]
+        )
+    if "weekly_review" in times:
+        current["weekly_review"] = (
+            _weekly_clock(times.get("weekly_review")) or DEFAULT_LOOP_TIMES["weekly_review"]
+        )
     state["times"] = current
 
 
@@ -2995,8 +3049,12 @@ def _structured_confirm_allowed(state):
     return True
 
 
-def _apply_structured_confirm(state, confirm, token):
-    """confirm true accepts the shown plan. A question is answered from the week."""
+def _apply_structured_confirm(state, confirm, token, reply=""):
+    """confirm true accepts the shown plan. A question is answered from the week.
+
+    The record quotes the user's text and marks the source host_confirm.
+    The string "true" is not the flag.
+    """
     if not isinstance(confirm, dict) or confirm.get("confirm") is not True:
         return token
     if not _structured_confirm_allowed(state):
@@ -3004,8 +3062,9 @@ def _apply_structured_confirm(state, confirm, token):
     if token is None:
         token = _CONFIRM_PHASE.set(True)
     state["phase"] = "confirm"
+    quoted = reply if isinstance(reply, str) and reply.strip() else "yes"
     if not state.get("confirmed"):
-        _confirm(state, "yes")
+        _confirm(state, quoted, source="host_confirm")
     if not state.get("confirmed"):
         return token
     _overlay_routine_times(state, confirm.get("routine_times"))
@@ -3809,7 +3868,7 @@ def _par_q_and_proposal(state, par_q_text):
     return par_q_text
 
 
-def _confirm(state, reply):
+def _confirm(state, reply, source="user"):
     from plan_builder import PlanBuilder
     from readiness_screen import ReadinessScreen, passing_readiness
     from record_confirmation import (
@@ -3863,7 +3922,7 @@ def _confirm(state, reply):
         state["error"] = None
         return
     confirm = _mark_first_plan(built["confirm"])
-    record = ConfirmationRecorder().record(confirm, reply, "user", check_in)
+    record = ConfirmationRecorder().record(confirm, reply, source, check_in)
     if not record.confirmed:
         state["error"] = record.message
         return
@@ -3894,7 +3953,7 @@ def _confirm(state, reply):
     state["plan"] = built["plan"]
     state["sessions"] = built["sessions"]
     state["confirmed"] = True
-    loop = start_daily_loop(reply)
+    loop = start_daily_loop("yes" if source == "host_confirm" else reply)
     state["routines_on"] = loop["enabled"]
     state["times"] = loop["times"]
     days = _profile(state).get("days") or []
@@ -3902,6 +3961,58 @@ def _confirm(state, reply):
         state["first_checkin"] = first_checkin_day(min(days), now=_now())
     clear_pending_profile()
     _clear_safety()
+
+
+_MONTH_NAMES = (
+    "",
+    "January",
+    "February",
+    "March",
+    "April",
+    "May",
+    "June",
+    "July",
+    "August",
+    "September",
+    "October",
+    "November",
+    "December",
+)
+
+
+def _event_phrase(event):
+    if not isinstance(event, dict):
+        return ""
+    name = event.get("name")
+    if not isinstance(name, str) or not name.strip():
+        return ""
+    month = event.get("month")
+    if isinstance(month, int) and 1 <= month <= 12:
+        return f"{name.strip()} in {_MONTH_NAMES[month]}"
+    raw = event.get("date")
+    if isinstance(raw, str) and raw.strip():
+        return f"{name.strip()} on {raw.strip()}"
+    return name.strip()
+
+
+def _proposal_profile(answers):
+    """Weight, level, sport, and event. Blank fields are left out."""
+    bits = []
+    weight = answers.get("weight")
+    if isinstance(weight, str) and weight.strip():
+        bits.append(weight.strip())
+    level = answers.get("experience")
+    if isinstance(level, str) and level.strip():
+        bits.append(level.strip())
+    sport = answers.get("sport")
+    if isinstance(sport, str) and sport.strip():
+        bits.append(sport.strip())
+    event = _event_phrase(answers.get("event"))
+    if event:
+        bits.append(event)
+    if not bits:
+        return ""
+    return ", ".join(bits) + ". "
 
 
 def _proposal(state):
@@ -3922,6 +4033,7 @@ def _proposal(state):
         sport_line = "The week includes strength and running: easy runs and a long run. "
     return (
         f"{lead}"
+        f"{_proposal_profile(answers)}"
         f"{days} days, {minutes} min, {goal}, {equipment}. "
         f"{start}"
         f"{injury}"
@@ -4190,7 +4302,7 @@ def run_chat(replies):
                     _merge_profile_payload(state, profile)
             else:
                 apply_reply(state, text, labels, profile)
-            token = _apply_structured_confirm(state, confirm, token)
+            token = _apply_structured_confirm(state, confirm, token, text)
             bots.append(speak(state))
         finally:
             if token is not None:

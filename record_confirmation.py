@@ -519,17 +519,20 @@ class ConfirmationRecorder:
                 errors.append(
                     "Stop. A schedule yes is confirmed only inside onboarding.run_chat."
                 )
+        host_confirm = speaker_text.lower() == "host_confirm"
         if not isinstance(reply, str) or not reply.strip():
             errors.append("The confirmation has to be the user's own words.")
         elif paused is not None:
             errors.append(paused.message)
+        elif host_confirm:
+            pass
         elif not is_clear_yes(reply) and schedule is None:
             errors.append(
                 "That reply is not a clear yes. "
                 "Vague replies like 'sure I guess', 'looks fine', or 'whatever' do not confirm a plan."
             )
 
-        if speaker_text.lower() not in {"user", "the user"}:
+        if speaker_text.lower() not in {"user", "the user", "host_confirm"}:
             errors.append("The confirmation has to come from the user.")
 
         if check_in_result is None:

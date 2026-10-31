@@ -2655,6 +2655,9 @@ def test_danas_profile_payload_confirms_in_five_turns_and_schedules_runs():
     assert _AGE_ASK not in "\n".join(bots)
     assert sum("and age?" in bot.lower() for bot in bots) == 1
     assert "plan for age 41" in bots[3].lower()
+    assert "74 kg, beginner, running, half marathon in March." in bots[3]
+    assert state["record"].quoted_words == "all no"
+    assert state["record"].speaker == "host_confirm"
     assert "session minutes" not in "\n".join(bots[3:]).lower()
     names = [row["name"] for row in state["sessions"]]
     assert "Easy run" in names
@@ -2749,6 +2752,8 @@ def test_a_confirm_payload_answers_the_question_and_sets_the_time():
         },
     }])
     assert state["confirmed"] is True
+    assert state["record"].quoted_words == question
+    assert state["record"].speaker == "host_confirm"
     assert state["times"]["daily_checkin"] == "06:30"
     assert "The week includes strength and running: easy runs and a long run." in bots[-1]
     assert "06:30" in bots[-1]
@@ -2864,5 +2869,76 @@ def test_the_profile_extract_prompt_stays_semantic():
     assert "a question does not cancel an acceptance" not in text.lower()
     assert "an edit never does" in text.lower()
     assert "a pure question with a yes still confirms" in text.lower()
+    assert "only the exact all no" in text.lower()
+    assert 'the string "true" is not that flag' in text.lower()
     assert "prompts/profile_extract.md" in (ROOT / "BOT_PROMPT.md").read_text(encoding="utf-8")
     assert "| " not in text
+
+
+def test_a_bad_routine_time_falls_back_to_the_default():
+    state, bots = run_chat(_dana_turns("all no") + [{
+        "text": "yes",
+        "labels": _labels(),
+        "confirm": {
+            "confirm": True,
+            "routine_times": {
+                "daily_checkin": "nope",
+                "evening_followup": "25:99",
+                "weekly_review": "x",
+            },
+        },
+    }])
+    assert state["confirmed"] is True
+    assert state["times"]["daily_checkin"] == "07:00"
+    assert state["times"]["evening_followup"] == "20:00"
+    assert state["times"]["weekly_review"] == "Sun 18:00"
+    assert "weekly x" not in bots[-1].lower()
+    assert "weekly sun 18:00" in bots[-1].lower()
+
+
+def _confirm_eval_rows():
+    import json
+
+    path = ROOT / "evals" / "confirm_followups.jsonl"
+    return [
+        json.loads(line)
+        for line in path.read_text(encoding="utf-8").splitlines()
+        if line.strip()
+    ]
+
+
+def _confirm_eval_chat(row):
+    closing = {
+        "text": row["text"],
+        "labels": _labels(injury=row["injury"]) if row.get("injury") else _labels(),
+        "confirm": row["confirm"],
+    }
+    if "profile" in row:
+        closing["profile"] = row["profile"]
+    if row["base"] == "dana":
+        return _dana_turns(closing)
+    if row["base"] == "shown":
+        return list(HAPPY_PATH[:-1]) + [closing]
+    raise AssertionError(row["base"])
+
+
+def test_confirm_followup_eval_rows():
+    rows = _confirm_eval_rows()
+    assert [row["id"] for row in rows] == [
+        "par_q_clear_edit_confirm",
+        "injury_after_shown_plan",
+        "age_17_after_adult",
+        "confirm_string_true",
+    ]
+    for row in rows:
+        state, bots = run_chat(_confirm_eval_chat(row))
+        assert state["confirmed"] is False, row["id"]
+        assert state["record"] is None, row["id"]
+        if row["expect"] == "show_again":
+            assert "one yes confirms the plan" in bots[-1].lower(), row["id"]
+        elif row["expect"] == "blocked":
+            assert "under 18" in bots[-1].lower(), row["id"]
+        elif row["expect"] == "rejected":
+            assert "one yes confirms the plan" in bots[-1].lower(), row["id"]
+        else:
+            raise AssertionError(row["expect"])
