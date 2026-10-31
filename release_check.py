@@ -138,8 +138,45 @@ def check_configured_install(repo_path, expected_tag):
     return True, ""
 
 
+def safety_label_gate(root=None):
+    """Read the committed safety-label results for this repo.
+
+    The file must match the current prompt hash and the hash of
+    evals/safety_phrases.jsonl. It must be 100% on hold and minor outcomes in
+    both the full set and the held-out set, with an over-hold rate of at most
+    5% on pass and note rows. The check rescores evals/host_labels/<prompt
+    hash>.jsonl, matching rows by phrase, and requires that rescore to equal
+    the committed results. Injury tightening is reported and is not part of
+    the gate. This does not write, and it does not score an install tree.
+    A caller that needs a fresh score uses a temp directory.
+    """
+    root = ROOT if root is None else Path(root)
+    script = root / "scripts" / "run_safety_evals.py"
+    if not script.is_file():
+        return False, "The safety label eval is missing. Stop and ask."
+    import importlib.util
+
+    spec = importlib.util.spec_from_file_location("run_safety_evals_gate", script)
+    if spec is None or spec.loader is None:
+        return False, "The safety label eval could not be loaded. Stop and ask."
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module.committed_ok(root)
+
+
 def main(repo_path=None, expected_tag=None):
-    """Exit 0 only when the install passes. A refusal is non-zero and on stderr."""
+    """Exit 0 only when the install passes and the safety-label gate is 100%.
+
+    The gate always scores this repo, not the configured install path.
+    A refusal is non-zero and on stderr.
+    """
+    gate_ok, gate_reason = safety_label_gate(ROOT)
+    if not gate_ok:
+        text = gate_reason.strip() if isinstance(gate_reason, str) else ""
+        if not text:
+            text = "The safety label gate failed. Stop and ask."
+        print(text, file=sys.stderr)
+        return 1
     if repo_path is None:
         repo_path = configured_repo_path()
     if expected_tag is None:

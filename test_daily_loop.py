@@ -56,12 +56,19 @@ def test_a_local_6_30_cron_does_not_shift_across_november_daylight_saving():
     assert after.astimezone(timezone.utc).hour == 14
 
 
-def test_the_first_check_in_is_the_saturday_before_a_monday_start():
+def test_the_first_check_in_is_the_plan_start_not_an_earlier_day():
+    from datetime import datetime
+    from zoneinfo import ZoneInfo
+
     from routines import first_checkin_day
 
-    assert first_checkin_day("2026-10-26") == "2026-10-24"
-    assert first_checkin_day("2026-10-24") == "2026-10-24"
-    assert first_checkin_day("2026-10-31") == "2026-10-31"
+    zone = ZoneInfo("America/Los_Angeles")
+    evening = datetime(2026, 10, 31, 18, 0, tzinfo=zone)
+    assert first_checkin_day("2026-11-02", now=evening) == "2026-11-02"
+    assert first_checkin_day("2026-10-26", now=evening) == "2026-11-01"
+    early = datetime(2026, 10, 31, 6, 0, tzinfo=zone)
+    assert first_checkin_day("2026-10-31", now=early) == "2026-10-31"
+    assert first_checkin_day("2026-10-26", now=early) == "2026-10-31"
 
 
 def test_a_rest_day_asks_only_the_symptom_line():
@@ -184,20 +191,27 @@ def test_a_symptom_in_the_morning_pauses_before_the_workout():
 
     loop = DailyLoop(load=80, minutes=45, profile=adult_profile())
     day = "2026-10-26"
-    opened = loop.open_morning(day)
+    pause_day = "2026-10-27"
+    opened = loop.open_morning(pause_day)
     assert opened.startswith("Morning. Any chest pain, trouble breathing, dizziness or new pain? no / yes")
     assert "soreness from 1 to 5" in opened
-    paused = loop.hear(day, "my chest hurts 8 fine 45")
+    paused = loop.hear(pause_day, "my chest hurts 8 fine 45")
     assert "doctor" in paused.lower()
     assert "easy day" not in paused.lower()
-    assert day not in loop.workouts
-    assert loop.phase[day] == "paused"
+    assert pause_day not in loop.workouts
+    assert loop.phase[pause_day] == "paused"
+    from safety_pending import clear_pending
+
+    clear_pending(loop._safety_directory(), "daily")
     clear = DailyLoop(load=80, minutes=45, profile=adult_profile())
     clear.open_morning(day)
     follow = clear.hear(day, "no")
     assert follow != opened
     assert "easy day" not in follow.lower()
-    assert clear.phase[day] == "morning2"
+    assert "one more" not in follow.lower()
+    assert clear.phase[day] == "workout"
+    assert clear.notes[day]["sleep"] == 7
+    assert clear.notes[day]["soreness"] == 2
     assert parse_evening("did not")["did_it"] is False
     assert parse_evening("I did not do it")["did_it"] is False
     assert parse_evening("did")["did_it"] is True
@@ -360,7 +374,8 @@ def test_the_daily_loop_stops_while_onboarding_is_held():
 
     run_chat([
         "hello",
-        "hold, male, age 25, 80 kg, 180 cm",
+        "hold, male, age 25, 80 kg, 180 cm, no injuries",
+        "25",
         "ok",
         "all no",
         "my chest hurts",
@@ -441,25 +456,31 @@ def test_a_no_with_anything_else_asks_the_symptom_line_again():
     day = "2026-10-26"
     unclear = (
         "no, болит грудь",
-        "no no 8 fine 45 (actually chest tight)",
         "no, but new pain in my knee",
         "no idea",
     )
     for reply in unclear:
         loop = DailyLoop(load=80, minutes=45, profile=adult_profile())
+        _reset_daily(loop)
         loop.open_morning(day)
         again = loop.hear(day, reply)
         assert again == _SYMPTOM, reply
         assert loop.phase[day] == "symptom"
         assert day not in loop.workouts
+    tight = DailyLoop(load=80, minutes=45, profile=adult_profile())
+    tight.open_morning(day)
+    tight_text = tight.hear(day, "no no 8 fine 45 (actually chest tight)")
+    assert tight.phase[day] == "paused"
+    assert "medical emergency" in tight_text.lower()
     bandage = DailyLoop(load=80, minutes=45, profile=adult_profile())
-    bandage.open_morning(day)
-    paused = bandage.hear(day, "no \U0001F915")
-    assert bandage.phase[day] == "paused"
-    assert day not in bandage.workouts
+    bandage.open_morning("2026-10-27")
+    paused = bandage.hear("2026-10-27", "no \U0001F915")
+    assert bandage.phase["2026-10-27"] == "paused"
+    assert "2026-10-27" not in bandage.workouts
     assert "head" in paused.lower() or "doctor" in paused.lower()
     for reply in ("no", "no 8 45", "no 8 fine 45"):
         loop = DailyLoop(load=80, minutes=45, profile=adult_profile())
+        _reset_daily(loop)
         loop.open_morning(day)
         text = loop.hear(day, reply)
         assert text != _SYMPTOM, reply
@@ -520,3 +541,547 @@ def test_an_unreadable_seal_key_stops_the_morning(monkeypatch, tmp_path):
         assert os.read(descriptor, 64) == before
     finally:
         os.close(descriptor)
+
+
+def _live_week(tmp_path):
+    """Mon/Wed/Fri sessions and a Saturday parkrun, like the 2026-10-31 live week."""
+    import json
+
+    sessions = []
+    for day, name, exercise in (
+        ("2026-11-02", "Full body A", "Back squat"),
+        ("2026-11-04", "Full body B", "Front squat"),
+        ("2026-11-06", "Full body C", "Leg press"),
+    ):
+        sessions.append({
+            "date": day,
+            "name": name,
+            "load": 80,
+            "minutes": 30,
+            "exercises": [{"name": exercise, "sets": 3, "reps": "8-12"}],
+        })
+    week = {
+        "plan": {"nutrition": {"calories": 1366}},
+        "sessions": sessions,
+        "confirmation": {
+            "record_id": "rec-live",
+            "plan_hash": "abc",
+            "saved_at": "2026-10-30T00:00:00Z",
+        },
+    }
+    path = tmp_path / "week.json"
+    path.write_text(json.dumps(week), encoding="utf-8")
+    return path
+
+
+def _live_loop(tmp_path):
+    from daily_loop import DailyLoop, adult_profile
+
+    profile = adult_profile()
+    profile["sport"] = "parkrun"
+    profile["sport_day"] = "Saturday"
+    profile["days"] = ["2026-11-02", "2026-11-04", "2026-11-06"]
+    profile["minutes"] = 30
+    return DailyLoop(
+        load=80,
+        minutes=30,
+        profile=profile,
+        week_path=str(_live_week(tmp_path)),
+    )
+
+
+def test_a_scored_no_with_a_plain_remark_keeps_the_note(tmp_path):
+    import re
+
+    from daily_loop import _SECOND, _SYMPTOM
+
+    saturday = "2026-10-31"
+    remark = "no, 7, 2. yep doing parkrun at 9"
+    loop = _live_loop(tmp_path)
+    loop.open_morning(saturday)
+    text = loop.hear(saturday, remark, {
+        "minor_signal": False,
+        "red_flag": "none",
+        "injury": "none",
+        "note_ok": True,
+    })
+    assert text != _SYMPTOM
+    assert loop.phase[saturday] == "workout"
+    assert loop.notes[saturday]["sleep"] == 7
+    assert loop.notes[saturday]["soreness"] == 2
+    assert loop.notes[saturday]["note"] == "yep doing parkrun at 9"
+    assert loop.notes[saturday].get("energy") is None
+    assert text.startswith("Rest day. Enjoy parkrun, keep it conversational.")
+    assert "1366 kcal" in text
+    assert "Full body A" in text
+    assert "Monday" in text
+    assert "Today is a normal day" not in text
+    assert "30 min" not in text
+    assert re.search(r"load\s+\d+", text.lower()) is None
+    held = _live_loop(tmp_path)
+    held.open_morning(saturday)
+    paused = held.hear(saturday, "no, 7, 2. my chest hurts")
+    assert saturday not in held.workouts
+    assert held.phase[saturday] == "paused"
+    assert "doctor" in paused.lower() or "emergency" in paused.lower()
+    _clear_day_files(tmp_path)
+    ambiguous = _live_loop(tmp_path)
+    ambiguous.open_morning(saturday)
+    again = ambiguous.hear(saturday, "no, 7, 2. but new pain in my knee")
+    assert again == _SYMPTOM
+    assert ambiguous.phase[saturday] == "symptom"
+
+
+def test_a_day_missing_from_the_confirmed_week_is_a_rest_day(tmp_path):
+    import re
+
+    from daily_loop import _MORNING, _SECOND, _SYMPTOM
+
+    saturday = "2026-10-31"
+    loop = _live_loop(tmp_path)
+    opened = loop.open_morning(saturday)
+    assert opened == _SYMPTOM
+    assert _MORNING not in opened
+    assert "soreness" not in opened.lower()
+    assert loop.questions[saturday] == 0
+    text = loop.hear(saturday, "no, 7, 2")
+    assert text.startswith("Rest day. Enjoy parkrun, keep it conversational.")
+    assert "1366 kcal" in text
+    assert "Next: Full body A on Monday." in text
+    assert "Today is a normal day" not in text
+    assert "30 min" not in text
+    assert re.search(r"load\s+\d+", text.lower()) is None
+    assert loop.phase[saturday] == "workout"
+    assert loop.workouts[saturday]["day"] == "rest"
+    bare = _live_loop(tmp_path)
+    bare.open_morning(saturday)
+    cleared = bare.hear(saturday, "no")
+    assert cleared != _SECOND
+    assert "one more" not in cleared.lower()
+    assert cleared.startswith("Rest day. Enjoy parkrun, keep it conversational.")
+    assert bare.notes[saturday]["sleep"] == 7
+    assert bare.notes[saturday]["soreness"] == 2
+    assert bare.phase[saturday] == "workout"
+
+
+def test_monday_still_sends_full_body_a(tmp_path):
+    import re
+
+    from daily_loop import _MORNING, _SYMPTOM
+
+    monday = "2026-11-02"
+    loop = _live_loop(tmp_path)
+    opened = loop.open_morning(monday)
+    assert opened.startswith(_SYMPTOM)
+    assert _MORNING in opened
+    text = loop.hear(monday, "no, 7, 2")
+    assert "Full body A" in text
+    assert text.startswith("Full body A.")
+    assert "Rest day" not in text
+    assert "Today is a normal day" not in text
+    assert re.search(r"load\s+\d+", text.lower()) is None
+    assert loop.phase[monday] == "workout"
+    assert loop.workouts[monday]["name"] == "Full body A"
+    assert loop.notes[monday]["sleep"] == 7
+    assert loop.notes[monday]["soreness"] == 2
+
+
+def test_a_scored_no_remark_is_scanned_alone_and_allowlisted(tmp_path):
+    from daily_loop import _SYMPTOM
+
+    remarks = (
+        "slurred speech",
+        "face drooping",
+        "palpitations",
+        "heart racing",
+        "coughing blood",
+        "wheezing",
+        "lightheaded",
+        "vomited",
+        "vision blurry",
+        "tingling arm",
+        "cant feel my feet",
+        "cracked rib",
+        "knee buckled",
+        "sprained ankle",
+        "fever",
+        "covid",
+        "pregnant",
+        "chestpain",
+        "cp",
+        "sob",
+        "d1zzy",
+        "actually yes",
+        "not great",
+    )
+    for day in ("2026-11-02", "2026-10-31"):
+        for prefix in ("no 7 2", "no, 7, 2."):
+            for remark in remarks:
+                _clear_day_files(tmp_path)
+                loop = _live_loop(tmp_path)
+                loop.open_morning(day)
+                text = loop.hear(day, f"{prefix} {remark}")
+                assert day not in loop.workouts, (day, prefix, remark, text)
+                assert loop.phase[day] != "workout", (day, prefix, remark, text)
+                assert "Full body" not in text
+                assert not text.startswith("Rest day")
+    saturday = "2026-10-31"
+    _clear_day_files(tmp_path)
+    clear = _live_loop(tmp_path)
+    clear.open_morning(saturday)
+    text = clear.hear(saturday, "no, 7, 2. yep doing parkrun at 9", {
+        "minor_signal": False,
+        "red_flag": "none",
+        "injury": "none",
+        "note_ok": True,
+    })
+    assert text != _SYMPTOM
+    assert clear.phase[saturday] == "workout"
+    assert clear.notes[saturday]["note"] == "yep doing parkrun at 9"
+    assert text.startswith("Rest day. Enjoy parkrun, keep it conversational.")
+
+
+def test_open_morning_does_not_reset_a_pause_or_a_hold(tmp_path):
+    from daily_loop import DailyLoop, adult_profile
+    from onboarding import hold_is_active, run_chat
+
+    monday = "2026-11-02"
+    loop = _live_loop(tmp_path)
+    loop.open_morning(monday)
+    paused = loop.hear(monday, "no 7 2 slurred speech")
+    assert loop.phase[monday] == "paused"
+    assert monday not in loop.workouts
+    again = loop.open_morning(monday)
+    assert again == paused
+    assert loop.phase[monday] == "paused"
+    assert monday not in loop.workouts
+    assert "slurred" in (loop.notes[monday].get("reply") or "")
+    third = loop.open_morning(monday)
+    assert third == paused
+    assert monday not in loop.workouts
+    held_state, held_bots = run_chat(["hello", "my chest hurts"])
+    assert held_state["phase"] == "symptom"
+    assert hold_is_active()
+    fresh = DailyLoop(load=80, minutes=45, profile=adult_profile())
+    opened = fresh.open_morning(monday)
+    repeated = fresh.open_morning(monday)
+    assert opened == repeated
+    assert opened == held_bots[-1]
+    assert monday not in fresh.phase
+    assert monday not in fresh.workouts
+    stayed = fresh.hear(monday, "no, 7, 2")
+    assert stayed == opened
+    assert monday not in fresh.workouts
+
+
+def test_a_bare_yes_or_yep_remark_is_not_a_note(tmp_path):
+    import os
+
+    from daily_loop import _SYMPTOM
+
+    for day in ("2026-11-02", "2026-10-31"):
+        for reply in ("no 7 2 yes", "no 7 2 yep", "no, 7, 2. yep", "no, 7, 2. yes"):
+            _clear_day_files(tmp_path)
+            loop = _live_loop(tmp_path)
+            loop.open_morning(day)
+            text = loop.hear(day, reply)
+            assert text == _SYMPTOM, (day, reply, text)
+            assert loop.phase[day] == "symptom", (day, reply)
+            assert day not in loop.workouts, (day, reply)
+            assert loop.notes[day].get("note") in (None, ""), (day, reply)
+            assert "Full body" not in text
+            assert not text.startswith("Rest day")
+    saturday = "2026-10-31"
+    _clear_day_files(tmp_path)
+    clear = _live_loop(tmp_path)
+    clear.open_morning(saturday)
+    text = clear.hear(saturday, "no, 7, 2. yep doing parkrun at 9", {
+        "minor_signal": False,
+        "red_flag": "none",
+        "injury": "none",
+        "note_ok": True,
+    })
+    assert text != _SYMPTOM
+    assert clear.phase[saturday] == "workout"
+    assert clear.notes[saturday]["note"] == "yep doing parkrun at 9"
+
+
+def test_an_evening_reply_after_a_saved_pause_does_not_crash(tmp_path):
+    monday = "2026-11-02"
+    first = _live_loop(tmp_path)
+    first.open_morning(monday)
+    paused = first.hear(monday, "no 7 2 slurred speech")
+    assert first.phase[monday] == "paused"
+    second = _live_loop(tmp_path)
+    assert monday not in second.notes
+    second.open_evening(monday)
+    text = second.hear(monday, "yes easy oats")
+    assert isinstance(text, str)
+    assert text
+    assert text == paused
+    assert second.notes.get(monday, {}).get("did_it") is not True
+
+
+def test_a_saved_pause_does_not_hide_an_unreadable_data_file(monkeypatch, tmp_path):
+    import os
+
+    from seal_secret import DATA_FILE_MESSAGE
+
+    monday = "2026-11-02"
+    first = _live_loop(tmp_path)
+    first.open_morning(monday)
+    paused = first.hear(monday, "no 7 2 slurred speech")
+    assert first.phase[monday] == "paused"
+    assert DATA_FILE_MESSAGE not in paused
+    path = tmp_path / "seal.key"
+    path.write_bytes(b"k" * 32)
+    monkeypatch.setattr("seal_secret._key_path", lambda: str(path))
+    real_open = open
+
+    def guarded(file, *args, **kwargs):
+        target = file if isinstance(file, (str, bytes)) else getattr(file, "name", None)
+        if target is not None and os.path.abspath(str(target)) == os.path.abspath(path):
+            raise PermissionError("blocked")
+        return real_open(file, *args, **kwargs)
+
+    monkeypatch.setattr("builtins.open", guarded)
+    second = _live_loop(tmp_path)
+    opened = second.open_morning(monday)
+    assert opened == DATA_FILE_MESSAGE
+    assert opened != paused
+    heard = second.hear(monday, "yes easy oats")
+    assert heard == DATA_FILE_MESSAGE
+
+
+def test_a_pause_loads_on_a_new_daily_loop(tmp_path):
+    monday = "2026-11-02"
+    first = _live_loop(tmp_path)
+    first.open_morning(monday)
+    paused = first.hear(monday, "no 7 2 slurred speech")
+    assert first.phase[monday] == "paused"
+    assert monday not in first.workouts
+    second = _live_loop(tmp_path)
+    opened = second.open_morning(monday)
+    assert opened == paused
+    assert second.phase[monday] == "paused"
+    assert monday not in second.workouts
+    stayed = second.hear(monday, "no, 7, 2")
+    assert monday not in second.workouts
+    assert second.phase[monday] == "paused"
+
+
+def _safety(flag="none", injury="none", minor=False):
+    return {
+        "minor_signal": minor,
+        "red_flag": flag,
+        "injury": injury,
+        "note_ok": False,
+    }
+
+
+def test_labels_run_before_a_workout_or_an_evening_log(tmp_path):
+    monday = "2026-11-02"
+    for labels in (
+        _safety("palpitations"),
+        _safety(injury="current"),
+        _safety(minor=True),
+    ):
+        loop = _live_loop(tmp_path)
+        loop.open_morning(monday)
+        text = loop.hear(monday, "no sore 7", labels)
+        assert monday not in loop.workouts
+        if labels["minor_signal"]:
+            assert "how old are you" in text.lower()
+        else:
+            assert loop.phase[monday] == "paused"
+            assert "medical emergency" not in text.lower()
+        _clear_day_files(tmp_path)
+    second = _live_loop(tmp_path)
+    second.open_morning(monday)
+    second.hear(monday, "no, 7")
+    assert second.phase[monday] in {"morning2", "signals", "symptom"}
+    held = second.hear(monday, "8 2 tired", _safety("palpitations"))
+    assert second.phase[monday] == "paused"
+    assert monday not in second.workouts
+    assert "medical emergency" not in held.lower()
+    _clear_day_files(tmp_path)
+    evening = _live_loop(tmp_path)
+    evening.open_morning(monday)
+    evening.hear(monday, "no 8 fine 45")
+    evening.phase[monday] = "evening"
+    logged = evening.hear(monday, "did it, heart racing after", _safety("palpitations"))
+    assert evening.phase[monday] == "paused"
+    assert evening.notes.get(monday, {}).get("did_it") is None
+    assert "logged" not in logged.lower()
+
+
+def _minor_labels():
+    return {
+        "minor_signal": True,
+        "red_flag": "none",
+        "injury": "none",
+        "note_ok": False,
+    }
+
+
+def _reset_daily(loop):
+    """Drop a same-day pause, unclear count, and pending safety record."""
+    import os
+
+    from safety_pending import clear_pending
+
+    clear_pending(os.path.dirname(loop._pause_file()), "daily")
+    for path in (loop._pause_file(), loop._unclear_path()):
+        if os.path.isfile(path):
+            os.remove(path)
+
+
+def _clear_day_files(tmp_path):
+    from safety_pending import clear_pending
+
+    clear_pending(str(tmp_path), "daily")
+    for name in ("daily_pause.json", "daily_unclear.json"):
+        found = tmp_path / name
+        if found.exists():
+            found.unlink()
+
+
+def test_an_age_check_blocks_the_workout_until_a_typed_int(tmp_path):
+    day = "2026-11-02"
+    loop = _live_loop(tmp_path)
+    loop.open_morning(day)
+    asked = loop.hear(day, "no sore 7", _minor_labels())
+    assert "how old are you" in asked.lower()
+    assert day not in loop.workouts
+    later = loop.hear(day, "no, 7, 2")
+    assert "Full body A" not in later
+    assert day not in loop.workouts
+    _clear_day_files(tmp_path)
+    young = _live_loop(tmp_path)
+    young.open_morning(day)
+    young.hear(day, "no sore 7", _minor_labels())
+    blocked = young.hear(day, "17")
+    assert "Full body A" not in blocked
+    still = young.hear(day, "no")
+    assert "Full body A" not in still
+    assert day not in young.workouts
+    _clear_day_files(tmp_path)
+    adult = _live_loop(tmp_path)
+    adult.open_morning(day)
+    adult.hear(day, "no sore 7", _minor_labels())
+    cleared = adult.hear(day, "30")
+    assert "Full body A" not in cleared
+    assert day not in adult.workouts
+    workout = adult.hear(day, "no, 7, 2")
+    assert "Full body A" in workout
+
+
+def test_a_morning_reask_then_no_does_not_prescribe(tmp_path):
+    day = "2026-11-02"
+    loop = _live_loop(tmp_path)
+    loop.open_morning(day)
+    first = loop.hear(day, "kinda off today")
+    assert "Full body A" not in first
+    assert day not in loop.workouts
+    second = loop.hear(day, "no")
+    assert "Full body A" not in second
+    assert day not in loop.workouts
+    assert loop.phase[day] == "paused"
+
+
+def test_an_evening_reask_then_yes_does_not_log(tmp_path):
+    day = "2026-11-02"
+    loop = _live_loop(tmp_path)
+    loop.open_morning(day)
+    loop.hear(day, "no, 7, 2")
+    loop.open_evening(day)
+    first = loop.hear(day, "not sure about the session")
+    assert "logged" not in first.lower()
+    second = loop.hear(day, "yes")
+    assert "logged" not in second.lower()
+    assert loop.notes[day].get("did_it") is None
+    assert loop.phase[day] == "paused"
+    _clear_day_files(tmp_path)
+    aged = _live_loop(tmp_path)
+    aged.open_morning(day)
+    aged.hear(day, "no, 7, 2")
+    aged.open_evening(day)
+    asked = aged.hear(day, "im still at school", _minor_labels())
+    assert "how old are you" in asked.lower()
+    stayed = aged.hear(day, "yes")
+    assert "logged" not in stayed.lower()
+    assert aged.notes[day].get("did_it") is None
+
+
+def test_an_old_injury_swaps_the_lift_that_day(tmp_path):
+    day = "2026-11-02"
+    loop = _live_loop(tmp_path)
+    loop.open_morning(day)
+    text = loop.hear(day, "no, 7, 2. old knee", {
+        "minor_signal": False,
+        "red_flag": "none",
+        "injury": "old",
+        "note_ok": False,
+    })
+    assert "Full body A" in text
+    assert "Back squat" not in text
+    assert "Box squat to a high box" in text
+    assert loop.phase[day] == "workout"
+
+
+def test_an_old_follow_up_keeps_the_pending_injury_text(tmp_path):
+    day = "2026-11-04"
+    loop = _live_loop(tmp_path)
+    loop.open_morning(day)
+    labels = {
+        "minor_signal": False,
+        "red_flag": "none",
+        "injury": "unclear",
+        "note_ok": False,
+    }
+    first = loop.hear(day, "knee is wrecked", labels)
+    assert "Full body" not in first
+    second = loop.hear(day, "old")
+    assert "Full body" not in second
+    assert loop.notes[day]["old_injury"] == "knee is wrecked"
+    assert loop.phase[day] != "paused"
+    third = loop.hear(day, "no, 7, 2")
+    assert "Front squat" not in third
+    assert "Box squat to a high box" in third
+    assert loop.phase[day] == "workout"
+
+
+def test_a_stray_number_on_day_two_does_not_hold_unless_labels_say_so(tmp_path):
+    day = "2026-11-04"
+    loop = _live_loop(tmp_path)
+    loop.open_morning(day)
+    text = loop.hear(day, "25")
+    assert loop.phase[day] != "paused"
+    assert "Full body" not in text
+    clear = loop.hear(day, "no, 7, 2")
+    assert "Full body B" in clear
+    assert loop.phase[day] == "workout"
+    _clear_day_files(tmp_path)
+    held = _live_loop(tmp_path)
+    held.open_morning(day)
+    paused = held.hear(day, "25", {
+        "minor_signal": False,
+        "red_flag": "chest_pain",
+        "injury": "none",
+        "note_ok": False,
+    })
+    assert held.phase[day] == "paused"
+    assert "Full body" not in paused
+
+
+def test_a_future_dated_pending_file_holds_the_earlier_day(tmp_path):
+    from safety_pending import write_pending
+
+    day = "2026-11-02"
+    assert write_pending(str(tmp_path), "follow_up", "2026-11-06", "daily") is True
+    loop = _live_loop(tmp_path)
+    loop.open_morning(day)
+    text = loop.hear(day, "no, 7, 2")
+    assert "Full body A" not in text
+    assert loop.phase[day] == "paused"
+    assert day not in loop.workouts

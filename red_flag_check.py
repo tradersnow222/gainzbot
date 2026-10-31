@@ -294,6 +294,30 @@ class RedFlagChecker:
     _HEAT = re.compile(r"\b(?:heat\w*|sweat\w*)\b")
     _STOPPED_SWEAT = re.compile(r"\b(?:stopped|stop|quit|not|no)\s+sweat\w*\b")
     _POP_NOISE = re.compile(r"\b(?:balloon|song|soda)\b")
+    _CHEST_INJURY = re.compile(r"\bchest\s+injur(?:y|ies|ed)\b")
+    _BROKEN_RIB = re.compile(
+        r"\b(?:broken|broke|fractured|cracked|bruised)\s+"
+        r"(?:a\s+|my\s+|the\s+|some\s+)?ribs?\b"
+    )
+    _BLADDER = re.compile(
+        r"\b(?:loss\s+of|lost|losing|lose)\s+"
+        r"(?:(?:bladder|bowel)\s+or\s+)?(?:bladder|bowel)\s+control\b"
+        r"|\b(?:peed|wet)\s+myself\b"
+        r"|\bincontinence\b"
+        r"|\b(?:can't|cannot|can\s+not|cant)\s+control\s+(?:my\s+)?bladder\b"
+    )
+    _CANT_FEEL_LEGS = re.compile(
+        r"\b(?:can't|cannot|couldn't|can\s+not|cant)\s+feel\s+"
+        r"(?:my\s+|the\s+)?(?:legs?|feet|foot)\b"
+    )
+    _BOTH_LEGS = re.compile(
+        r"\btingling\s+both\s+legs\b"
+        r"|\bpain\s+shooting\s+down\s+both\s+legs\b"
+    )
+    _HURT = re.compile(r"\bhurt(?:s|ing)?\b")
+    _BACK = re.compile(r"\bback\b")
+    _SHARP_PAIN = re.compile(r"\bsharp\s+pain\b")
+    _TODAY_WORD = re.compile(r"\btoday\b")
 
     SEVERITY_MESSAGES = {
         "crisis": (
@@ -320,7 +344,7 @@ class RedFlagChecker:
             "chest_pain", "cardiac_symptoms", "breathing_difficulty",
             "numbness", "rhabdomyolysis", "blue_lips", "stroke_signs",
             "heat_illness", "face_droop", "palpitations", "referred_pain",
-            "blood_clot",
+            "blood_clot", "cauda_equina", "spinal_emergency",
         )):
             return "cardiac"
         if "fainting" in flags:
@@ -481,7 +505,21 @@ class RedFlagChecker:
             flags.add("heat_illness")
         if self._active(text, self._FATIGUE):
             flags.add("extreme_fatigue")
+        if self._active(text, self._BLADDER):
+            flags.add("cauda_equina")
+        if self._active(text, self._CANT_FEEL_LEGS) or self._active(text, self._BOTH_LEGS):
+            flags.add("numbness")
+        if self._active(text, self._CHEST_INJURY) or self._active(text, self._BROKEN_RIB):
+            flags.add("chest_pain")
+        if self._acute_back_hit(text):
+            flags.add("spinal_emergency")
         return flags
+
+    def _acute_back_hit(self, text: str) -> bool:
+        """A back injury that is happening now, with sharp pain."""
+        if self._in_same_sentence(text, self._HURT, self._BACK, self._SHARP_PAIN):
+            return True
+        return self._in_same_sentence(text, self._BACK, self._SHARP_PAIN, self._TODAY_WORD)
 
     def _chest_hit(self, text: str) -> bool:
         for chest in self._active(text, self._CHEST):

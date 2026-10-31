@@ -128,10 +128,15 @@ def first_plan_seal(plan):
 
 
 def _mark_first_plan(plan):
-    """Seal the first plan. Only onboarding, and tests, call this.
+    """Seal the first plan. Only run_chat's confirm phase may call this.
 
-    A later week is returned unmarked. A bare first_plan flag is not this.
+    A direct call returns the week unmarked. A later week is unmarked too.
+    A bare first_plan flag is not this.
     """
+    from onboarding import confirm_phase_active
+
+    if not confirm_phase_active():
+        return _first_plan_body(plan) if isinstance(plan, dict) else plan
     if not isinstance(plan, dict):
         return plan
     marked = _first_plan_body(plan)
@@ -155,7 +160,14 @@ def onboarding_record_path():
 
 
 def _store_onboarding_record(record, week):
-    """Remember the onboarding confirmation. A later week is not stored."""
+    """Remember the onboarding confirmation. A later week is not stored.
+
+    A direct call outside run_chat's confirm phase stores nothing.
+    """
+    from onboarding import confirm_phase_active
+
+    if not confirm_phase_active():
+        return False
     if not isinstance(record, ConfirmationRecord) or record.confirmed is not True:
         return False
     if _is_later_week(week):
@@ -500,6 +512,13 @@ class ConfirmationRecorder:
             from routines import plan_schedule
 
             schedule = plan_schedule(reply)
+        if schedule is not None:
+            from onboarding import confirm_phase_active
+
+            if not confirm_phase_active():
+                errors.append(
+                    "Stop. A schedule yes is confirmed only inside onboarding.run_chat."
+                )
         if not isinstance(reply, str) or not reply.strip():
             errors.append("The confirmation has to be the user's own words.")
         elif paused is not None:

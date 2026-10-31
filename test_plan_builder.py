@@ -557,8 +557,85 @@ def test_three_gym_days_are_a_deterministic_full_body_split():
     assert "Back squat" in names
     knee = PlanBuilder().propose(profile(equipment="full gym", injuries="left knee"), check_in)
     assert knee["ok"] is True
-    knee_names = [item["name"].lower() for item in knee["sessions"][0]["exercises"]]
-    assert not any("squat" in name or "lunge" in name for name in knee_names)
+    for row in knee["sessions"]:
+        knee_names = [item["name"].lower() for item in row["exercises"]]
+        assert any("box squat" in name for name in knee_names)
+        assert any("glute bridge" in name for name in knee_names)
+        for name in knee_names:
+            assert "lunge" not in name
+            assert "split squat" not in name
+            if "squat" in name:
+                assert "box squat" in name
+    check_in = passing_check_in()
+    shoulder = PlanBuilder().propose(
+        profile(equipment="full gym", injuries="shoulder"), check_in,
+    )
+    assert shoulder["ok"] is True
+    for row in shoulder["sessions"]:
+        names = [item["name"].lower() for item in row["exercises"]]
+        assert names
+        for name in names:
+            assert "bench" not in name
+            assert "overhead" not in name
+            assert "dip" not in name
+            assert "push-up" not in name
+    hip = PlanBuilder().propose(profile(equipment="full gym", injuries="hip replacement"), check_in)
+    assert hip["ok"] is True
+    for row in hip["sessions"]:
+        names = [item["name"].lower() for item in row["exercises"]]
+        assert names
+        assert not any("lunge" in name for name in names)
+        assert not any(name.startswith("back squat") or name == "squat" for name in names)
+    calf = PlanBuilder().propose(
+        profile(equipment="full gym", sport="running", injuries="calf"), check_in,
+    )
+    assert calf["ok"] is True
+    for row in calf["sessions"]:
+        names = [item["name"].lower() for item in row["exercises"]]
+        assert names
+        assert not any("calf" in name or "jump" in name or "run" in name for name in names)
+    achilles = PlanBuilder().propose(
+        profile(equipment="full gym", sport="running", injuries="achilles"), check_in,
+    )
+    assert achilles["ok"] is True
+    for row in achilles["sessions"]:
+        names = [item["name"].lower() for item in row["exercises"]]
+        assert names
+        assert not any(
+            "calf" in name or "jump" in name or "lunge" in name or "run" in name for name in names
+        )
+    ankle = PlanBuilder().propose(
+        profile(equipment="full gym", sport="running", injuries="ankle"), check_in,
+    )
+    assert ankle["ok"] is True
+    for row in ankle["sessions"]:
+        names = [item["name"].lower() for item in row["exercises"]]
+        assert names
+        assert not any("run" in name or "lunge" in name or "jump" in name for name in names)
+    elbow = PlanBuilder().propose(
+        profile(
+            equipment="full gym",
+            minutes=60,
+            days=["2026-10-26", "2026-10-27", "2026-10-28", "2026-10-29"],
+            injuries="elbow",
+        ),
+        check_in,
+    )
+    assert elbow["ok"] is True
+    for row in elbow["sessions"]:
+        names = [item["name"].lower() for item in row["exercises"]]
+        assert names
+        assert not any("curl" in name or "skull" in name or "triceps" in name for name in names)
+    neck = PlanBuilder().propose(profile(equipment="full gym", injuries="neck"), check_in)
+    assert neck["ok"] is True
+    for row in neck["sessions"]:
+        names = [item["name"].lower() for item in row["exercises"]]
+        assert names
+        assert not any("overhead" in name or "shrug" in name for name in names)
+    unknown = PlanBuilder().propose(profile(injuries="niggle"), check_in)
+    assert unknown["ok"] is True
+    assert unknown["sessions"]
+    assert all(row["exercises"] for row in unknown["sessions"])
 
 
 def test_a_swapped_exercise_is_not_the_confirmed_week(tmp_path):
@@ -982,6 +1059,24 @@ def test_a_successful_save_removes_the_leftover_backup(tmp_path):
     assert path.exists()
     assert not (tmp_path / "log.json.bak").exists()
     assert log_path.read_bytes() == saved
+
+
+def test_three_lifts_and_a_ten_minute_run_have_to_fit_in_thirty_minutes():
+    """3 lifts x 3 sets, 90s rest, plus a 10 min run, checked against 30 min."""
+    from plan_builder import _fit_minutes
+
+    lifts = [
+        {"name": "Goblet squat", "sets": 3, "reps": "8-12", "rest": "90 sec", "effort": "Leave 3 reps in reserve"},
+        {"name": "Dumbbell bench", "sets": 3, "reps": "8-12", "rest": "90 sec", "effort": "Leave 3 reps in reserve"},
+        {"name": "DB Romanian deadlift", "sets": 3, "reps": "8-12", "rest": "90 sec", "effort": "Leave 3 reps in reserve"},
+    ]
+    run = {"name": "Easy run", "sets": 1, "reps": "10 min", "rest": "0 sec", "effort": "Easy, conversational"}
+    raw = lifts + [run]
+    assert session_volume(raw) > 30
+    fitted = _fit_minutes(raw, 30)
+    assert session_volume(fitted) <= 30
+    assert [row["name"] for row in fitted] == [row["name"] for row in lifts]
+    assert all(row["sets"] == 3 for row in fitted)
 
 
 def test_advanced_work_fits_in_the_named_minutes():

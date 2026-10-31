@@ -60,7 +60,8 @@ _DOSE = {
 _MAX_EXERCISES = 8
 _MAX_SETS = 6
 _MAX_REPS = 20
-_SECONDS_PER_REP = 4
+_SET_WORK_SECONDS = 40
+_WARMUP_MINUTES = 5
 # Generous load ceilings, as a multiple of body weight.
 # A normal lifter stays inside these. An absurd load still refuses.
 _LOAD_MULTIPLE = {
@@ -72,10 +73,10 @@ _ABSOLUTE_LOAD_CAP = 300.0
 _FALLBACK_LOAD_CAP = 100.0
 _EXERCISE_KEYS = {"name", "sets", "reps", "rest", "effort", "load_kg"}
 _GYM = {
-    "Full body": ("Back squat", "Bench press", "Barbell row", "Romanian deadlift", "Plank", "Farmer carry"),
-    "Full body A": ("Back squat", "Bench press", "Barbell row", "Romanian deadlift", "Plank", "Farmer carry"),
-    "Full body B": ("Front squat", "Overhead press", "Pull-up", "Hip thrust", "Dead bug", "Carry"),
-    "Full body C": ("Leg press", "Incline bench", "Seated cable row", "Walking lunge", "Back extension", "Side plank"),
+    "Full body": ("Back squat", "Bench press", "Romanian deadlift", "Barbell row", "Plank", "Farmer carry"),
+    "Full body A": ("Back squat", "Bench press", "Romanian deadlift", "Barbell row", "Plank", "Farmer carry"),
+    "Full body B": ("Front squat", "Overhead press", "Romanian deadlift", "Pull-up", "Hip thrust", "Dead bug"),
+    "Full body C": ("Leg press", "Incline bench", "Romanian deadlift", "Seated cable row", "Walking lunge", "Side plank"),
     "Upper": ("Bench press", "Barbell row", "Overhead press", "Lat pulldown", "Curl", "Face pull"),
     "Lower": ("Back squat", "Romanian deadlift", "Leg press", "Walking lunge", "Calf raise", "Plank"),
     "Push": ("Bench press", "Overhead press", "Incline bench", "Dip", "Lateral raise", "Triceps press"),
@@ -181,24 +182,127 @@ def _dumbbell_name(name):
         .replace("Incline bench", "Dumbbell bench")
         .replace("Bench press", "Dumbbell bench")
         .replace("Overhead press", "Dumbbell shoulder press")
+        .replace("Romanian deadlift", "DB Romanian deadlift")
     )
     return swapped
 
 
-def _blocked_parts(injuries):
-    text = injuries.lower()
-    if text.strip() in _NO_INJURY:
-        return ()
-    parts = []
-    if "knee" in text:
-        parts.extend(("squat", "lunge", "leg press"))
-    if "shoulder" in text:
-        parts.extend(("overhead", "bench", "push-up", "pike", "dip", "press"))
+def _injury_text(injuries):
+    if not isinstance(injuries, str):
+        return ""
+    text = injuries.strip().lower()
+    if text in _NO_INJURY:
+        return ""
+    return text
+
+
+def _loads_knee(name):
+    if "lunge" in name or "split squat" in name:
+        return True
+    if "squat" in name and "box squat" not in name:
+        return True
+    return False
+
+
+def _loads_back(name):
+    if "chest-supported" in name or "chest supported" in name:
+        return False
+    if any(part in name for part in (
+        "romanian", "deadlift", "good morning", "hip hinge", "nordic", "rdl", "back extension",
+    )):
+        return True
+    return "row" in name
+
+
+def _loads_shoulder(name):
+    """No pressing that week. Rows and leg work stay."""
+    if "leg press" in name:
+        return False
+    if "chest-supported" in name or "chest supported" in name:
+        return False
+    if any(part in name for part in (
+        "overhead", "pike", "dip", "push-up", "pushup", "bench", "shoulder press",
+    )):
+        return True
+    return "press" in name
+
+
+def _loads_hamstring(name):
+    return any(part in name for part in ("romanian", "deadlift", "nordic", "hip hinge", "rdl"))
+
+
+def _loads_wrist(name):
+    return any(part in name for part in ("push-up", "pushup", "bench", "dip"))
+
+
+def _loads_elbow(name):
+    return "curl" in name or "skull" in name or "triceps" in name
+
+
+def _loads_hip(name):
+    return _loads_knee(name)
+
+
+def _loads_ankle(name):
+    return "lunge" in name or "jump" in name
+
+
+def _loads_calf(name):
+    return "calf" in name or "jump" in name
+
+
+def _no_running(text):
+    return any(part in text for part in ("ankle", "calf", "achilles", "shin"))
+
+
+def _loads_neck(name):
+    if "shrug" in name:
+        return True
+    return "overhead" in name or "pike" in name or "shoulder press" in name
+
+
+def _blocks_exercise(name, injuries):
+    text = _injury_text(injuries)
+    if not text:
+        return False
+    folded = name.lower()
+    if "knee" in text and _loads_knee(folded):
+        return True
+    if "hip" in text and _loads_hip(folded):
+        return True
+    if "back" in text and _loads_back(folded):
+        return True
+    if "shoulder" in text and _loads_shoulder(folded):
+        return True
+    if "hamstring" in text and _loads_hamstring(folded):
+        return True
+    if "wrist" in text and _loads_wrist(folded):
+        return True
+    if "elbow" in text and _loads_elbow(folded):
+        return True
+    if ("ankle" in text or "achilles" in text or "shin" in text) and _loads_ankle(folded):
+        return True
+    if ("calf" in text or "achilles" in text) and _loads_calf(folded):
+        return True
+    if "neck" in text and _loads_neck(folded):
+        return True
+    return False
+
+
+def _injury_replacements(injuries):
+    text = _injury_text(injuries)
+    if not text:
+        return []
+    names = []
     if "back" in text:
-        parts.extend(("deadlift", "row", "extension"))
-    if "wrist" in text:
-        parts.extend(("push-up", "bench", "dip"))
-    return tuple(parts)
+        names.extend(("Chest-supported row", "Glute bridge"))
+    if "knee" in text or "hip" in text:
+        names.extend(("Box squat to a high box", "Glute bridge"))
+    if ("hamstring" in text or "ankle" in text or "elbow" in text or "neck" in text or "shoulder" in text or "calf" in text or "achilles" in text) and (
+        "Glute bridge" not in names
+    ):
+        names.append("Glute bridge")
+    return names
 
 
 def _sport_exercise(sport):
@@ -318,19 +422,18 @@ def _block_minutes(exercise):
     duration = _duration_minutes(exercise.get("reps"))
     if duration is not None:
         return duration if sets == 1 else None
-    reps = _high_reps(exercise.get("reps"))
     rest = _rest_minutes(exercise.get("rest"))
-    if reps is None or rest is None or sets < 1:
+    if rest is None or sets < 1:
         return None
-    work = sets * reps * _SECONDS_PER_REP / 60.0
-    if sets <= 1:
-        return work
-    return work + (sets - 1) * rest
+    # sets x (about 40s of work + the rest after the set)
+    return sets * ((_SET_WORK_SECONDS / 60.0) + rest)
 
 
 def session_volume(exercises):
-    """Minutes of work and rest in one session's exercises."""
-    total = 0.0
+    """Warmup plus each set's work and rest, including a cardio add-on."""
+    if not exercises:
+        return 0.0
+    total = _WARMUP_MINUTES
     for exercise in exercises:
         block = _block_minutes(exercise)
         if block is None:
@@ -340,21 +443,24 @@ def session_volume(exercises):
 
 
 def _fit_minutes(chosen, minutes):
-    """Drop or shorten work until it fits in the minutes they asked for."""
-    while len(chosen) > 1 and session_volume(chosen) > minutes:
-        if _is_duration(chosen[-1]) and len(chosen) > 1:
-            chosen.pop(-2 if len(chosen) > 2 else 0)
-        else:
-            chosen.pop()
-    while chosen and session_volume(chosen) > minutes:
+    """Drop the add-on run, then trim sets, until the session fits the minutes."""
+    while chosen and session_volume(chosen) is not None and session_volume(chosen) > minutes:
+        add_on = next((index for index, row in enumerate(chosen) if _is_duration(row)), None)
+        if add_on is not None and len(chosen) > 1:
+            chosen.pop(add_on)
+            continue
         shrunk = False
         for row in chosen:
             if not _is_duration(row) and row["sets"] > 1:
                 row["sets"] -= 1
                 shrunk = True
                 break
-        if not shrunk:
+        if shrunk:
+            continue
+        if len(chosen) > 1:
             chosen.pop()
+            continue
+        break
     return chosen
 
 
@@ -423,13 +529,14 @@ def _exercises(equipment, experience, minutes, sport, injuries, index, day_count
         names = [_bodyweight_name(name) for name in source]
     else:
         names = list(source)
-    blocked = _blocked_parts(injuries)
     kept = []
-    for name in names + list(_SAFE):
-        if any(part in name.lower() for part in blocked):
+    for name in list(_injury_replacements(injuries)) + names + list(_SAFE):
+        if _blocks_exercise(name, injuries):
             continue
         if name not in kept:
             kept.append(name)
+    if not kept:
+        kept = ["Glute bridge"]
     if minutes <= 30:
         count = 3
     elif minutes <= 45:
@@ -449,6 +556,8 @@ def _exercises(equipment, experience, minutes, sport, injuries, index, day_count
             "effort": effort,
         })
     sport_row = _sport_exercise(sport)
+    if sport_row is not None and _no_running(_injury_text(injuries)) and "run" in sport_row["name"].lower():
+        sport_row = None
     if sport_row is not None:
         chosen.append(sport_row)
     chosen = _fit_minutes(chosen, minutes)
@@ -664,7 +773,11 @@ def _read_bytes(path):
 
 
 class PlanBuilder:
-    """Proposes a first week and saves it only after a recorded yes."""
+    """Proposes a first week and saves it only after a recorded yes.
+
+    run_chat seals that week as first_plan. A schedule yes such as
+    "yes, morning 6:15" confirms only inside that confirm phase.
+    """
 
     def propose(self, profile, check_in_result, readiness_result=None):
         if not isinstance(profile, dict):
@@ -775,10 +888,17 @@ class PlanBuilder:
         }
 
     def save(self, plan, confirmation, path, sessions=None, check_in_result=None, readiness_result=None):
-        from onboarding import hold_is_active
+        from onboarding import hold_is_active, persist_active_hold
 
         if hold_is_active():
+            persist_active_hold()
             return self._saved_no("Onboarding is held for today. This week is not saved.")
+        from onboarding import confirm_phase_active
+        from routines import plan_schedule
+
+        quoted = confirmation.quoted_words if isinstance(confirmation, ConfirmationRecord) else ""
+        if plan_schedule(quoted) and not confirm_phase_active():
+            return self._saved_no("Stop. This only runs inside onboarding.run_chat.")
         if path is None or (isinstance(path, str) and not path.strip()):
             return self._saved_no("A path is required.")
         if not isinstance(plan, dict) or not isinstance(plan.get("training"), dict):

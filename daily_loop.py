@@ -9,6 +9,7 @@ import re
 from morning_checkin import MorningCheckIn
 from red_flag_check import RedFlagChecker, clear_safety_no, is_passing_check_in
 from readiness_screen import ReadinessScreen, passing_readiness
+from safety_labels import hard_stop, hard_stop_message, label_action
 from signals import read_gap_reply
 
 
@@ -17,6 +18,16 @@ _MORNING = "Hours of sleep, and soreness from 1 to 5?"
 _SECOND = "One more: soreness or sleep, in a word or a number."
 _EVENING = "Did you do it? easy, right, or hard. What did you eat?"
 _NUDGE = "Missed today. I'll pick it up in the morning."
+
+
+def _data_file_message():
+    """The unreadable-key line, when a saved pause would otherwise hide it."""
+    from seal_secret import DATA_FILE_MESSAGE, _key_path, _read_installed
+
+    path = _key_path()
+    if os.path.isfile(path) and _read_installed(path) is None:
+        return DATA_FILE_MESSAGE
+    return None
 
 
 def _onboarding_hold():
@@ -123,6 +134,208 @@ def symptom_is_clear(reply):
     return True
 
 
+_WEEKDAYS = (
+    "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday",
+)
+_LEADING_NO = re.compile(r"^\s*(no|nope)\b\s*[,.]?\s*", re.IGNORECASE)
+_LEADING_NUMBER = re.compile(r"(\d+)\s*[,.]?\s*")
+_SKIP_SPORTS = {"general training", "lifting", "gym", "weights", "none", "no"}
+# A leftover remark is kept only when every token is on this list.
+# A symptom, a hedge, or any other word re-asks. It does not send a session.
+_REMARK_WORDS = frozenset({
+    "yep", "yeah", "yes", "yup", "ok", "okay",
+    "thanks", "thank", "hi", "hello", "hey",
+    "going", "doing", "gonna", "plan", "plans", "planned",
+    "parkrun", "run", "running", "race", "racing",
+    "at", "am", "pm", "today", "tomorrow", "tonight",
+    "morning", "afternoon", "evening",
+    "breakfast", "lunch", "dinner", "snack", "food", "eat", "eating", "ate",
+    "meal", "coffee", "tea", "eggs", "toast", "oats", "oatmeal", "yogurt",
+    "chicken", "rice", "salad", "protein", "shake", "banana", "apple",
+    "milk", "water", "juice",
+    "a", "an", "the", "to", "for", "my", "i", "im", "on", "in", "and",
+    "then", "of", "with", "some", "it", "just", "after", "before", "this",
+})
+
+
+def _weekday_name(day):
+    return _WEEKDAYS[date.fromisoformat(str(day)[:10]).weekday()]
+
+
+def _split_scored_no(reply):
+    """A leading no plus at least two scores, then a leftover remark.
+
+    'no, 7, 2, 4, 2' has no leftover, so it stays on the clear-no path and
+    energy and stress still parse. 'no, 7, 2. yep doing parkrun at 9' keeps
+    the scores in the prefix and the remark as the note.
+    """
+    if not isinstance(reply, str):
+        return None
+    text = reply.strip()
+    opened = _LEADING_NO.match(text)
+    if not opened:
+        return None
+    rest = text[opened.end():]
+    numbers = []
+    while True:
+        found = _LEADING_NUMBER.match(rest)
+        if not found:
+            break
+        numbers.append(found.group(1))
+        rest = rest[found.end():]
+    if len(numbers) < 2:
+        return None
+    note = rest.strip(" \t.,;")
+    if not note:
+        return None
+    prefix = f"{opened.group(1).lower()}, " + ", ".join(numbers)
+    return prefix, note
+
+
+_BARE_YES = frozenset({"yes", "yep", "yeah", "yup", "ok", "okay"})
+
+
+def _remark_allowed(note):
+    """True when the leftover is only an allowlisted plan, time, food, or greeting.
+
+    The whole remark has to match. A question mark, a symptom, or any other
+    word does not. Numbers are only clock pieces, up to 59. A remark that is
+    only yes or yep is not a note. Those words can still sit inside a longer
+    allowlisted remark.
+    """
+    if not isinstance(note, str) or not note.strip():
+        return False
+    if "?" in note or "？" in note:
+        return False
+    text = note.strip().lower().replace("'", "").replace("\u2019", "")
+    text = re.sub(r"\b\d{1,2}:\d{2}\b", " ", text)
+    tokens = re.findall(r"[a-z]+|\d+", text)
+    if not tokens:
+        return False
+    words = []
+    for token in tokens:
+        if token.isdigit():
+            if int(token) > 59:
+                return False
+            continue
+        if token not in _REMARK_WORDS:
+            return False
+        words.append(token)
+    if words and all(token in _BARE_YES for token in words):
+        return False
+    return True
+
+
+def _safety_line(reply):
+    """Hard-stop copy plus the checker's own line when it has one. Negation is ignored."""
+    from record_confirmation import reply_pause
+
+    message = hard_stop_message()
+    paused = reply_pause(reply) if isinstance(reply, str) else None
+    extra = getattr(paused, "message", None) if paused is not None else None
+    if isinstance(extra, str) and extra.strip() and extra not in message:
+        message = f"{message} {extra.strip()}"
+    if "doctor" not in message.lower():
+        message = (
+            message
+            + " Rest today. Come back tomorrow, or after you see a doctor."
+        )
+    return message
+
+
+def _label_hold_text(reply, labels):
+    """A red flag uses the emergency line. A second unclear uses the rest line."""
+    from safety_labels import validate_labels
+
+    parsed, reason = validate_labels(labels) if labels is not None else (None, "missing")
+    flag = parsed["red_flag"] if reason is None else "none"
+    if flag in {"chest_pain", "cardiac_symptoms", "breathing_difficulty", "fainting"}:
+        return _safety_line(reply)
+    return "Rest today. Come back tomorrow, or after you see a doctor."
+
+
+_EVENING_FOOD = frozenset({
+    "ate", "oats", "oatmeal", "breakfast", "lunch", "dinner", "coffee", "tea",
+    "salad", "chicken", "rice", "eggs", "toast", "yogurt", "banana", "apple",
+    "milk", "water", "juice", "protein", "shake", "snack", "food", "meal",
+})
+_EVENING_DID = frozenset({
+    "yes", "yep", "yeah", "yup", "no", "nope", "did", "didnt",
+})
+_EVENING_WORDS = _EVENING_FOOD | _EVENING_DID | frozenset({
+    "not", "it", "easy", "right", "hard", "the", "a", "workout", "and",
+})
+
+
+def _evening_exact(reply):
+    """The whole reply is a did or didn't answer and food tokens. Nothing else.
+
+    'no idea what I ate' is the closed food-unknown token. Extra words need labels.
+    """
+    text = _fold(reply)
+    if not text:
+        return False
+    scan = text
+    if _food_unknown(text):
+        scan = _FOOD_DOUBT.sub(" ", text)
+        scan = re.sub(r"\bwhat i ate\b", " ", scan)
+    words = re.findall(r"[a-z0-9]+", scan)
+    if not words or any(word not in _EVENING_WORDS and not word.isdigit() for word in words):
+        return False
+    did = any(word in _EVENING_DID for word in words)
+    food = any(word in _EVENING_FOOD for word in words) or _food_unknown(text)
+    return did or food
+
+
+def _evening_explicit(reply):
+    """Kept for callers that only need the old word check. The engine uses _evening_exact."""
+    return _evening_exact(reply)
+
+
+def _score_exact(reply):
+    """Numbers and the short check-in words only. Extra words need labels."""
+    if not isinstance(reply, str) or not reply.strip():
+        return False
+    tokens = re.findall(r"[a-z]+|\d+(?:\.\d+)?", reply.lower().replace("'", ""))
+    if not tokens:
+        return False
+    for token in tokens:
+        if re.fullmatch(r"\d+(?:\.\d+)?", token):
+            continue
+        if token not in _CHECKIN_WORDS:
+            return False
+    return True
+
+
+def _remark_pause(note):
+    """scan_text and reply_pause on the remark alone. A leading no is not in it."""
+    from record_confirmation import reply_pause
+
+    if not isinstance(note, str) or not note.strip():
+        return None
+    paused = reply_pause(note)
+    scanned = RedFlagChecker().scan_text(note)
+    real = [
+        flag for flag in (scanned.flags_detected or [])
+        if flag != "needs_clarification"
+    ]
+    if not real:
+        return None
+    if paused is not None:
+        return _pause_text(paused)
+    if scanned.pause_plan:
+        return _pause_text(scanned)
+    return None
+
+
+def _shown_number(value):
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        return None
+    if value == int(value):
+        return str(int(value))
+    return str(value)
+
+
 def _ate_text(text):
     for word in ("yes", "yep", "yeah", "did", "didnt", "no", "not", "nt", "easy", "right", "hard", "ate"):
         text = re.sub(rf"\b{word}\b", " ", text)
@@ -186,6 +399,7 @@ _PLAN_PROFILE_KEYS = {
     "equipment",
     "experience",
     "sport",
+    "sport_day",
     "injuries",
     "goal",
 }
@@ -229,15 +443,36 @@ class DailyLoop:
         self.workouts = {}
         self.questions = {}
         self.pending = {}
+        self.hold_text = {}
 
     def open_morning(self, day):
-        """The bot opens with the symptom line. Wearables skip only the other questions."""
+        """The bot opens with the symptom line. Wearables skip only the other questions.
+
+        A pause or an onboarding hold already in force for today stays. Opening
+        the morning again does not clear it or start a session.
+        """
         held = _onboarding_hold()
         if held:
             return held
+        if self.phase.get(day) == "paused":
+            blocked = _data_file_message()
+            if blocked:
+                return blocked
+            return self.hold_text.get(day) or self._saved_pause(day) or _SYMPTOM
+        saved = self._saved_pause(day)
+        if saved:
+            self.phase[day] = "paused"
+            self.hold_text[day] = saved
+            blocked = _data_file_message()
+            if blocked:
+                return blocked
+            return saved
+        pending = self._pending(day)
+        if pending:
+            return self._pending_open(day, pending)
         self.notes[day] = {}
         self.phase[day] = "symptom"
-        if not self._has_session(day):
+        if self._rest_day(day):
             self.questions[day] = 0
             return _SYMPTOM
         extra = self._other_questions(day)
@@ -254,6 +489,87 @@ class DailyLoop:
         if not isinstance(days, list) or not days:
             return True
         return day in {str(item) for item in days}
+
+    def _rest_day(self, day):
+        """A confirmed week with no session that date is a rest day.
+
+        With no confirmed week, the profile's day list decides. A missing
+        list still counts as a session, so an unplanned loop can name a day.
+        """
+        if self._confirmed_week() is not None:
+            return self._confirmed_session(day) is None
+        return not self._has_session(day)
+
+    def _food_text(self):
+        if self.calories is not None:
+            shown = _shown_number(self.calories)
+            if shown is not None:
+                return f"{shown} kcal"
+        week = self._confirmed_week()
+        plan = week.get("plan") if isinstance(week, dict) else None
+        nutrition = plan.get("nutrition") if isinstance(plan, dict) else None
+        calories = nutrition.get("calories") if isinstance(nutrition, dict) else None
+        shown = _shown_number(calories)
+        if shown is not None:
+            return f"{shown} kcal"
+        return self.goal
+
+    def _scheduled_sport(self, day):
+        """The sport name when that sport is on today's weekday."""
+        profile = self.profile if isinstance(self.profile, dict) else None
+        if not profile:
+            return None
+        sport = profile.get("sport")
+        if not isinstance(sport, str):
+            return None
+        name = " ".join(sport.split())
+        if not name or name.lower() in _SKIP_SPORTS:
+            return None
+        sport_day = profile.get("sport_day")
+        if not isinstance(sport_day, str) or not sport_day.strip():
+            return None
+        if sport_day.strip().lower()[:3] != _weekday_name(day).lower()[:3]:
+            return None
+        return name
+
+    def _next_session(self, day):
+        week = self._confirmed_week()
+        if not week:
+            return None
+        later = []
+        for row in week.get("sessions") or []:
+            if isinstance(row, dict) and str(row.get("date") or "") > str(day):
+                later.append(row)
+        if not later:
+            return None
+        later.sort(key=lambda row: str(row.get("date")))
+        return later[0]
+
+    def _annotate(self, day, text):
+        as_of = f"{day}T12:00:00Z"
+        if self.signals is not None and "resting_hr" in self.signals.abnormal(as_of):
+            text += " If you feel unwell, check with a doctor."
+        if self.signals is not None and self.signals.connected():
+            note = self.signals.plan_note(f"{day}T08:00:00Z")
+            if self.outreach is not None:
+                self.outreach.scheduled(day, note)
+            if note and note != "Today is on plan.":
+                text = f"{note} {text}"
+        return text
+
+    def _rest_line(self, day, food):
+        sport = self._scheduled_sport(day)
+        if sport:
+            line = f"Rest day. Enjoy {sport}, keep it conversational."
+        else:
+            line = "Rest day."
+        text = f"{line} Food: {food}."
+        nxt = self._next_session(day)
+        if nxt:
+            name = nxt.get("name") or "Session"
+            when = _weekday_name(nxt.get("date"))
+            text += f" Next: {name} on {when}."
+        return text
 
     def _other_questions(self, day):
         if self.signals is None or not self.signals.connected():
@@ -287,58 +603,223 @@ class DailyLoop:
         self.nudges[day] = 1
         return _NUDGE
 
-    def hear(self, day, reply):
+    def hear(self, day, reply, labels=None):
         held = _onboarding_hold()
         if held:
             return held
+        if self.phase.get(day) == "paused" or self._saved_pause(day):
+            blocked = _data_file_message()
+            if blocked:
+                return blocked
+        if hard_stop(reply):
+            self.notes.setdefault(day, {})["reply"] = reply
+            return self._remember_pause(day, _safety_line(reply))
+        pending_reply = self._gate_pending(day, reply, labels)
+        if pending_reply is not None:
+            return pending_reply
+        gated = self._labels_before_workout(day, reply, labels)
+        if gated is not None:
+            return gated
         phase = self.phase.get(day)
         if phase == "symptom":
             self.notes.setdefault(day, {})["reply"] = reply
             if symptom_is_clear(reply):
                 return self._after_symptom(day, reply)
-            return self._unclear_symptom(day, reply)
+            split = _split_scored_no(reply)
+            if split:
+                prefix, note = split
+                return self._labeled_note(day, prefix, note, labels)
+            return self._free_text_hold(day, reply, labels)
         if phase == "signals":
             pending = self.pending.get(day, {"gaps": [], "personal": []})
-            self.notes[day]["reply"] = (self.notes[day].get("reply") or "") + " " + reply
-            paused = self._text_pause(reply)
-            if paused:
-                self.phase[day] = "paused"
-                return paused
-            self.notes[day].update(read_gap_reply(pending["gaps"], reply))
+            notes = self.notes.setdefault(day, {})
+            notes["reply"] = (notes.get("reply") or "") + " " + reply
+            notes.update(read_gap_reply(pending["gaps"], reply))
             self._use_hr_answer(day, f"{day}T08:00:00Z")
             for key in pending["personal"]:
                 self.signals.settle(key)
             self._seed(day, f"{day}T08:00:00Z")
             return self._workout(day)
         if phase == "morning2":
-            self.notes[day]["reply"] = (self.notes[day].get("reply") or "") + " " + reply
-            paused = self._text_pause(reply)
-            if paused:
-                self.phase[day] = "paused"
-                return paused
-            self.notes[day].update(parse_morning(reply))
+            notes = self.notes.setdefault(day, {})
+            notes["reply"] = (notes.get("reply") or "") + " " + reply
+            notes.update(parse_morning(reply))
             return self._workout(day)
         if phase == "evening":
-            return self._evening(day, reply)
+            return self._evening(day, reply, labels)
         return "I'll pick it up in the morning."
 
-    def _unclear_symptom(self, day, reply):
-        """Not a clear no. scan_check_in runs, then one gentle re-ask. No workout."""
+    def _unclear_path(self):
+        week = self._week_file()
+        return os.path.join(os.path.dirname(os.path.abspath(week)), "daily_unclear.json")
+
+    def _unclear_count(self, day):
+        path = self._unclear_path()
+        if not os.path.isfile(path):
+            return 0
+        try:
+            with open(path, encoding="utf-8") as handle:
+                loaded = json.load(handle)
+        except (OSError, json.JSONDecodeError):
+            return 0
+        if not isinstance(loaded, dict):
+            return 0
+        value = loaded.get(str(day))
+        if isinstance(value, int) and value >= 0:
+            return value
+        return 0
+
+    def _set_unclear(self, day, count):
+        path = self._unclear_path()
+        loaded = {}
+        if os.path.isfile(path):
+            try:
+                with open(path, encoding="utf-8") as handle:
+                    found = json.load(handle)
+                if isinstance(found, dict):
+                    loaded = found
+            except (OSError, json.JSONDecodeError):
+                loaded = {}
+        loaded[str(day)] = count
+        temporary = path + ".tmp"
+        try:
+            os.makedirs(os.path.dirname(path), exist_ok=True)
+            with open(temporary, "w", encoding="utf-8") as handle:
+                json.dump(loaded, handle)
+                handle.write("\n")
+            os.replace(temporary, path)
+        except OSError:
+            return False
+        return True
+
+    def _free_text_hold(self, day, reply, labels):
+        """A remark with no scores needs labels. One miss re-asks. The next holds."""
+        action = label_action(labels, self._unclear_count(day))
+        if action == "hold":
+            return self._remember_pause(day, _label_hold_text(reply, labels))
+        if action == "clear_age":
+            self._write_pending(day, "age_check")
+            self.phase[day] = "symptom"
+            return "How old are you? Please type the number."
+        if action == "follow_up":
+            self._set_unclear(day, self._unclear_count(day) + 1)
+            self._open_follow_up(day, reply, labels)
+            self.phase[day] = "symptom"
+            return _SYMPTOM
+        if action == "swap":
+            self._remember_old_injury(day, reply)
+            return self._after_symptom(day, reply)
+        if action == "note" and isinstance(reply, str):
+            self.notes.setdefault(day, {})["note"] = reply
+        self.phase[day] = "symptom"
+        return _SYMPTOM
+
+    def _labeled_note(self, day, prefix, note, labels):
+        """A leftover remark. note_ok stores it. Anything else does not send the day."""
+        action = label_action(labels, self._unclear_count(day))
+        if action == "hold":
+            return self._remember_pause(day, _label_hold_text(note, labels))
+        if action == "clear_age":
+            self._write_pending(day, "age_check")
+            self.phase[day] = "symptom"
+            return "How old are you? Please type the number."
+        if action == "follow_up":
+            self._set_unclear(day, self._unclear_count(day) + 1)
+            self._open_follow_up(day, note, labels)
+            self.phase[day] = "symptom"
+            return _SYMPTOM
+        words = re.findall(r"[a-z]+", _fold(note))
+        if words and all(word in _BARE_YES for word in words):
+            self.phase[day] = "symptom"
+            return _SYMPTOM
+        if action == "note":
+            self.notes.setdefault(day, {})["note"] = note
+            return self._after_symptom(day, prefix)
+        if action == "swap":
+            self.notes.setdefault(day, {})["injury"] = note
+            self._remember_old_injury(day, note)
+            return self._after_symptom(day, prefix)
+        if action == "pass":
+            return self._after_symptom(day, prefix)
+        self.phase[day] = "symptom"
+        return _SYMPTOM
+
+    def _symptom_hold(self, reply):
+        """A real symptom in the whole message. A missing checklist does not hold."""
         checker = RedFlagChecker()
         scanned = checker.scan_check_in({"notes": reply if isinstance(reply, str) else ""})
         real = [
             flag for flag in (scanned.flags_detected or [])
             if flag != "needs_clarification"
         ]
+        if not real:
+            return None
         paused = self._text_pause(reply)
-        if paused and real:
-            self.phase[day] = "paused"
+        if paused:
             return paused
-        if scanned.pause_plan and real:
-            self.phase[day] = "paused"
+        if scanned.pause_plan:
             return _pause_text(scanned)
+        return None
+
+    def _unclear_symptom(self, day, reply):
+        """Not a clear no. scan_check_in runs, then one gentle re-ask. No workout."""
+        held = self._symptom_hold(reply)
+        if held:
+            return self._remember_pause(day, held)
         self.phase[day] = "symptom"
         return _SYMPTOM
+
+    def _pause_file(self):
+        """The pause sits beside the week file so a new DailyLoop can load it."""
+        week = self._week_file()
+        return os.path.join(os.path.dirname(os.path.abspath(week)), "daily_pause.json")
+
+    def _saved_pause(self, day):
+        path = self._pause_file()
+        if not path or not os.path.isfile(path):
+            return None
+        try:
+            with open(path, encoding="utf-8") as handle:
+                loaded = json.load(handle)
+        except (OSError, json.JSONDecodeError):
+            return None
+        if not isinstance(loaded, dict):
+            return None
+        text = loaded.get(str(day))
+        if isinstance(text, str) and text.strip():
+            return text
+        return None
+
+    def _write_pause(self, day, text):
+        path = self._pause_file()
+        loaded = {}
+        if os.path.isfile(path):
+            try:
+                with open(path, encoding="utf-8") as handle:
+                    found = json.load(handle)
+                if isinstance(found, dict):
+                    loaded = found
+            except (OSError, json.JSONDecodeError):
+                loaded = {}
+        loaded[str(day)] = text
+        temporary = path + ".tmp"
+        try:
+            os.makedirs(os.path.dirname(path), exist_ok=True)
+            with open(temporary, "w", encoding="utf-8") as handle:
+                json.dump(loaded, handle)
+                handle.write("\n")
+            os.replace(temporary, path)
+        except OSError:
+            return False
+        return True
+
+    def _remember_pause(self, day, text):
+        """Keep the pause. A later open_morning, even on a new object, returns it."""
+        self.phase[day] = "paused"
+        self.hold_text[day] = text
+        self._write_pause(day, text)
+        self._write_pending(day, "hold", message=text)
+        return text
 
     def _text_pause(self, reply):
         scanned = RedFlagChecker().scan_text(reply if isinstance(reply, str) else "")
@@ -356,12 +837,15 @@ class DailyLoop:
         as_of = f"{day}T08:00:00Z"
         pending = self.pending.get(day)
         if pending is None:
-            self.notes[day].update(parse_morning(reply))
+            self.notes.setdefault(day, {}).update(parse_morning(reply))
             if self._needs_more(day):
-                self.phase[day] = "morning2"
-                return _SECOND
+                if _fold(reply) in {"no", "nope"} or self._rest_day(day):
+                    self._fill_defaults(day, as_of)
+                else:
+                    self.phase[day] = "morning2"
+                    return _SECOND
             return self._workout(day)
-        self.notes[day].update(read_gap_reply(pending["gaps"], reply))
+        self.notes.setdefault(day, {}).update(read_gap_reply(pending["gaps"], reply))
         self._use_hr_answer(day, as_of)
         abnormal = set(self.signals.abnormal(as_of)) if self.signals is not None else set()
         unanswered = [
@@ -395,7 +879,7 @@ class DailyLoop:
         book = self.signals
         if book is None:
             return
-        notes = self.notes[day]
+        notes = self.notes.setdefault(day, {})
         if "sleep" not in notes:
             sleep = book.fresh_value("sleep", as_of)
             if sleep is not None:
@@ -406,6 +890,15 @@ class DailyLoop:
             notes["stress"] = 4
             if "sleep" in book.abnormal(as_of) and "sleep" not in notes:
                 notes["sleep"] = book.readings["sleep"].get("value")
+
+    def _fill_defaults(self, day, as_of):
+        """Wearable sleep when it is fresh, otherwise sleep 7 and soreness 2."""
+        self._seed(day, as_of)
+        notes = self.notes.setdefault(day, {})
+        if "sleep" not in notes:
+            notes["sleep"] = 7
+        if "soreness" not in notes:
+            notes["soreness"] = 2
 
     def _needs_more(self, day):
         notes = self.notes.get(day, {})
@@ -428,7 +921,7 @@ class DailyLoop:
         caller already decided the short line was clear.
         """
         checker = RedFlagChecker()
-        if clear_safety_no(reply) or symptom_is_clear(reply):
+        if clear_safety_no(reply) or symptom_is_clear(reply) or _split_scored_no(reply):
             answers = {aliases[0]: "no" for _flag, aliases in checker.CHECKLIST_GROUPS}
             return checker.scan_check_in({"symptom_checklist": answers, "notes": reply})
         return checker.scan_check_in({"notes": reply})
@@ -437,18 +930,22 @@ class DailyLoop:
         reply = self.notes.get(day, {}).get("reply") or ""
         result = self._checklist(reply)
         if not is_passing_check_in(result):
-            self.phase[day] = "paused"
-            return _pause_text(result)
+            text = _pause_text(result)
+            from seal_secret import DATA_FILE_MESSAGE
+
+            if DATA_FILE_MESSAGE in text:
+                return DATA_FILE_MESSAGE
+            return self._remember_pause(day, text)
         if not isinstance(self.profile, dict):
-            self.phase[day] = "paused"
-            return "Readiness has to pass before training."
+            return self._remember_pause(day, "Readiness has to pass before training.")
         screen = ReadinessScreen().screen_intake(_readiness_intake(self.profile))
         if not passing_readiness(screen):
-            self.phase[day] = "paused"
             for reason in screen.reasons or []:
-                if isinstance(reason, str) and reason.startswith("Unknown key:"):
+                if isinstance(reason, str) and "can't be read" in reason:
                     return reason
-            return "Readiness has to pass before training."
+                if isinstance(reason, str) and reason.startswith("Unknown key:"):
+                    return self._remember_pause(day, reason)
+            return self._remember_pause(day, "Readiness has to pass before training.")
         return None
 
     def _week_file(self):
@@ -486,6 +983,16 @@ class DailyLoop:
         return None
 
     def _workout(self, day):
+        pending = self._pending(day)
+        if isinstance(pending, dict):
+            if pending.get("kind") == "age_check":
+                return "How old are you? Please type the number."
+            if pending.get("kind") == "hold":
+                text = pending.get("message") or self._saved_pause(day)
+                if isinstance(text, str) and text.strip():
+                    return text
+                return "Rest today. Come back tomorrow, or after you see a doctor."
+            return self._phase_prompt(self.phase.get(day))
         blocked = self._before_training(day)
         if blocked:
             return blocked
@@ -505,7 +1012,7 @@ class DailyLoop:
         if session:
             name = session.get("name") or "Session"
             exercises = session.get("exercises") if isinstance(session.get("exercises"), list) else []
-            available = session.get("minutes", self.notes[day].get("minutes", self.minutes))
+            available = session.get("minutes", self.notes.setdefault(day, {}).get("minutes", self.minutes))
             session_load = session.get("load", self.load)
             proposed = changes.get("load")
             load = session_load
@@ -521,6 +1028,7 @@ class DailyLoop:
             else:
                 session_minutes = available
                 lead = f"{name}."
+            exercises = self._with_old_injury(day, exercises)
             names = []
             for item in exercises:
                 if isinstance(item, dict) and isinstance(item.get("name"), str):
@@ -528,7 +1036,7 @@ class DailyLoop:
                 elif isinstance(item, str) and item:
                     names.append(item)
             shown = ", ".join(names)
-            text = f"{lead} {shown}. {session_minutes} min, load {load}."
+            text = f"{lead} {shown}. {session_minutes} min."
             if needs_yes:
                 text += " Yes to raise the load."
             week = self._confirmed_week()
@@ -540,26 +1048,29 @@ class DailyLoop:
             first = min(dates) if dates else None
             if session.get("experience") == "intermediate" and str(day) == first:
                 text += " Pick a weight you can lift 10 times with 2 reps left."
+        elif self._rest_day(day):
+            food = self._food_text()
+            text = self._annotate(day, self._rest_line(day, food))
+            self.workouts[day] = {
+                "day": "rest",
+                "food": food,
+                "text": text,
+                "needs_yes": False,
+            }
+            self.phase[day] = "workout"
+            return text
         else:
             load = changes.get("load", self.load)
-            available = self.notes[day].get("minutes", self.minutes)
+            available = self.notes.setdefault(day, {}).get("minutes", self.minutes)
             if day_name == "easy":
                 session_minutes = max(15, int(round(available * 0.7)))
                 lead = "Easy day."
             else:
                 session_minutes = available
                 lead = f"Today is a {day_name} day."
-            text = f"{lead} {session_minutes} min, load {load}."
-        food = f"{self.calories} kcal" if self.calories is not None else self.goal
-        text = f"{text} Food: {food}."
-        if self.signals is not None and "resting_hr" in self.signals.abnormal(as_of):
-            text += " If you feel unwell, check with a doctor."
-        if self.signals is not None and self.signals.connected():
-            note = self.signals.plan_note(f"{day}T08:00:00Z")
-            if self.outreach is not None:
-                self.outreach.scheduled(day, note)
-            if note and note != "Today is on plan.":
-                text = f"{note} {text}"
+            text = f"{lead} {session_minutes} min."
+        food = self._food_text()
+        text = self._annotate(day, f"{text} Food: {food}.")
         row = {
             "day": name or day_name,
             "minutes": session_minutes,
@@ -575,15 +1086,234 @@ class DailyLoop:
         self.phase[day] = "workout"
         return text
 
-    def _evening(self, day, reply):
-        paused = self._text_pause(reply)
-        if paused:
+    def _safety_directory(self):
+        return os.path.dirname(os.path.abspath(self._pause_file()))
+
+    def _pending(self, day):
+        from safety_pending import read_pending
+
+        return read_pending(self._safety_directory(), day, "daily")
+
+    def _write_pending(self, day, kind, **extra):
+        from safety_pending import write_pending
+
+        return write_pending(self._safety_directory(), kind, day, "daily", **extra)
+
+    def _clear_pending(self):
+        from safety_pending import clear_pending
+
+        return clear_pending(self._safety_directory(), "daily")
+
+    def _remember_old_injury(self, day, text):
+        if isinstance(text, str) and text.strip():
+            self.notes.setdefault(day, {})["old_injury"] = text
+
+    def _open_follow_up(self, day, reply, labels):
+        """Missing or invalid labels are not cleared by an Old/Recent tap."""
+        from onboarding import _follow_up_cause
+
+        text = reply if isinstance(reply, str) else ""
+        self._write_pending(day, "follow_up", cause=_follow_up_cause(labels), text=text)
+
+    def _bare_number(self, reply, labels):
+        from safety_pending import typed_age
+
+        return labels is None and typed_age(reply) is not None
+
+    def _pending_open(self, day, pending):
+        """Opening the morning does not prescribe over a pending record."""
+        kind = pending.get("kind")
+        if kind == "hold":
             self.phase[day] = "paused"
-            return paused
+            text = pending.get("message") or self._saved_pause(day)
+            if not isinstance(text, str) or not text.strip():
+                text = "Rest today. Come back tomorrow, or after you see a doctor."
+            self.hold_text[day] = text
+            return text
+        if kind == "age_check":
+            return "How old are you? Please type the number."
+        return self._phase_prompt(self.phase.get(day) or "symptom")
+
+    def _gate_pending(self, day, reply, labels):
+        """Structured input only. Anything else does not prescribe or log."""
+        from safety_pending import resolves_follow_up, typed_age
+
+        pending = self._pending(day)
+        if not isinstance(pending, dict):
+            return None
+        kind = pending.get("kind")
+        if kind == "hold":
+            self.phase[day] = "paused"
+            text = pending.get("message") or self._saved_pause(day) or self.hold_text.get(day)
+            if not isinstance(text, str) or not text.strip():
+                text = "Rest today. Come back tomorrow, or after you see a doctor."
+            return text
+        if kind == "age_check":
+            number = typed_age(reply) if labels is None else None
+            if number is None or number < 13 or number > 100:
+                return "How old are you? Please type the number."
+            if number < 18:
+                return self._remember_pause(
+                    day, "Rest today. Come back tomorrow, or after you see a doctor."
+                )
+            self._clear_pending()
+            return self._phase_prompt(self.phase.get(day))
+        if kind == "follow_up":
+            button = None
+            if labels is None:
+                from onboarding import _injury_button
+
+                button = _injury_button(reply)
+            injury_unclear = pending.get("cause") == "injury_unclear"
+            if self._bare_number(reply, labels):
+                return self._phase_prompt(self.phase.get(day))
+            if resolves_follow_up(
+                labels, button=button, injury_unclear=injury_unclear
+            ):
+                saved = pending.get("text") if isinstance(pending.get("text"), str) else ""
+                self._clear_pending()
+                self._set_unclear(day, 0)
+                return self._resolve_follow_up(day, reply, labels, button, saved)
+            return self._remember_pause(
+                day, "Rest today. Come back tomorrow, or after you see a doctor."
+            )
+        return self._remember_pause(
+            day, "Rest today. Come back tomorrow, or after you see a doctor."
+        )
+
+    def _resolve_follow_up(self, day, reply, labels, button, saved=""):
+        """Store the structured answer. This turn does not prescribe or log."""
+        area = saved if isinstance(saved, str) and saved.strip() else reply
+        if button == "current":
+            return self._remember_pause(
+                day, "Rest today. Come back tomorrow, or after you see a doctor."
+            )
+        if button == "old":
+            self._remember_old_injury(day, area)
+            return self._phase_prompt(self.phase.get(day))
+        action = label_action(labels, 0)
+        if action == "clear_age":
+            self._write_pending(day, "age_check")
+            return "How old are you? Please type the number."
+        if action == "hold":
+            return self._remember_pause(day, _label_hold_text(reply, labels))
+        if action == "swap":
+            self._remember_old_injury(day, area or reply)
+            return self._phase_prompt(self.phase.get(day))
+        return self._phase_prompt(self.phase.get(day))
+
+    def _with_old_injury(self, day, exercises):
+        """injury=old swaps the lifts that load the area named in the reply."""
+        text = (self.notes.get(day) or {}).get("old_injury")
+        if not isinstance(text, str) or not text.strip():
+            return exercises
+        from plan_builder import _blocks_exercise, _injury_replacements
+
+        kept = []
+        for item in exercises:
+            name = item.get("name") if isinstance(item, dict) else item
+            if isinstance(name, str) and _blocks_exercise(name, text):
+                continue
+            kept.append(item)
+        for extra in _injury_replacements(text):
+            already = False
+            for item in kept:
+                current = item.get("name") if isinstance(item, dict) else item
+                if current == extra:
+                    already = True
+                    break
+            if not already:
+                kept.append({"name": extra, "sets": 3, "reps": "8-12"})
+        return kept
+
+    def _labels_before_workout(self, day, reply, labels):
+        """Label action before any workout. Free text in later phases needs labels."""
+        phase = self.phase.get(day)
+        if labels is not None:
+            action = label_action(labels, self._unclear_count(day))
+            if action == "hold":
+                return self._remember_pause(day, _label_hold_text(reply, labels))
+            if action == "clear_age":
+                self._write_pending(day, "age_check")
+                return "How old are you? Please type the number."
+            if action == "swap":
+                self._remember_old_injury(day, reply)
+            if action not in {"note", "pass", "swap"}:
+                count = self._unclear_count(day)
+                if count >= 1:
+                    return self._remember_pause(
+                        day, "Rest today. Come back tomorrow, or after you see a doctor."
+                    )
+                self._set_unclear(day, count + 1)
+                self._open_follow_up(day, reply, labels)
+                return self._phase_prompt(phase)
+        elif self._bare_number(reply, labels) and phase not in {"morning2", "signals"}:
+            return self._phase_prompt(phase)
+        elif (
+            phase in {"morning2", "signals"}
+            and not _score_exact(reply)
+            and not self._bare_number(reply, labels)
+        ):
+            count = self._unclear_count(day)
+            if count >= 1:
+                return self._remember_pause(
+                    day, "Rest today. Come back tomorrow, or after you see a doctor."
+                )
+            self._set_unclear(day, count + 1)
+            self._open_follow_up(day, reply, None)
+            return self._phase_prompt(phase)
+        elif phase == "evening" and not _evening_exact(reply):
+            count = self._unclear_count(day)
+            if count >= 1:
+                return self._remember_pause(
+                    day, "Rest today. Come back tomorrow, or after you see a doctor."
+                )
+            self._set_unclear(day, count + 1)
+            self._open_follow_up(day, reply, None)
+            self.phase[day] = "evening"
+            return _EVENING
+        elif phase == "symptom" and labels is None and not symptom_is_clear(reply) and not _split_scored_no(reply):
+            count = self._unclear_count(day)
+            if count >= 1:
+                return self._remember_pause(
+                    day, "Rest today. Come back tomorrow, or after you see a doctor."
+                )
+            self._set_unclear(day, count + 1)
+            self._open_follow_up(day, reply, None)
+            self.phase[day] = "symptom"
+            return _SYMPTOM
+        return None
+
+    def _phase_prompt(self, phase):
+        if phase == "evening":
+            return _EVENING
+        if phase == "morning2":
+            return _SECOND
+        return _SYMPTOM
+
+    def _evening(self, day, reply, labels=None):
+        if labels is not None:
+            action = label_action(labels, self._unclear_count(day))
+            if action == "hold":
+                return self._remember_pause(day, _label_hold_text(reply, labels))
+            if action == "clear_age":
+                self._write_pending(day, "age_check")
+                return "How old are you? Please type the number."
+            if action == "swap":
+                self._remember_old_injury(day, reply)
+            if action not in {"note", "pass", "swap"}:
+                self._set_unclear(day, self._unclear_count(day) + 1)
+                self._open_follow_up(day, reply, labels)
+                self.phase[day] = "evening"
+                return _EVENING
+        elif not _evening_exact(reply):
+            self.phase[day] = "evening"
+            return _EVENING
+        notes = self.notes.setdefault(day, {})
         parsed = parse_evening(reply)
-        if parsed.get("ate") == "" and self.notes[day].get("ate"):
+        if parsed.get("ate") == "" and notes.get("ate"):
             parsed = {key: value for key, value in parsed.items() if key != "ate"}
-        self.notes[day].update(parsed)
+        notes.update(parsed)
         if parsed.get("did_it") is None:
             self.phase[day] = "evening"
             return "Did you do the workout?"

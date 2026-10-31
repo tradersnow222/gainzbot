@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Connected signals skip the non-symptom questions. Proactive notes stay capped."""
 
+import os
 from pathlib import Path
 
 from daily_loop import DailyLoop, _SYMPTOM, adult_profile
@@ -37,6 +38,19 @@ def _history():
         "confirmed": True,
         "changes": {"load": 80},
     }]
+
+
+def _clear_signal_day():
+    """A new scenario on the same date starts without yesterday's pending record."""
+    from safety_pending import clear_pending
+
+    loop = _loop(SignalBook())
+    directory = os.path.dirname(loop._pause_file())
+    clear_pending(directory, "daily")
+    for name in ("daily_pause.json", "daily_unclear.json"):
+        path = os.path.join(directory, name)
+        if os.path.isfile(path):
+            os.remove(path)
 
 
 def _loop(book):
@@ -113,7 +127,7 @@ def test_partial_data_asks_only_the_missing_signal():
     workout = loop.hear(DAY, "80")
     assert loop.notes[DAY]["weight_kg"] == 80
     assert loop.phase[DAY] == "workout"
-    assert "load" in workout.lower()
+    assert "load" not in workout.lower()
 
 
 def test_a_stale_source_falls_back_to_one_question():
@@ -128,7 +142,7 @@ def test_a_stale_source_falls_back_to_one_question():
     workout = loop.hear(DAY, "5")
     assert loop.notes[DAY]["sleep"] == 5
     assert loop.phase[DAY] == "workout"
-    assert "load" in workout.lower()
+    assert "load" not in workout.lower()
 
 
 def test_none_is_not_fresh_and_out_of_range_values_still_ask():
@@ -191,6 +205,7 @@ def test_none_is_not_fresh_and_out_of_range_values_still_ask():
         return book
 
     for wearable in (130, 190):
+        _clear_signal_day()
         for reply in ("no", "no 190", "no fine"):
             fresh = _loop(heart_book(wearable))
             fresh.open_morning(DAY)
@@ -216,6 +231,7 @@ def test_none_is_not_fresh_and_out_of_range_values_still_ask():
         assert "check with a doctor" not in corrected_text.lower()
         assert f"resting heart rate {wearable}" not in corrected_text.lower()
         muddy = _loop(heart_book(wearable))
+        _clear_signal_day()
         muddy.open_morning(DAY)
         again = muddy.hear(DAY, "no idea")
         assert again == _SYMPTOM

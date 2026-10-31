@@ -303,11 +303,17 @@ class TestClearYes:
         assert shaped.confirmed is False
         assert "clear yes" in shaped.message.lower()
         from record_confirmation import _mark_first_plan
+        import onboarding
 
-        marked = _mark_first_plan(first)
-        scheduled = ConfirmationRecorder().record(
-            marked, "yes, morning 6:30", "user", passing_check_in()
-        )
+        assert not _mark_first_plan(first).get("first_plan_seal")
+        token = onboarding._CONFIRM_PHASE.set(True)
+        try:
+            marked = _mark_first_plan(first)
+            scheduled = ConfirmationRecorder().record(
+                marked, "yes, morning 6:30", "user", passing_check_in()
+            )
+        finally:
+            onboarding._CONFIRM_PHASE.reset(token)
         assert scheduled.confirmed is True
         assert scheduled.quoted_words == "yes, morning 6:30"
         assert hash_plan(marked) != hash_plan(first)
@@ -343,10 +349,16 @@ class TestClearYes:
         )
         assert record.confirmed is False
         assert "clear yes" in record.message.lower()
-        real = _mark_first_plan({
-            "plan": {"user": {"age": 30}},
-            "sessions": [{"date": "2026-11-02", "name": "Upper"}],
-        })
+        import onboarding
+
+        token = onboarding._CONFIRM_PHASE.set(True)
+        try:
+            real = _mark_first_plan({
+                "plan": {"user": {"age": 30}},
+                "sessions": [{"date": "2026-11-02", "name": "Upper"}],
+            })
+        finally:
+            onboarding._CONFIRM_PHASE.reset(token)
         stolen = dict(forged)
         stolen["first_plan_seal"] = real["first_plan_seal"]
         copied = ConfirmationRecorder().record(
@@ -358,7 +370,11 @@ class TestClearYes:
         from record_confirmation import first_plan_seal
 
         assert first_plan_seal(later) == ""
-        sealed = _mark_first_plan(later)
+        token = onboarding._CONFIRM_PHASE.set(True)
+        try:
+            sealed = _mark_first_plan(later)
+        finally:
+            onboarding._CONFIRM_PHASE.reset(token)
         assert not sealed.get("first_plan_seal")
         assert ConfirmationRecorder().record(
             sealed, "yes, morning 6:30", "user", passing_check_in()
@@ -379,7 +395,11 @@ class TestClearYes:
         assert "changes" not in omitted
         assert _is_later_week(omitted) is True
         assert first_plan_seal(omitted) == ""
-        unmarked = _mark_first_plan(omitted)
+        token = onboarding._CONFIRM_PHASE.set(True)
+        try:
+            unmarked = _mark_first_plan(omitted)
+        finally:
+            onboarding._CONFIRM_PHASE.reset(token)
         assert not unmarked.get("first_plan_seal")
         calories = {
             "plan": {"nutrition": {"calories": 2200}, "user": {"age": 30}},
