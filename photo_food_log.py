@@ -80,20 +80,29 @@ class FoodLog:
         else:
             self.used_ids = loaded
 
-    def remember_usual(self, name, items, calories, protein_g) -> Dict:
+    def remember_usual(self, name, items, calories, protein_g, confirmation=None) -> Dict:
         key = self._usual_name(name)
         if not key:
             return self._no("Name the usual meal.")
         parsed = self._meal(items, calories, protein_g)
         if not parsed["ok"]:
             return parsed
-        self.usuals[key] = parsed["meal"]
+        meal = parsed["meal"]
+        plan = {
+            "remember_usual": key,
+            "items": list(meal["items"]),
+            "calories": meal["calories"],
+            "protein_g": meal["protein_g"],
+        }
+        if not isinstance(confirmation, ConfirmationRecord) or not ConfirmationRecorder().covers(confirmation, plan):
+            return self._no("This usual meal needs record_confirmation before it is saved.")
+        self.usuals[key] = meal
         return {
             "ok": True,
             "stored": True,
             "applied": False,
             "message": f"Remembered usual {key}.",
-            "meal": parsed["meal"],
+            "meal": meal,
         }
 
     def log_line(self, line, day, confirmation=None, log_path=None) -> Dict:

@@ -53,7 +53,9 @@ def save_usual(food_log, name, items, calories, protein_g, confirmation=None):
             "stored": False,
             "message": "This usual meal needs record_confirmation before it is saved.",
         }
-    remembered = food_log.remember_usual(name, plan["items"], plan["calories"], plan["protein_g"])
+    remembered = food_log.remember_usual(
+        name, plan["items"], plan["calories"], plan["protein_g"], confirmation
+    )
     if not remembered.get("ok"):
         return {"ok": False, "stored": False, "message": remembered.get("message", "The meal was not saved.")}
     return {
