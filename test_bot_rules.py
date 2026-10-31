@@ -80,6 +80,23 @@ def test_the_daily_check_in_is_two_messages():
     assert "\u2014" not in guide
 
 
+def test_intake_uses_grouped_messages():
+    text = RULES.lower()
+    assert "on intake, ask one question at a time" not in text
+    assert "send a few grouped messages" in text
+    assert "do not ask the profile one question at a time" in text
+
+
+def test_accepts_none_only_after_the_full_red_flag_list():
+    prompt = Path("BOT_PROMPT.md").read_text(encoding="utf-8").lower()
+    guide = Path("template/daily-checkin.md").read_text(encoding="utf-8").lower()
+    counted = '"accepts none" counts only when the full red-flag list was shown in that same message'
+    paused = "a partial, vague or skipped reply pauses and goes to readiness_screen"
+    for text in (RULES.lower(), prompt, guide):
+        assert counted in text
+        assert paused in text
+
+
 def test_checks_catch_mistakes_and_name_the_public_limits():
     assert "catch mistakes" in RULES.lower()
     assert "signing key is in the public repo" in RULES

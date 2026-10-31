@@ -8,6 +8,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parent
 PROMPT = (ROOT / "BOT_PROMPT.md").read_text(encoding="utf-8")
 QUICKSTART = (ROOT / "QUICKSTART.md").read_text(encoding="utf-8")
+README = (ROOT / "README.md").read_text(encoding="utf-8")
 TEMPLATE = json.loads((ROOT / "template" / "template.json").read_text(encoding="utf-8"))
 GETTING_STARTED = (ROOT / "template" / "getting-started.md").read_text(encoding="utf-8")
 PROFILE = (ROOT / "template" / "profile.md").read_text(encoding="utf-8")
@@ -17,8 +18,8 @@ def test_the_template_names_gainzbot():
     assert TEMPLATE["name"] == "Gainzbot"
     assert isinstance(TEMPLATE["description"], str) and TEMPLATE["description"]
     assert TEMPLATE["instructions_file"] == "BOT_PROMPT.md"
-    assert TEMPLATE["getting_started"] == "getting-started.md"
-    assert TEMPLATE["memory"] == "profile.md"
+    assert TEMPLATE["getting_started"] == "template/getting-started.md"
+    assert TEMPLATE["memory"] == "template/profile.md"
     assert len(TEMPLATE["starter_prompts"]) >= 3
     assert "plan_check" in TEMPLATE["skills"]
     assert "record_confirmation" in TEMPLATE["skills"]
@@ -97,6 +98,10 @@ def test_age_is_always_asked_and_readiness_runs_before_training():
     assert "they may skip it" in started
     assert "readiness_screen" in started
     assert "check-in" in started
+    intake = PROMPT.lower().split("## intake", 1)[1].split("## ", 1)[0]
+    assert "always ask age" in intake
+    assert "grouped messages" in intake
+    assert "do not ask the profile one question at a time" in intake
     today = PROMPT.lower().split("## today", 1)[1].split("## ", 1)[0]
     assert "when age is missing, or the user is under 18" in today
     red = today.index("red_flag_check.scan_check_in")
@@ -129,6 +134,14 @@ def test_first_run_clones_the_repo_and_uses_that_path():
     assert "--branch v0.1.0" in QUICKSTART
     assert "do not fall back to main" in PROMPT.lower()
     assert "do not fall back to main" in QUICKSTART.lower()
+    existing = "git -C /workspace/gainzbot describe --tags --exact-match"
+    assert existing in PROMPT
+    assert existing in QUICKSTART
+    assert existing in README
+    for text in (PROMPT.lower(), QUICKSTART.lower(), README.lower()):
+        assert "if it isn't a git repo or the tag doesn't match, stop and ask the user" in text
+        assert "never delete, move or overwrite" in text
+    assert "every file path in `template/template.json` is relative to the repo root" in QUICKSTART.lower()
     assert TEMPLATE["release_tag"] == "v0.1.0"
     assert "the second message runs readiness_screen, then check_in, then plan_check, then shows the proposal, then asks for the yes" in PROMPT.lower()
     assert "/workspace/gainzbot/data/used_confirmations.json" in PROMPT
@@ -148,16 +161,17 @@ def test_first_run_clones_the_repo_and_uses_that_path():
         "dashboard.md",
         "usual-meals.md",
     ):
-        assert name in guides.values()
+        rel = f"template/{name}"
+        assert rel in guides.values()
         assert name in PROMPT
-        rel = next(value for value in guides.values() if value == name)
         assert not rel.startswith("/")
         assert ".." not in rel.split("/")
     for skill in TEMPLATE["skills"]:
         rel = TEMPLATE["skill_files"][skill]
+        assert rel.startswith("template/skills/")
         assert not rel.startswith("/")
         assert ".." not in rel.split("/")
-        text = (ROOT / "template" / rel).read_text(encoding="utf-8")
+        text = (ROOT / rel).read_text(encoding="utf-8")
         assert "/workspace/gainzbot" in text
         assert skill in text
         assert "\u2014" not in text
@@ -166,6 +180,22 @@ def test_first_run_clones_the_repo_and_uses_that_path():
     assert "remember_usual" in PROMPT
     assert "plan_builder.py" in PROMPT
     assert "each is opt-in" in PROMPT.lower()
+
+
+def test_template_json_file_paths_are_repo_root_relative():
+    paths = [
+        TEMPLATE["instructions_file"],
+        TEMPLATE["getting_started"],
+        TEMPLATE["memory"],
+        *TEMPLATE["skill_files"].values(),
+        *TEMPLATE["guides"].values(),
+    ]
+    assert paths[0] == "BOT_PROMPT.md"
+    for rel in paths:
+        assert not rel.startswith("/")
+        assert ".." not in rel.split("/")
+        assert rel == "BOT_PROMPT.md" or rel.startswith("template/")
+    assert "every file path in `template/template.json` is relative to the repo root" in QUICKSTART.lower()
 
 
 def test_the_docs_do_not_call_the_checks_tamper_proof():
