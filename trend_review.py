@@ -169,7 +169,7 @@ class TrendReview:
             return self._empty("No change proposed.")
         return self.review(logs, user, window_days, as_of)
 
-    def apply(self, proposal, confirmation=None) -> Dict:
+    def apply(self, proposal, confirmation=None, log_path=None, as_of=None) -> Dict:
         """Apply a proposal only when record_confirmation covers that version."""
         if not isinstance(proposal, dict) or "changes" not in proposal:
             return {
@@ -189,10 +189,52 @@ class TrendReview:
                 "message": "This proposal needs record_confirmation before it applies.",
                 "changes": {},
             }
+        changes = dict(proposal.get("changes") or {})
+        if log_path is None:
+            return {
+                "applied": True,
+                "message": "Confirmed. This proposal can be applied.",
+                "changes": changes,
+            }
+        from confirmed_change import parse_utc
+
+        when = parse_utc(as_of)
+        if when is None:
+            return {
+                "applied": False,
+                "message": "The confirmed change needs a UTC time before it is saved.",
+                "changes": {},
+            }
+        kept = {key: changes[key] for key in ("load", "calories") if key in changes}
+        if not kept:
+            return {
+                "applied": True,
+                "message": "Confirmed. This proposal can be applied.",
+                "changes": changes,
+            }
+        from log_store import LogStore
+
+        row = {
+            "date": when.strftime("%Y-%m-%dT%H:%M:%SZ"),
+            "confirmed": True,
+            "changes": kept,
+            "proposal": proposal,
+            "record_id": confirmation.record_id,
+            "plan_hash": confirmation.plan_hash,
+            "quoted_words": confirmation.quoted_words,
+            "speaker": confirmation.speaker,
+        }
+        saved = LogStore(log_path).append("confirmations", row)
+        if not saved.get("ok"):
+            return {
+                "applied": False,
+                "message": "The confirmed change was not saved.",
+                "changes": {},
+            }
         return {
             "applied": True,
             "message": "Confirmed. This proposal can be applied.",
-            "changes": dict(proposal.get("changes") or {}),
+            "changes": changes,
         }
 
     def _empty(self, message: str) -> Dict:

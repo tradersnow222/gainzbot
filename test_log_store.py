@@ -212,23 +212,78 @@ def test_a_failed_used_list_drops_the_meal_from_the_log(tmp_path, monkeypatch):
     assert LogStore(path).data["meals"] == []
 
 
-def test_sleep_cap_matches_the_wearable_day(tmp_path):
-    """A day cannot hold more than 24 hours of sleep.
-
-    The wearable import already stops at 24 hours, and a workout day stops
-    at 1,440 minutes. The morning check-in uses that same day length.
-    """
+def test_twenty_four_hours_of_sleep_is_kept_and_a_tenth_more_is_refused():
+    """A calendar day holds 24 hours of sleep, and 24.1 does not fit."""
     ok = MorningCheckIn().check_in({"sleep": 24, "soreness": 1, "energy": 5, "stress": 1})
     assert ok["ok"] is True
     assert ok["day"] == "push"
-    over = MorningCheckIn().check_in({"sleep": 25, "soreness": 1, "energy": 5, "stress": 1})
+    over = MorningCheckIn().check_in({"sleep": 24.1, "soreness": 1, "energy": 5, "stress": 1})
     assert over["ok"] is False
     assert "24" in over["message"]
-    assert "14" not in over["message"]
-    source = (ROOT / "morning_checkin.py").read_text(encoding="utf-8")
-    wearable = (ROOT / "wearable_import.py").read_text(encoding="utf-8")
-    assert "MAX_SLEEP_HOURS_PER_DAY = 24" in wearable
-    assert "between 0 and 24" in source
+    from wearable_import import WearableImport
+
+    reading = {"date": "2026-10-30", "sleep_hours": 24}
+    stored = WearableImport().store_summary(reading, recorded(reading))
+    assert stored["stored"] is True
+    longer = {"date": "2026-10-30", "sleep_hours": 24.1}
+    refused = WearableImport().store_summary(longer, recorded(longer))
+    assert refused["stored"] is False
     guide = (ROOT / "template" / "saved-logs.md").read_text(encoding="utf-8")
+    assert "trend_review.TrendReview.review_saved" in guide
+    assert "trend_review.review_saved" not in guide.replace("trend_review.TrendReview.review_saved", "")
+    assert "does not store a proposed load" in guide
+    assert "TrendReview.apply" in guide
     assert "\u2014" not in guide
-    assert "\u2014" not in source
+
+
+def test_a_raw_confirmed_dict_is_not_a_baseline(tmp_path):
+    from confirmed_change import last_confirmed_change
+
+    path = tmp_path / "log.json"
+    LogStore(path).append("confirmations", {
+        "date": "2026-10-21T00:00:00Z",
+        "confirmed": True,
+        "changes": {"load": 100},
+    })
+    logs = LogStore(path).as_trend()
+    assert "confirmed_changes" not in logs
+    found = last_confirmed_change(logs.get("confirmed_changes"), "load", "2026-10-28T00:00:00Z")
+    assert found.value is None
+
+
+def test_apply_writes_a_covering_record_as_the_baseline(tmp_path):
+    from confirmed_change import last_confirmed_change
+
+    path = tmp_path / "log.json"
+    proposal = {"summary": "Raise the load.", "changes": {"load": 110}}
+    yes = recorded(proposal)
+    missed = TrendReview().apply(proposal, yes, log_path=path, as_of="2026-10-21")
+    assert missed["applied"] is False
+    assert LogStore(path).data["confirmations"] == []
+    applied = TrendReview().apply(
+        proposal, yes, log_path=path, as_of="2026-10-21T00:00:00Z"
+    )
+    assert applied["applied"] is True
+    logs = LogStore(path).as_trend()
+    found = last_confirmed_change(logs["confirmed_changes"], "load", "2026-10-22T00:00:00Z")
+    assert found.ok is True
+    assert found.value == 110
+
+
+def test_an_easy_day_does_not_store_a_proposed_load(tmp_path):
+    path = tmp_path / "log.json"
+    history = [{
+        "date": "2026-10-21T00:00:00Z",
+        "confirmed": True,
+        "changes": {"load": 100},
+    }]
+    checked = MorningCheckIn().check_in(
+        {"sleep": 5, "soreness": 1, "energy": 5, "stress": 1, "date": "2026-10-28"},
+        confirmed_changes=history,
+        as_of="2026-10-28T00:00:00Z",
+        log_path=path,
+    )
+    assert checked["ok"] is True
+    assert checked["proposal"]["changes"]["load"] == 90
+    assert "load" not in LogStore(path).data["checkins"][-1]
+    assert LogStore(path).as_trend()["training"] == []
