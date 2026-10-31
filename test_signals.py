@@ -113,7 +113,7 @@ def test_partial_data_asks_only_the_missing_signal():
     workout = loop.hear(DAY, "80")
     assert loop.notes[DAY]["weight_kg"] == 80
     assert loop.phase[DAY] == "workout"
-    assert "load" in workout.lower()
+    assert "load" not in workout.lower()
 
 
 def test_a_stale_source_falls_back_to_one_question():
@@ -128,7 +128,7 @@ def test_a_stale_source_falls_back_to_one_question():
     workout = loop.hear(DAY, "5")
     assert loop.notes[DAY]["sleep"] == 5
     assert loop.phase[DAY] == "workout"
-    assert "load" in workout.lower()
+    assert "load" not in workout.lower()
 
 
 def test_none_is_not_fresh_and_out_of_range_values_still_ask():

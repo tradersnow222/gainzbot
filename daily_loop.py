@@ -123,6 +123,69 @@ def symptom_is_clear(reply):
     return True
 
 
+_WEEKDAYS = (
+    "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday",
+)
+_LEADING_NO = re.compile(r"^\s*(no|nope)\b\s*[,.]?\s*", re.IGNORECASE)
+_LEADING_NUMBER = re.compile(r"(\d+)\s*[,.]?\s*")
+_NOTE_RISK = re.compile(
+    r"\bbut\b|\bpain\b|\bhurts?\b|\bchest\b|\bdizz|\btight\b|\bbreath|\bfaint|"
+    r"\bsymptoms?\b|\bnumb|\bswollen\b|\bswell\b|\bpop(?:ped)?\b|\bsnap(?:ped)?\b|"
+    r"[()?？]|[^\x00-\x7f]",
+    re.IGNORECASE,
+)
+_SKIP_SPORTS = {"general training", "lifting", "gym", "weights", "none", "no"}
+
+
+def _weekday_name(day):
+    return _WEEKDAYS[date.fromisoformat(str(day)[:10]).weekday()]
+
+
+def _split_scored_no(reply):
+    """A leading no plus at least two scores, then a leftover remark.
+
+    'no, 7, 2, 4, 2' has no leftover, so it stays on the clear-no path and
+    energy and stress still parse. 'no, 7, 2. yep doing parkrun at 9' keeps
+    the scores in the prefix and the remark as the note.
+    """
+    if not isinstance(reply, str):
+        return None
+    text = reply.strip()
+    opened = _LEADING_NO.match(text)
+    if not opened:
+        return None
+    rest = text[opened.end():]
+    numbers = []
+    while True:
+        found = _LEADING_NUMBER.match(rest)
+        if not found:
+            break
+        numbers.append(found.group(1))
+        rest = rest[found.end():]
+    if len(numbers) < 2:
+        return None
+    note = rest.strip(" \t.,;")
+    if not note:
+        return None
+    prefix = f"{opened.group(1).lower()}, " + ", ".join(numbers)
+    return prefix, note
+
+
+def _plain_remark(note):
+    """True when the leftover is not an ambiguous safety answer."""
+    if not note:
+        return True
+    return _NOTE_RISK.search(note) is None
+
+
+def _shown_number(value):
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        return None
+    if value == int(value):
+        return str(int(value))
+    return str(value)
+
+
 def _ate_text(text):
     for word in ("yes", "yep", "yeah", "did", "didnt", "no", "not", "nt", "easy", "right", "hard", "ate"):
         text = re.sub(rf"\b{word}\b", " ", text)
@@ -186,6 +249,7 @@ _PLAN_PROFILE_KEYS = {
     "equipment",
     "experience",
     "sport",
+    "sport_day",
     "injuries",
     "goal",
 }
@@ -237,7 +301,7 @@ class DailyLoop:
             return held
         self.notes[day] = {}
         self.phase[day] = "symptom"
-        if not self._has_session(day):
+        if self._rest_day(day):
             self.questions[day] = 0
             return _SYMPTOM
         extra = self._other_questions(day)
@@ -254,6 +318,87 @@ class DailyLoop:
         if not isinstance(days, list) or not days:
             return True
         return day in {str(item) for item in days}
+
+    def _rest_day(self, day):
+        """A confirmed week with no session that date is a rest day.
+
+        With no confirmed week, the profile's day list decides. A missing
+        list still counts as a session, so an unplanned loop can name a day.
+        """
+        if self._confirmed_week() is not None:
+            return self._confirmed_session(day) is None
+        return not self._has_session(day)
+
+    def _food_text(self):
+        if self.calories is not None:
+            shown = _shown_number(self.calories)
+            if shown is not None:
+                return f"{shown} kcal"
+        week = self._confirmed_week()
+        plan = week.get("plan") if isinstance(week, dict) else None
+        nutrition = plan.get("nutrition") if isinstance(plan, dict) else None
+        calories = nutrition.get("calories") if isinstance(nutrition, dict) else None
+        shown = _shown_number(calories)
+        if shown is not None:
+            return f"{shown} kcal"
+        return self.goal
+
+    def _scheduled_sport(self, day):
+        """The sport name when that sport is on today's weekday."""
+        profile = self.profile if isinstance(self.profile, dict) else None
+        if not profile:
+            return None
+        sport = profile.get("sport")
+        if not isinstance(sport, str):
+            return None
+        name = " ".join(sport.split())
+        if not name or name.lower() in _SKIP_SPORTS:
+            return None
+        sport_day = profile.get("sport_day")
+        if not isinstance(sport_day, str) or not sport_day.strip():
+            return None
+        if sport_day.strip().lower()[:3] != _weekday_name(day).lower()[:3]:
+            return None
+        return name
+
+    def _next_session(self, day):
+        week = self._confirmed_week()
+        if not week:
+            return None
+        later = []
+        for row in week.get("sessions") or []:
+            if isinstance(row, dict) and str(row.get("date") or "") > str(day):
+                later.append(row)
+        if not later:
+            return None
+        later.sort(key=lambda row: str(row.get("date")))
+        return later[0]
+
+    def _annotate(self, day, text):
+        as_of = f"{day}T12:00:00Z"
+        if self.signals is not None and "resting_hr" in self.signals.abnormal(as_of):
+            text += " If you feel unwell, check with a doctor."
+        if self.signals is not None and self.signals.connected():
+            note = self.signals.plan_note(f"{day}T08:00:00Z")
+            if self.outreach is not None:
+                self.outreach.scheduled(day, note)
+            if note and note != "Today is on plan.":
+                text = f"{note} {text}"
+        return text
+
+    def _rest_line(self, day, food):
+        sport = self._scheduled_sport(day)
+        if sport:
+            line = f"Rest day. Enjoy {sport}, keep it conversational."
+        else:
+            line = "Rest day."
+        text = f"{line} Food: {food}."
+        nxt = self._next_session(day)
+        if nxt:
+            name = nxt.get("name") or "Session"
+            when = _weekday_name(nxt.get("date"))
+            text += f" Next: {name} on {when}."
+        return text
 
     def _other_questions(self, day):
         if self.signals is None or not self.signals.connected():
@@ -296,6 +441,18 @@ class DailyLoop:
             self.notes.setdefault(day, {})["reply"] = reply
             if symptom_is_clear(reply):
                 return self._after_symptom(day, reply)
+            split = _split_scored_no(reply)
+            if split:
+                prefix, note = split
+                held = self._symptom_hold(reply)
+                if held:
+                    self.phase[day] = "paused"
+                    return held
+                if not _plain_remark(note):
+                    self.phase[day] = "symptom"
+                    return _SYMPTOM
+                self.notes[day]["note"] = note
+                return self._after_symptom(day, prefix)
             return self._unclear_symptom(day, reply)
         if phase == "signals":
             pending = self.pending.get(day, {"gaps": [], "personal": []})
@@ -322,21 +479,29 @@ class DailyLoop:
             return self._evening(day, reply)
         return "I'll pick it up in the morning."
 
-    def _unclear_symptom(self, day, reply):
-        """Not a clear no. scan_check_in runs, then one gentle re-ask. No workout."""
+    def _symptom_hold(self, reply):
+        """A real symptom in the whole message. A missing checklist does not hold."""
         checker = RedFlagChecker()
         scanned = checker.scan_check_in({"notes": reply if isinstance(reply, str) else ""})
         real = [
             flag for flag in (scanned.flags_detected or [])
             if flag != "needs_clarification"
         ]
+        if not real:
+            return None
         paused = self._text_pause(reply)
-        if paused and real:
-            self.phase[day] = "paused"
+        if paused:
             return paused
-        if scanned.pause_plan and real:
-            self.phase[day] = "paused"
+        if scanned.pause_plan:
             return _pause_text(scanned)
+        return None
+
+    def _unclear_symptom(self, day, reply):
+        """Not a clear no. scan_check_in runs, then one gentle re-ask. No workout."""
+        held = self._symptom_hold(reply)
+        if held:
+            self.phase[day] = "paused"
+            return held
         self.phase[day] = "symptom"
         return _SYMPTOM
 
@@ -358,8 +523,11 @@ class DailyLoop:
         if pending is None:
             self.notes[day].update(parse_morning(reply))
             if self._needs_more(day):
-                self.phase[day] = "morning2"
-                return _SECOND
+                if _fold(reply) in {"no", "nope"} or self._rest_day(day):
+                    self._fill_defaults(day, as_of)
+                else:
+                    self.phase[day] = "morning2"
+                    return _SECOND
             return self._workout(day)
         self.notes[day].update(read_gap_reply(pending["gaps"], reply))
         self._use_hr_answer(day, as_of)
@@ -407,6 +575,15 @@ class DailyLoop:
             if "sleep" in book.abnormal(as_of) and "sleep" not in notes:
                 notes["sleep"] = book.readings["sleep"].get("value")
 
+    def _fill_defaults(self, day, as_of):
+        """Wearable sleep when it is fresh, otherwise sleep 7 and soreness 2."""
+        self._seed(day, as_of)
+        notes = self.notes[day]
+        if "sleep" not in notes:
+            notes["sleep"] = 7
+        if "soreness" not in notes:
+            notes["soreness"] = 2
+
     def _needs_more(self, day):
         notes = self.notes.get(day, {})
         return "sleep" not in notes or "soreness" not in notes
@@ -428,7 +605,7 @@ class DailyLoop:
         caller already decided the short line was clear.
         """
         checker = RedFlagChecker()
-        if clear_safety_no(reply) or symptom_is_clear(reply):
+        if clear_safety_no(reply) or symptom_is_clear(reply) or _split_scored_no(reply):
             answers = {aliases[0]: "no" for _flag, aliases in checker.CHECKLIST_GROUPS}
             return checker.scan_check_in({"symptom_checklist": answers, "notes": reply})
         return checker.scan_check_in({"notes": reply})
@@ -528,7 +705,7 @@ class DailyLoop:
                 elif isinstance(item, str) and item:
                     names.append(item)
             shown = ", ".join(names)
-            text = f"{lead} {shown}. {session_minutes} min, load {load}."
+            text = f"{lead} {shown}. {session_minutes} min."
             if needs_yes:
                 text += " Yes to raise the load."
             week = self._confirmed_week()
@@ -540,6 +717,17 @@ class DailyLoop:
             first = min(dates) if dates else None
             if session.get("experience") == "intermediate" and str(day) == first:
                 text += " Pick a weight you can lift 10 times with 2 reps left."
+        elif self._rest_day(day):
+            food = self._food_text()
+            text = self._annotate(day, self._rest_line(day, food))
+            self.workouts[day] = {
+                "day": "rest",
+                "food": food,
+                "text": text,
+                "needs_yes": False,
+            }
+            self.phase[day] = "workout"
+            return text
         else:
             load = changes.get("load", self.load)
             available = self.notes[day].get("minutes", self.minutes)
@@ -549,17 +737,9 @@ class DailyLoop:
             else:
                 session_minutes = available
                 lead = f"Today is a {day_name} day."
-            text = f"{lead} {session_minutes} min, load {load}."
-        food = f"{self.calories} kcal" if self.calories is not None else self.goal
-        text = f"{text} Food: {food}."
-        if self.signals is not None and "resting_hr" in self.signals.abnormal(as_of):
-            text += " If you feel unwell, check with a doctor."
-        if self.signals is not None and self.signals.connected():
-            note = self.signals.plan_note(f"{day}T08:00:00Z")
-            if self.outreach is not None:
-                self.outreach.scheduled(day, note)
-            if note and note != "Today is on plan.":
-                text = f"{note} {text}"
+            text = f"{lead} {session_minutes} min."
+        food = self._food_text()
+        text = self._annotate(day, f"{text} Food: {food}.")
         row = {
             "day": name or day_name,
             "minutes": session_minutes,
