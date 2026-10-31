@@ -905,6 +905,32 @@ def test_happy_path_confirms_in_five_bot_turns_or_fewer():
     assert "confirm" in bots[-1].lower()
 
 
+def test_typed_all_no_confirms_on_the_happy_path_with_no_extra_turn():
+    from onboarding import happy_path_turns
+
+    button_turns = happy_path_turns()
+    assert button_turns == 5
+    for token in ("all no", "all no.", "  ALL NO  ", "All No."):
+        _drop_hold()
+        replies = list(HAPPY_PATH[:-2]) + [token, "yes"]
+        state, bots = run_chat(replies)
+        assert state["confirmed"] is True, token
+        assert state["turns"] == button_turns, token
+        assert len(bots) == button_turns, token
+        assert len(state["par_q"]) == len(PAR_Q), token
+        assert all(value is False for value in state["par_q"].values()), token
+        assert "confirm" in bots[-1].lower(), token
+
+
+def test_all_no_but_chest_pain_holds():
+    state, bots = run_chat(list(HAPPY_PATH[:-2]) + ["all no but chest pain", "yes"])
+    assert state["confirmed"] is False
+    assert state["phase"] == "symptom"
+    assert state["par_q"] == {}
+    assert "medical emergency" in bots[-1].lower()
+    assert "one yes confirms the plan" not in bots[-1].lower()
+
+
 def test_a_sentence_at_the_age_step_is_not_dropped():
     """A non-int at age with no labels stays a follow-up. The next int does not confirm."""
     profile = (
@@ -1236,10 +1262,8 @@ def test_all_no_counts_only_when_the_whole_reply_is_that_phrase():
         assert "one yes confirms the plan" not in bots[-1].lower(), reply
         _drop_hold()
     accepted = (
-        "all no.",
         "all no!",
         "all no,",
-        "  all no  ",
         "all no thanks",
         "all no lol",
         "all no 👍",

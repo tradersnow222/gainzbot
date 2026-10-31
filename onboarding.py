@@ -55,7 +55,8 @@ _PASS_LABELS = {
 }
 
 # The profile line carries host labels. injury=none on that line is the
-# structured None tap. "all_no" is the PAR-Q button, not typed text.
+# structured None tap. "all_no" is the PAR-Q button. The typed token
+# "all no" or "all no." is that same button.
 HAPPY_PATH = (
     "hello",
     (
@@ -2315,6 +2316,22 @@ def submit_injury_when(state, choice):
     return False
 
 
+def _typed_all_no(text):
+    """The exact words the PAR-Q line asks for. A sentence is not this token.
+
+    Case and surrounding space do not matter. 'all no' and 'all no.' only.
+    """
+    if not isinstance(text, str):
+        return False
+    folded = " ".join(text.strip().lower().split())
+    return folded in {"all no", "all no."}
+
+
+def _par_q_all_no_button(text):
+    """The all_no button, or the exact typed token that means the same thing."""
+    return text == "all_no" or _typed_all_no(text)
+
+
 def submit_par_q(state, choice):
     """'all_no', or a dict of PAR-Q key to bool. Raw text is not an answer."""
     if choice == "all_no":
@@ -2464,6 +2481,8 @@ def _exact_token(state, reply):
     if not folded:
         return False
     if folded in {"hello", "hi", "hey", "skip"}:
+        return True
+    if state.get("asked") == "par_q" and _par_q_all_no_button(reply):
         return True
     if folded in _ACCEPT and not (state.get("phase") == "confirm" and state.get("safety_followup")):
         return True
@@ -2685,6 +2704,9 @@ def _take_exact(state, reply):
         _take_injury_answer(state, reply)
         return
     folded = _fold(reply) if isinstance(reply, str) else ""
+    if state.get("asked") == "par_q" and _par_q_all_no_button(reply):
+        submit_par_q(state, "all_no")
+        return
     if folded == "skip":
         _remember_skip(state)
         return
@@ -3783,7 +3805,9 @@ def run_chat(replies):
             elif (
                 state.get("asked") == "par_q"
                 and labels is None
-                and text == "all_no"
+                and not follow_up
+                and not hard_stop(text)
+                and _par_q_all_no_button(text)
             ):
                 submit_par_q(state, "all_no")
             else:
