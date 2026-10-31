@@ -24,6 +24,9 @@ def test_the_diagram_has_four_layers():
     for layer in ("Impossible tools", "Fail-closed scripts", "Rules", "Human confirmation"):
         assert layer in diagram
     assert "Rules guide, checks enforce." in README
+    prose = README.lower()
+    assert "platform setting" in prose
+    assert "not something the code enforces" in prose
 
 
 def test_the_check_in_is_the_primary_gate():

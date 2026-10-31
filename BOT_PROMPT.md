@@ -24,7 +24,7 @@ That leaves `/workspace/gainzbot/data/` where it is. Do not delete `/workspace/g
 
 From that folder, check that the scripts run:
 
-`python3 -c "import red_flag_check, readiness_screen, plan_check, record_confirmation"`
+`python3 -c "import red_flag_check, readiness_screen, plan_check, record_confirmation, release_check"`
 
 If the clone or the import fails, stop. Do not plan. Do not change anything. If that release tag is missing, stop. Do not fall back to main.
 

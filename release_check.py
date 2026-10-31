@@ -8,6 +8,8 @@ This module only decides. It does not delete, move, or reset anything.
 
 import json
 import re
+import subprocess
+import sys
 from pathlib import Path
 
 
@@ -30,6 +32,22 @@ def expected_release_tag(path=None):
     return tag
 
 
+def _install_failure(text):
+    """A missing path or a non-repo, before any local-edit check."""
+    if not isinstance(text, str) or not text.strip():
+        return None
+    lowered = text.lower()
+    if (
+        "no such file or directory" in lowered
+        or "cannot change to" in lowered
+        or "not a directory" in lowered
+    ):
+        return "The install folder is missing. Stop and ask."
+    if "not a git repository" in lowered:
+        return "This folder is not a git repo. Stop and ask."
+    return None
+
+
 def existing_install_ok(describe_output, porcelain_output, expected_tag):
     """Return (ok, reason) for an existing /workspace/gainzbot checkout.
 
@@ -37,17 +55,94 @@ def existing_install_ok(describe_output, porcelain_output, expected_tag):
     or the error text when that command fails. porcelain_output is the
     stdout of `git status --porcelain`. A passing checkout has an exact
     v<semver> tag equal to expected_tag, and no local edits.
+    A missing folder or a folder that is not a git repo is not reported
+    as local edits.
     """
     if not isinstance(expected_tag, str) or SEMVER_TAG.fullmatch(expected_tag) is None:
         return False, "The release tag in template.json has to be a v<semver> tag. Stop and ask."
+    for blob in (describe_output, porcelain_output):
+        failure = _install_failure(blob)
+        if failure:
+            return False, failure
     if not isinstance(porcelain_output, str) or porcelain_output.strip() != "":
         return False, "Local edits are present. Stop and ask. Never discard them."
     if not isinstance(describe_output, str):
         return False, "There is no exact release tag. Stop and ask."
     text = describe_output.strip()
     lowered = text.lower()
-    if text == "" or "not a git repository" in lowered or lowered.startswith("fatal:"):
+    if text == "" or lowered.startswith("fatal:"):
         return False, "There is no exact release tag. If it isn't a git repo or the tag doesn't match, stop and ask."
     if "\n" in text or SEMVER_TAG.fullmatch(text) is None or text != expected_tag:
         return False, "The checkout tag does not match release_tag. Stop and ask."
     return True, ""
+
+
+def configured_repo_path(template_path=None):
+    """The repo_path field in template.json, or None when it is missing."""
+    path = ROOT / "template" / "template.json" if template_path is None else Path(template_path)
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return None
+    if not isinstance(data, dict):
+        return None
+    repo = data.get("repo_path")
+    if not isinstance(repo, str) or not repo.strip():
+        return None
+    return repo.strip()
+
+
+def _git(repo, args):
+    try:
+        proc = subprocess.run(
+            ["git", "-C", repo, *args],
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+    except OSError as exc:
+        return 1, "", str(exc)
+    return proc.returncode, proc.stdout or "", proc.stderr or ""
+
+
+def check_configured_install(repo_path, expected_tag):
+    """Run describe and status --porcelain. Never deletes or resets."""
+    if not isinstance(repo_path, str) or not repo_path.strip() or not Path(repo_path).is_dir():
+        return False, "The install folder is missing. Stop and ask."
+    code, stdout, stderr = _git(repo_path, ["rev-parse", "--is-inside-work-tree"])
+    if code != 0 or stdout.strip().lower() != "true":
+        failure = _install_failure(f"{stdout}\n{stderr}")
+        if failure:
+            return False, failure
+        return False, "This folder is not a git repo. Stop and ask."
+    describe_code, describe_out, describe_err = _git(
+        repo_path, ["describe", "--tags", "--exact-match"]
+    )
+    status_code, status_out, status_err = _git(repo_path, ["status", "--porcelain"])
+    if status_code != 0:
+        failure = _install_failure(status_err)
+        if failure:
+            return False, failure
+        return False, "This folder is not a git repo. Stop and ask."
+    describe_text = describe_out if describe_code == 0 else describe_err
+    return existing_install_ok(describe_text, status_out, expected_tag)
+
+
+def main(repo_path=None, expected_tag=None):
+    """Exit 0 only when the install passes. A refusal is non-zero and on stderr."""
+    if repo_path is None:
+        repo_path = configured_repo_path()
+    if expected_tag is None:
+        expected_tag = expected_release_tag()
+    ok, reason = check_configured_install(repo_path, expected_tag)
+    if not ok:
+        text = reason.strip() if isinstance(reason, str) else ""
+        if not text:
+            text = "The install check refused. Stop and ask."
+        print(text, file=sys.stderr)
+        return 1
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())
