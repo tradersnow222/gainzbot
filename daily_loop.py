@@ -181,11 +181,16 @@ def _split_scored_no(reply):
     return prefix, note
 
 
+_BARE_YES = frozenset({"yes", "yep", "yeah", "yup", "ok", "okay"})
+
+
 def _remark_allowed(note):
     """True when the leftover is only an allowlisted plan, time, food, or greeting.
 
     The whole remark has to match. A question mark, a symptom, or any other
-    word does not. Numbers are only clock pieces, up to 59.
+    word does not. Numbers are only clock pieces, up to 59. A remark that is
+    only yes or yep is not a note. Those words can still sit inside a longer
+    allowlisted remark.
     """
     if not isinstance(note, str) or not note.strip():
         return False
@@ -196,6 +201,7 @@ def _remark_allowed(note):
     tokens = re.findall(r"[a-z]+|\d+", text)
     if not tokens:
         return False
+    words = []
     for token in tokens:
         if token.isdigit():
             if int(token) > 59:
@@ -203,6 +209,9 @@ def _remark_allowed(note):
             continue
         if token not in _REMARK_WORDS:
             return False
+        words.append(token)
+    if words and all(token in _BARE_YES for token in words):
+        return False
     return True
 
 
@@ -354,7 +363,12 @@ class DailyLoop:
         if held:
             return held
         if self.phase.get(day) == "paused":
-            return self.hold_text.get(day) or _SYMPTOM
+            return self.hold_text.get(day) or self._saved_pause(day) or _SYMPTOM
+        saved = self._saved_pause(day)
+        if saved:
+            self.phase[day] = "paused"
+            self.hold_text[day] = saved
+            return saved
         self.notes[day] = {}
         self.phase[day] = "symptom"
         if self._rest_day(day):
@@ -557,10 +571,55 @@ class DailyLoop:
         self.phase[day] = "symptom"
         return _SYMPTOM
 
+    def _pause_file(self):
+        """The pause sits beside the week file so a new DailyLoop can load it."""
+        week = self._week_file()
+        return os.path.join(os.path.dirname(os.path.abspath(week)), "daily_pause.json")
+
+    def _saved_pause(self, day):
+        path = self._pause_file()
+        if not path or not os.path.isfile(path):
+            return None
+        try:
+            with open(path, encoding="utf-8") as handle:
+                loaded = json.load(handle)
+        except (OSError, json.JSONDecodeError):
+            return None
+        if not isinstance(loaded, dict):
+            return None
+        text = loaded.get(str(day))
+        if isinstance(text, str) and text.strip():
+            return text
+        return None
+
+    def _write_pause(self, day, text):
+        path = self._pause_file()
+        loaded = {}
+        if os.path.isfile(path):
+            try:
+                with open(path, encoding="utf-8") as handle:
+                    found = json.load(handle)
+                if isinstance(found, dict):
+                    loaded = found
+            except (OSError, json.JSONDecodeError):
+                loaded = {}
+        loaded[str(day)] = text
+        temporary = path + ".tmp"
+        try:
+            os.makedirs(os.path.dirname(path), exist_ok=True)
+            with open(temporary, "w", encoding="utf-8") as handle:
+                json.dump(loaded, handle)
+                handle.write("\n")
+            os.replace(temporary, path)
+        except OSError:
+            return False
+        return True
+
     def _remember_pause(self, day, text):
-        """Keep the pause. A later open_morning on this day returns the same line."""
+        """Keep the pause. A later open_morning, even on a new object, returns it."""
         self.phase[day] = "paused"
         self.hold_text[day] = text
+        self._write_pause(day, text)
         return text
 
     def _text_pause(self, reply):

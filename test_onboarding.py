@@ -881,7 +881,8 @@ def test_a_named_injury_stays_and_the_plan_keeps_weight_off_it():
     back_line = "I kept weight off your lower back. Check with your doctor or a physio before loading it."
     ham_line = "I kept weight off your hamstring. Check with your doctor or a physio before loading it."
     back, bots = run_chat([
-        "hold, male, age 30, 80 kg, 180 cm, lower back pain",
+        "hold, male, 80 kg, 180 cm, lower back pain",
+        "old",
         "30",
         "ok",
         "all no",
@@ -898,7 +899,7 @@ def test_a_named_injury_stays_and_the_plan_keeps_weight_off_it():
         assert "hip hinge" not in names
         assert "nordic" not in names
     ham, ham_bots = run_chat([
-        "hold, male, age 30, 80 kg, 180 cm, hamstring injury",
+        "hold, male, 80 kg, 180 cm, hamstring injury",
         "30",
         "ok",
         "all no",
@@ -1571,8 +1572,6 @@ def test_a_structural_injury_is_stored_and_does_not_hold_the_day():
         ("old sprained ankle", "ankle"),
         ("achilles", "achilles"),
         ("torn acl 2 years ago", "knee"),
-        ("calf tear last year", "calf"),
-        ("slipped disc in 2020", "back"),
         ("torn acl 2 years ago, fine now", "knee"),
     )
     for phrase, area in samples:
@@ -2060,3 +2059,176 @@ def test_a_later_weight_is_bounded_against_the_target_and_a_lift_is_not_body_wei
     assert third["answers"]["weight"] == "80 kg"
     assert third["answers"].get("target") in (None, "")
     assert third_bots[-1].startswith("Goal, weight, target")
+
+
+_TRAINING = "general training, 3 days 45 min, dumbbells, beginner, none"
+_PROFILE = "cut, male, 60 kg, 170 cm, no injuries"
+
+
+def test_a_red_flag_in_a_pain_phrase_holds_before_old_can_save_it():
+    from record_confirmation import reply_pause
+
+    from onboarding import hold_is_active
+
+    flagged = (
+        ("back pain shooting down my leg", "blood_clot"),
+        ("sharp knee pain", "sharp_joint_pain"),
+    )
+    acute = (
+        "severe back pain",
+        "stabbing back pain",
+        "sharp back pain",
+        "back pain with fever",
+        "knee pain, cant straighten it",
+    )
+    for phrase, flag in flagged:
+        paused = reply_pause(phrase)
+        assert paused is not None, phrase
+        assert flag in paused.flags_detected, phrase
+    for phrase in [item[0] for item in flagged] + list(acute):
+        state, bots = run_chat([
+            "hello",
+            f"cut, male, 60 kg, 170 cm, {phrase}",
+            "old",
+            "25",
+            _TRAINING,
+            "all no",
+            "yes",
+        ])
+        assert state["confirmed"] is False, phrase
+        assert state["phase"] == "symptom", phrase
+        assert hold_is_active(), phrase
+        assert "one yes confirms the plan" not in "\n".join(bots).lower(), phrase
+        again, again_bots = run_chat(["hello", "yes"])
+        assert again["confirmed"] is False, phrase
+        assert again["phase"] == "symptom", phrase
+        assert "one yes confirms the plan" not in "\n".join(again_bots).lower(), phrase
+        _drop_hold()
+
+
+def test_an_age_cue_beside_an_injury_clears_age_before_the_injury_branch():
+    from onboarding import _AGE_ASK
+
+    phrases = (
+        "back pain, im a minor",
+        "knee pain, in high school",
+        "achilles tendinitis, im not an adult",
+        "torn acl, im 15",
+        "im 16, sprained ankle",
+        "torn acl, 17yo",
+    )
+    training = ["hello", _PROFILE, "25"]
+    confirm = training + [_TRAINING, "all no"]
+    for phrase in phrases:
+        at_training, training_bots = run_chat(training + [phrase])
+        assert at_training["confirmed"] is False, phrase
+        assert at_training["answers"].get("age") in (None, ""), phrase
+        assert training_bots[-1] == _AGE_ASK, phrase
+        assert "one yes confirms the plan" not in training_bots[-1].lower(), phrase
+        at_confirm, confirm_bots = run_chat(confirm + [phrase])
+        assert at_confirm["confirmed"] is False, phrase
+        assert at_confirm["answers"].get("age") in (None, ""), phrase
+        assert confirm_bots[-1] == _AGE_ASK, phrase
+        assert "one yes confirms the plan" not in confirm_bots[-1].lower(), phrase
+    later, later_bots = run_chat(confirm + [
+        "my knee hurts, im 15",
+        "old",
+        "yes",
+        "yes",
+    ])
+    assert later["confirmed"] is False
+    assert later["answers"].get("age") != "25"
+    assert later_bots[-1] == _AGE_ASK
+    assert "one yes confirms the plan" not in later_bots[-1].lower()
+
+
+def test_a_single_message_past_stores_only_an_exact_allowlist_remainder():
+    from onboarding import _INJURY_WHEN, hold_is_active
+
+    phrases = (
+        "torn acl, old, flares up sometimes",
+        "nowhere near healed",
+        "far from healed",
+        "barely healed",
+        "kind of healed",
+        "healed-ish",
+        "old, still recovering",
+        "old, in rehab",
+        "old, had surgery last month",
+        "old but unstable",
+        "old but gives way",
+        "torn acl 4 months ago, still recovering",
+        "calf tear last year",
+        "slipped disc in 2020",
+    )
+    for phrase in phrases:
+        state, bots = run_chat([f"hold, male, 80 kg, 180 cm, {phrase}"])
+        assert state["answers"].get("injuries") in (None, ""), phrase
+        assert state["phase"] != "symptom", phrase
+        assert state["confirmed"] is False, phrase
+        assert hold_is_active() is False, phrase
+        assert bots[-1] == _INJURY_WHEN, phrase
+
+
+def test_pain_in_more_areas_asks_old_or_recent_and_confirm_pain_holds_the_day():
+    from onboarding import _INJURY_WHEN, hold_is_active
+
+    areas = (
+        ("shoulder pain", "shoulder"),
+        ("hip pain", "hip"),
+        ("ankle pain", "ankle"),
+        ("neck pain", "neck"),
+        ("wrist pain", "wrist"),
+        ("lower back pain", "lower back"),
+    )
+    for phrase, area in areas:
+        asked, asked_bots = run_chat([f"hold, male, 80 kg, 180 cm, {phrase}"])
+        assert asked["answers"].get("injuries") in (None, ""), phrase
+        assert asked["phase"] != "symptom", phrase
+        assert hold_is_active() is False, phrase
+        assert asked_bots[-1] == _INJURY_WHEN, phrase
+        stored, _stored_bots = run_chat([
+            f"hold, male, 80 kg, 180 cm, {phrase}",
+            "old",
+            "30",
+            "ok",
+            "all no",
+            "yes",
+        ])
+        assert stored["confirmed"] is True, phrase
+        assert stored["answers"]["injuries"] == area, phrase
+        _drop_hold()
+    for phrase in ("my knee hurts",) + tuple(item[0] for item in areas):
+        held, held_bots = run_chat(list(_AGE_25) + [phrase])
+        assert held["confirmed"] is False, phrase
+        assert held["phase"] == "symptom", phrase
+        assert hold_is_active(), phrase
+        assert "one yes confirms the plan" not in held_bots[-1].lower(), phrase
+        again, again_bots = run_chat(["hello", "yes"])
+        assert again["confirmed"] is False, phrase
+        assert again["phase"] == "symptom", phrase
+        assert hold_is_active(), phrase
+        assert "one yes confirms the plan" not in "\n".join(again_bots).lower(), phrase
+        _drop_hold()
+
+
+def test_an_emoji_on_an_old_answer_asks_again_and_yes_7_pm_stays_on_confirm():
+    from onboarding import _AGE_ASK, _INJURY_WHEN, hold_is_active
+
+    state, bots = run_chat([
+        "hold, male, 80 kg, 180 cm, torn acl",
+        "old \U0001F605",
+    ])
+    assert state["answers"].get("injuries") in (None, "")
+    assert state["phase"] != "symptom"
+    assert state["confirmed"] is False
+    assert hold_is_active() is False
+    assert state.get("awaiting") == "injury_when"
+    assert state.get("pending_injury") == "knee"
+    assert bots[-1] == _INJURY_WHEN
+    clock, clock_bots = run_chat(list(_AGE_25) + ["yes 7 pm"])
+    assert clock["confirmed"] is False
+    assert clock["phase"] == "confirm"
+    assert clock["answers"]["age"] == "25"
+    assert clock_bots[-1].startswith("Plan for age 25.")
+    assert _AGE_ASK not in clock_bots[-1]

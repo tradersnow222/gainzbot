@@ -191,14 +191,15 @@ def test_a_symptom_in_the_morning_pauses_before_the_workout():
 
     loop = DailyLoop(load=80, minutes=45, profile=adult_profile())
     day = "2026-10-26"
-    opened = loop.open_morning(day)
+    pause_day = "2026-10-27"
+    opened = loop.open_morning(pause_day)
     assert opened.startswith("Morning. Any chest pain, trouble breathing, dizziness or new pain? no / yes")
     assert "soreness from 1 to 5" in opened
-    paused = loop.hear(day, "my chest hurts 8 fine 45")
+    paused = loop.hear(pause_day, "my chest hurts 8 fine 45")
     assert "doctor" in paused.lower()
     assert "easy day" not in paused.lower()
-    assert day not in loop.workouts
-    assert loop.phase[day] == "paused"
+    assert pause_day not in loop.workouts
+    assert loop.phase[pause_day] == "paused"
     clear = DailyLoop(load=80, minutes=45, profile=adult_profile())
     clear.open_morning(day)
     follow = clear.hear(day, "no")
@@ -464,10 +465,10 @@ def test_a_no_with_anything_else_asks_the_symptom_line_again():
         assert loop.phase[day] == "symptom"
         assert day not in loop.workouts
     bandage = DailyLoop(load=80, minutes=45, profile=adult_profile())
-    bandage.open_morning(day)
-    paused = bandage.hear(day, "no \U0001F915")
-    assert bandage.phase[day] == "paused"
-    assert day not in bandage.workouts
+    bandage.open_morning("2026-10-27")
+    paused = bandage.hear("2026-10-27", "no \U0001F915")
+    assert bandage.phase["2026-10-27"] == "paused"
+    assert "2026-10-27" not in bandage.workouts
     assert "head" in paused.lower() or "doctor" in paused.lower()
     for reply in ("no", "no 8 45", "no 8 fine 45"):
         loop = DailyLoop(load=80, minutes=45, profile=adult_profile())
@@ -609,6 +610,9 @@ def test_a_scored_no_with_a_plain_remark_keeps_the_note(tmp_path):
     assert saturday not in held.workouts
     assert held.phase[saturday] == "paused"
     assert "doctor" in paused.lower() or "emergency" in paused.lower()
+    pause_file = tmp_path / "daily_pause.json"
+    if pause_file.exists():
+        pause_file.unlink()
     ambiguous = _live_loop(tmp_path)
     ambiguous.open_morning(saturday)
     again = ambiguous.hear(saturday, "no, 7, 2. but new pain in my knee")
@@ -698,9 +702,12 @@ def test_a_scored_no_remark_is_scanned_alone_and_allowlisted(tmp_path):
         "actually yes",
         "not great",
     )
+    pause_file = tmp_path / "daily_pause.json"
     for day in ("2026-11-02", "2026-10-31"):
         for prefix in ("no 7 2", "no, 7, 2."):
             for remark in remarks:
+                if pause_file.exists():
+                    pause_file.unlink()
                 loop = _live_loop(tmp_path)
                 loop.open_morning(day)
                 text = loop.hear(day, f"{prefix} {remark}")
@@ -709,6 +716,8 @@ def test_a_scored_no_remark_is_scanned_alone_and_allowlisted(tmp_path):
                 assert "Full body" not in text
                 assert not text.startswith("Rest day")
     saturday = "2026-10-31"
+    if pause_file.exists():
+        pause_file.unlink()
     clear = _live_loop(tmp_path)
     clear.open_morning(saturday)
     text = clear.hear(saturday, "no, 7, 2. yep doing parkrun at 9")
@@ -749,3 +758,43 @@ def test_open_morning_does_not_reset_a_pause_or_a_hold(tmp_path):
     stayed = fresh.hear(monday, "no, 7, 2")
     assert stayed == opened
     assert monday not in fresh.workouts
+
+
+def test_a_bare_yes_or_yep_remark_is_not_a_note(tmp_path):
+    from daily_loop import _SYMPTOM
+
+    for day in ("2026-11-02", "2026-10-31"):
+        for reply in ("no 7 2 yes", "no 7 2 yep", "no, 7, 2. yep", "no, 7, 2. yes"):
+            loop = _live_loop(tmp_path)
+            loop.open_morning(day)
+            text = loop.hear(day, reply)
+            assert text == _SYMPTOM, (day, reply, text)
+            assert loop.phase[day] == "symptom", (day, reply)
+            assert day not in loop.workouts, (day, reply)
+            assert loop.notes[day].get("note") in (None, ""), (day, reply)
+            assert "Full body" not in text
+            assert not text.startswith("Rest day")
+    saturday = "2026-10-31"
+    clear = _live_loop(tmp_path)
+    clear.open_morning(saturday)
+    text = clear.hear(saturday, "no, 7, 2. yep doing parkrun at 9")
+    assert text != _SYMPTOM
+    assert clear.phase[saturday] == "workout"
+    assert clear.notes[saturday]["note"] == "yep doing parkrun at 9"
+
+
+def test_a_pause_loads_on_a_new_daily_loop(tmp_path):
+    monday = "2026-11-02"
+    first = _live_loop(tmp_path)
+    first.open_morning(monday)
+    paused = first.hear(monday, "no 7 2 slurred speech")
+    assert first.phase[monday] == "paused"
+    assert monday not in first.workouts
+    second = _live_loop(tmp_path)
+    opened = second.open_morning(monday)
+    assert opened == paused
+    assert second.phase[monday] == "paused"
+    assert monday not in second.workouts
+    stayed = second.hear(monday, "no, 7, 2")
+    assert monday not in second.workouts
+    assert second.phase[monday] == "paused"

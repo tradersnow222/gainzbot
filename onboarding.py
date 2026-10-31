@@ -961,11 +961,16 @@ def _parse_explicit(state, reply):
     if stated == "none":
         if "injuries" not in answers:
             answers["injuries"] = "none"
-    elif _untimed_named_injury(reply) or _untimed_pain_phrase(reply):
-        _ask_injury_when(state, reply)
-    elif stated is not None and answers.get("injuries") in (None, "", "none"):
-        if not _acute_marker(reply):
-            answers["injuries"] = stated
+    elif not _age_correction(reply):
+        if (
+            _untimed_named_injury(reply)
+            or _untimed_pain_phrase(reply)
+            or _loose_timing(reply)
+        ):
+            _ask_injury_when(state, reply)
+        elif stated is not None and answers.get("injuries") in (None, "", "none"):
+            if not _acute_marker(reply):
+                answers["injuries"] = stated
     if re.search(r"\bparkrun\b", folded):
         answers["sport"] = "parkrun"
         if re.search(r"\b(?:saturdays?|sat)\b", folded):
@@ -1310,8 +1315,18 @@ def _am_pm_is_time(tokens, index):
 
 
 def _next_is_unit(tokens, index):
+    """A count, a clock, or a duration. '2 years ago' is a duration, not an age.
+
+    '15 years old' is still an age: years counts only when the next word is ago.
+    Months and weeks are durations on their own.
+    """
     nxt = tokens[index + 1] if index + 1 < len(tokens) else ""
+    nxt2 = tokens[index + 2] if index + 2 < len(tokens) else ""
     if nxt in _MINOR_UNITS:
+        return True
+    if nxt in {"months", "month", "weeks", "week"}:
+        return True
+    if nxt in {"years", "year"} and nxt2 == "ago":
         return True
     if nxt in {"am", "pm"}:
         return _am_pm_is_time(tokens, index + 1)
@@ -1598,7 +1613,7 @@ _ACUTE_MARKER = re.compile(
     r"|\bbuckl(?:e|ed)\b"
     r"|\bgave\s+out\b|\bgave\s+way\b|\bgiving\s+way\b"
     r"|\blimp(?:ing)?\b"
-    r"|\b(?:cant|cannot|can\s+not)\s+(?:walk|bear\s+weight|put\s+(?:any\s+)?weight|bend)\b"
+    r"|\b(?:cant|cannot|can\s+not)\s+(?:walk|bear\s+weight|put\s+(?:any\s+)?weight|bend|straighten)\b"
     r"|\bon\s+crutches\b"
     r"|\bin\s+a\s+cast\b"
     r"|\bcracks?\b"
@@ -1607,6 +1622,10 @@ _ACUTE_MARKER = re.compile(
     r"|\bstill\s+(?:hurts?|painful|hurting)\b"
     r"|\brecent\b"
     r"|\bsharp\s+pain\b"
+    r"|\bsharp\b"
+    r"|\bsevere\b"
+    r"|\bstabbing\b"
+    r"|\bfever\b"
     r"|\bnumb(?:ness)?\b"
     r"|\btingling\b"
     r"|\blocked\b"
@@ -1690,9 +1709,16 @@ _PAIN_OR_QUALIFIER = re.compile(
     r"|\bacting\s+up\b"
 )
 _PAIN_PHRASES = (
+    (re.compile(r"\blower back pain\b", re.IGNORECASE), "lower back"),
+    (re.compile(r"\blow back pain\b", re.IGNORECASE), "lower back"),
     (re.compile(r"\bmy knee hurts\b", re.IGNORECASE), "knee"),
     (re.compile(r"\bknee hurts\b", re.IGNORECASE), "knee"),
     (re.compile(r"\bknee pain\b", re.IGNORECASE), "knee"),
+    (re.compile(r"\bshoulder pain\b", re.IGNORECASE), "shoulder"),
+    (re.compile(r"\bhip pain\b", re.IGNORECASE), "hip"),
+    (re.compile(r"\bankle pain\b", re.IGNORECASE), "ankle"),
+    (re.compile(r"\bneck pain\b", re.IGNORECASE), "neck"),
+    (re.compile(r"\bwrist pain\b", re.IGNORECASE), "wrist"),
     (re.compile(r"(?<!lower )(?<!low )back pain\b", re.IGNORECASE), "back"),
     (re.compile(r"\bachilles tend(?:i|o)nitis\b", re.IGNORECASE), "achilles"),
 )
@@ -1752,21 +1778,26 @@ def _valid_past(reply):
 
 
 def _rejected_past(reply):
-    """A past-looking phrase that fails the allowlist. It does not skip the hold."""
+    """A past phrase with a negation within three words. It does not skip the hold."""
     if _valid_past(reply):
         return False
     folded = _injury_fold(reply)
     spans = _past_spans(folded)
     if not spans:
         return False
-    if _PAIN_OR_QUALIFIER.search(folded):
-        return True
     return all(_negated_before(folded, start) for start, _end in spans)
+
+
+def _has_emoji(reply):
+    """An emoji is not part of an old-injury answer. A question mark is not one."""
+    if not isinstance(reply, str):
+        return False
+    return any(unicodedata.category(char) in {"So", "Sk"} for char in reply)
 
 
 def _old_injury_reply(reply):
     """True only when the whole reply is an allowlisted old-injury answer."""
-    if _asks_question(reply):
+    if _asks_question(reply) or _has_emoji(reply):
         return False
     folded = _injury_fold(reply)
     if not folded:
@@ -1774,9 +1805,92 @@ def _old_injury_reply(reply):
     return _OLD_REPLY.fullmatch(folded) is not None
 
 
+# Same phrases as the whole-reply allowlist, longest first, so a remainder
+# can be those phrases and nothing else.
+_OLD_PHRASES = (
+    re.compile(r"\bold and healed\b"),
+    re.compile(r"\bfully healed\b"),
+    re.compile(r"\bits healed\b"),
+    re.compile(r"\bfully recovered\b"),
+    re.compile(r"\ball good now\b"),
+    re.compile(r"\bfine now\b"),
+    re.compile(r"\blong time ago\b"),
+    re.compile(r"\bits old\b"),
+    re.compile(r"\bold one\b"),
+    re.compile(r"\b\d+\s+years\s+ago\b"),
+    re.compile(r"\b\d+\s+year\s+ago\b"),
+    re.compile(r"\byears\s+ago\b"),
+    re.compile(r"\brecovered\b"),
+    re.compile(r"\bhealed\b"),
+    re.compile(r"\bold\b"),
+)
+_OLD_PLACE = "oldplace"
+_PROFILE_NOISE = frozenset({
+    "hold", "cut", "lose", "gain", "fat", "loss", "weight",
+    "male", "female", "man", "woman",
+    "kg", "kgs", "cm", "lb", "lbs", "pounds", "pound",
+    "general", "training", "days", "day", "min", "mins", "minutes",
+    "dumbbells", "barbell", "bodyweight", "beginner", "intermediate", "advanced",
+    "full", "gym", "none", "no", "injuries", "injury",
+    "and", "but", "or", "a", "an", "the", "its", "it", "is", "of", "with",
+    "my", "i", "im", "to", "for", "on", "in", "at", "from",
+    "want", "target",
+})
+
+
+def _strict_old_remainder(reply):
+    """Store as old only when the injury name and separators leave an allowlist.
+
+    Past phrases are masked first, then the injury name is removed. Profile
+    words, bare numbers, and separators may go too. What remains has to be
+    one or more allowlisted phrases and nothing else. A question mark or an
+    emoji does not store.
+    """
+    if _asks_question(reply) or _has_emoji(reply):
+        return False
+    text = _injury_fold(reply)
+    if not text:
+        return False
+    found = False
+    for pattern in _OLD_PHRASES:
+        if pattern.search(text):
+            found = True
+            text = pattern.sub(f" {_OLD_PLACE} ", text)
+    if not found:
+        return False
+    for pattern, _label in _PAIN_PHRASES:
+        text = pattern.sub(" ", text)
+    for phrase, _label in _NAMED_INJURIES:
+        text = re.sub(rf"\b{re.escape(phrase)}\b", " ", text)
+    for phrase, _label in _INJURY_AREAS:
+        text = re.sub(rf"\b{re.escape(phrase)}\b", " ", text)
+    kept = []
+    for token in text.split():
+        if token == _OLD_PLACE:
+            kept.append(token)
+            continue
+        if token.isdigit():
+            continue
+        if token in _PROFILE_NOISE:
+            continue
+        kept.append(token)
+    return bool(kept) and all(token == _OLD_PLACE for token in kept)
+
+
+def _loose_timing(reply):
+    """A timing word that is not an exact old answer. Ask. Do not store it."""
+    if _strict_old_remainder(reply) or _rejected_past(reply) or _acute_marker(reply):
+        return False
+    if _asks_question(reply):
+        return False
+    folded = _injury_fold(reply)
+    folded = re.sub(r"\byears?\s+old\b", " ", folded)
+    return bool(re.search(r"\b(?:old|healed|recovered|ago)\b", folded))
+
+
 def _past_marker(reply):
-    """Backward-compatible name. Only an allowlisted past phrase counts."""
-    return _valid_past(reply)
+    """Backward-compatible name. Only a strict allowlisted remainder counts."""
+    return _strict_old_remainder(reply)
 
 
 def _pain_phrase_label(folded):
@@ -1830,21 +1944,21 @@ def _injury_context(folded):
 
 
 def _untimed_named_injury(reply):
-    """A named injury with no allowlisted past phrase and no acute wording."""
+    """A named injury whose remainder is not the old-injury allowlist."""
     folded = _fold(reply) if isinstance(reply, str) else ""
     if not _named_injury_present(folded):
         return False
-    if _valid_past(reply) or _acute_marker(reply) or _rejected_past(reply):
+    if _strict_old_remainder(reply) or _acute_marker(reply) or _rejected_past(reply):
         return False
     return True
 
 
 def _untimed_pain_phrase(reply):
-    """Knee, back, or achilles pain with no time marker. It asks, it does not store."""
+    """Pain with no exact old remainder. It asks, it does not store."""
     folded = _fold(reply) if isinstance(reply, str) else ""
     if not _pain_phrase_label(folded):
         return False
-    if _valid_past(reply) or _acute_marker(reply) or _rejected_past(reply):
+    if _strict_old_remainder(reply) or _acute_marker(reply) or _rejected_past(reply):
         return False
     return True
 
@@ -1867,12 +1981,12 @@ def _pain_happening_now(folded):
 
 
 def _symptom_hold(reply):
-    """Scan first. Hold a current symptom.
+    """Scan the whole message first. Hold a current symptom.
 
-    A named injury skips the hold only when the past marker is an allowlisted
-    phrase, with no negation within three words and no pain or qualifier
-    word in the message. A negated or painful past phrase holds. No time
-    marker does not hold: the caller asks whether it is old or recent.
+    A named injury is stored only when the remainder is the old-injury
+    allowlist and the rest of the message does not pause. A negated past
+    phrase holds. A pain phrase holds when the whole raw message flags.
+    A clean pain phrase does not hold: the caller asks old or recent.
     Acute wording holds for every area.
     """
     from record_confirmation import reply_pause
@@ -1887,14 +2001,18 @@ def _symptom_hold(reply):
         return _plain_pause()
     if _acute_marker(reply) and _injury_context(folded):
         return paused if paused is not None else _plain_pause()
-    if _named_injury_present(folded) and _valid_past(reply):
+    if _named_injury_present(folded) and _strict_old_remainder(reply):
         rest_pause = reply_pause(_injury_rest(reply))
         if rest_pause is None:
             return None
         return rest_pause
     if (_named_injury_present(folded) or _pain_phrase_label(folded)) and _rejected_past(reply):
         return paused if paused is not None else _plain_pause()
-    if _untimed_named_injury(reply) or _untimed_pain_phrase(reply):
+    if _untimed_pain_phrase(reply):
+        if paused is not None:
+            return paused
+        return None
+    if _untimed_named_injury(reply):
         return reply_pause(_injury_rest(reply))
     if paused is None:
         return None
@@ -1947,20 +2065,31 @@ def _ask_injury_when(state, reply):
 
 
 def _injury_when_kind(reply):
-    """'store' only for an allowlisted whole reply. Anything else holds."""
+    """'store' for an allowlisted reply. An emoji on that reply asks again."""
     if _old_injury_reply(reply):
         return "store"
+    if _has_emoji(reply):
+        folded = _injury_fold(reply)
+        if folded and _OLD_REPLY.fullmatch(folded) is not None:
+            return "ask"
     return "hold"
 
 
 def _take_injury_when(state, reply):
-    if _injury_when_kind(reply) == "store":
+    kind = _injury_when_kind(reply)
+    if kind == "store":
         label = state.get("pending_injury")
         if label:
             state["answers"]["injuries"] = label
         state.pop("pending_injury", None)
         state["awaiting"] = None
         state["error"] = None
+        if state.get("phase") != "confirm":
+            state["phase"] = "intake"
+        return
+    if kind == "ask":
+        state["awaiting"] = "injury_when"
+        state["error"] = _INJURY_WHEN
         if state.get("phase") != "confirm":
             state["phase"] = "intake"
         return
@@ -2065,7 +2194,20 @@ def apply_reply(state, reply):
         _take_injury_answer(state, reply)
         return
     folded = _fold(reply)
-    if phase == "confirm" and (_untimed_named_injury(reply) or _untimed_pain_phrase(reply)):
+    injury_branch = bool(
+        _untimed_named_injury(reply)
+        or _untimed_pain_phrase(reply)
+        or _loose_timing(reply)
+        or _pain_phrase_label(folded)
+        or (_named_injury_present(folded) and _strict_old_remainder(reply))
+    )
+    if phase == "confirm" and injury_branch and _age_correction(reply):
+        _note_age_correction(state, reply)
+        return
+    if phase == "confirm" and _pain_phrase_label(folded) and not _strict_old_remainder(reply):
+        _hold_symptom(state, reply, _plain_pause())
+        return
+    if phase == "confirm" and (_untimed_named_injury(reply) or _loose_timing(reply)):
         _ask_injury_when(state, reply)
         return
     if phase == "confirm" and _handle_confirm(state, reply):
@@ -2465,7 +2607,7 @@ def _handle_blocked(state, reply):
 def _schedule_aside(reply):
     """A clock or a list of weekdays. It does not ask for the age again.
 
-    'yes at 7', 'at 6 am', and '10 am' are times. A bare 'at 7' is not.
+    'yes at 7', 'yes 7 pm', 'at 6 am', and '10 am' are times. A bare 'at 7' is not.
     """
     if not isinstance(reply, str):
         return False
@@ -2473,6 +2615,8 @@ def _schedule_aside(reply):
     if re.fullmatch(r"\d{1,2}:\d{2}(?:\s*(?:am|pm))?", raw):
         return True
     if re.fullmatch(r"yes,?\s+at\s+(?:[1-9]|1[0-2])", raw):
+        return True
+    if re.fullmatch(r"yes,?\s+(?:[1-9]|1[0-2])\s*(?:am|pm)", raw):
         return True
     if re.fullmatch(r"at\s+(?:[1-9]|1[0-2])\s*(?:am|pm)", raw):
         return True
@@ -2498,7 +2642,7 @@ def _handle_confirm(state, reply):
     and the plan is shown again.
     """
     folded = _fold(reply)
-    if _named_injury_present(folded) and _valid_past(reply) and not _acute_marker(reply):
+    if _named_injury_present(folded) and _strict_old_remainder(reply) and not _acute_marker(reply):
         _store_named_injury(state, reply)
         state["error"] = None
         state["awaiting"] = None
