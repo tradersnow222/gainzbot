@@ -122,9 +122,32 @@ def reconcile_log_backup(log_path):
         return
 
 
+def _listed(data, key):
+    if not isinstance(data, dict):
+        return 0
+    value = data.get(key)
+    return len(value) if isinstance(value, list) else 0
+
+
 def _backup_can_replace(backup_bytes, live_bytes):
-    """Only a parseable backup that is older or the same set of ids may replace the live log."""
+    """A backup replaces the live log only when it is parseable and not newer.
+
+    An empty backup never wipes a live log that already has meals, check-ins,
+    or confirmation ids. A live log with more meals or check-ins is never replaced.
+    """
+    live = None
+    if live_bytes:
+        try:
+            parsed = json.loads(live_bytes.decode("utf-8"))
+        except (UnicodeDecodeError, json.JSONDecodeError, AttributeError):
+            parsed = None
+        if isinstance(parsed, dict):
+            live = parsed
     if backup_bytes == b"":
+        if live is None:
+            return True
+        if _listed(live, "meals") or _listed(live, "checkins") or _confirmation_ids(live_bytes):
+            return False
         return True
     try:
         backup = json.loads(backup_bytes.decode("utf-8"))
@@ -132,14 +155,12 @@ def _backup_can_replace(backup_bytes, live_bytes):
         return False
     if not isinstance(backup, dict):
         return False
-    if not live_bytes:
+    if live is None:
         return True
-    try:
-        live = json.loads(live_bytes.decode("utf-8"))
-    except (UnicodeDecodeError, json.JSONDecodeError):
-        return True
-    if not isinstance(live, dict):
-        return True
+    if _listed(live, "meals") > _listed(backup, "meals"):
+        return False
+    if _listed(live, "checkins") > _listed(backup, "checkins"):
+        return False
     return _confirmation_ids(backup_bytes) <= _confirmation_ids(live_bytes)
 
 

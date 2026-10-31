@@ -173,9 +173,30 @@ def test_none_is_not_fresh_and_out_of_range_values_still_ask():
     heart_open = heart.open_morning(DAY)
     assert "Resting heart rate?" in heart_open
     assert "easy day" not in heart_open.lower()
-    heart_day = heart.hear(DAY, "no")
+    heart_again = heart.hear(DAY, "no")
+    assert "Resting heart rate?" in heart_again
+    assert "easy day" not in heart_again.lower()
+    assert DAY not in heart.workouts
+    heart_day = heart.hear(DAY, "130")
     assert "easy day" in heart_day.lower()
     assert heart.workouts[DAY]["day"] == "easy"
+    high = SignalBook()
+    high.connect("oura")
+    high.record("sleep", FRESH, 8)
+    high.record("resting_hr", FRESH, 190)
+    high.record("hrv", FRESH, 50)
+    racing_high = _loop(high)
+    high_open = racing_high.open_morning(DAY)
+    assert "Resting heart rate?" in high_open
+    assert "easy day" not in high_open.lower()
+    high_again = racing_high.hear(DAY, "no")
+    assert "Resting heart rate?" in high_again
+    assert "easy day" not in high_again.lower()
+    assert DAY not in racing_high.workouts
+    high_day = racing_high.hear(DAY, "190")
+    assert "easy day" in high_day.lower()
+    assert racing_high.workouts[DAY]["day"] == "easy"
+    assert racing_high.workouts[DAY]["load"] == 72
 
 
 def test_freshness_is_under_about_24_hours_and_a_connection_is_not_assumed():

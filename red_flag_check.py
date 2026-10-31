@@ -8,7 +8,6 @@ immediate plan pause and professional consultation.
 
 from dataclasses import dataclass
 from typing import Dict, List, Set
-import hashlib
 import hmac
 import json
 import os
@@ -19,11 +18,10 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from guardrails.validate import InputValidator, ValidationError
 
 
-_CHECKIN_SECRET = b"gainzbot-scan-check-in-v1"
-
-
 def _check_in_seal(message: str) -> str:
-    return hmac.new(_CHECKIN_SECRET, message.encode("utf-8"), hashlib.sha256).hexdigest()
+    from seal_secret import seal_hex
+
+    return seal_hex(b"check-in", message)
 
 
 def is_passing_check_in(result) -> bool:

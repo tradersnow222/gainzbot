@@ -118,6 +118,8 @@ def test_a_symptom_in_the_morning_pauses_before_the_workout():
     clear.open_evening(day)
     missed = clear.hear(day, "did not")
     assert clear.notes[day]["did_it"] is False
+    assert clear.notes[day]["ate"] == ""
+    assert parse_evening("did not")["ate"] == ""
     assert missed.startswith("Logged the miss")
     evening = DailyLoop(load=80, minutes=45, profile=adult_profile())
     evening.open_morning(day)
@@ -128,3 +130,53 @@ def test_a_symptom_in_the_morning_pauses_before_the_workout():
     assert "logged" not in flagged.lower()
     assert evening.phase[day] == "paused"
     assert "did_it" not in evening.notes[day]
+
+
+def test_a_no_with_anything_else_asks_the_symptom_line_again():
+    from daily_loop import _SYMPTOM, adult_profile
+
+    day = "2026-10-26"
+    unclear = (
+        "no, болит грудь",
+        "no no 8 fine 45 (actually chest tight)",
+        "no, but new pain in my knee",
+        "no 🤕",
+        "no idea",
+    )
+    for reply in unclear:
+        loop = DailyLoop(load=80, minutes=45, profile=adult_profile())
+        loop.open_morning(day)
+        again = loop.hear(day, reply)
+        assert again == _SYMPTOM, reply
+        assert loop.phase[day] == "symptom"
+        assert day not in loop.workouts
+    for reply in ("no", "no 8 45", "no 8 fine 45"):
+        loop = DailyLoop(load=80, minutes=45, profile=adult_profile())
+        loop.open_morning(day)
+        text = loop.hear(day, reply)
+        assert text != _SYMPTOM, reply
+        assert loop.phase[day] != "symptom"
+        assert day in loop.workouts or loop.phase[day] == "morning2"
+
+
+def test_weekly_ignores_an_unsealed_history():
+    from daily_loop import adult_profile
+
+    loop = DailyLoop(
+        load=80,
+        minutes=45,
+        history=[{
+            "date": "2026-10-19T07:00:00Z",
+            "confirmed": True,
+            "changes": {"load": 80},
+        }],
+        profile=adult_profile(),
+    )
+    day = "2026-10-26"
+    loop.open_morning(day)
+    loop.hear(day, "no 8 fine 45")
+    loop.open_evening(day)
+    loop.hear(day, "yes easy oats")
+    review = loop.weekly("2026-11-02T07:00:00Z")
+    assert review["changed"] is False
+    assert review["load"] == 80

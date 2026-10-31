@@ -10,6 +10,7 @@ from record_confirmation import (
     ConfirmationRecorder,
     hash_plan,
     is_clear_yes,
+    is_plan_yes,
     normalize_reply,
     timestamp_is_current,
 )
@@ -185,6 +186,7 @@ class TestClearYes:
         "👍\U0001F3FE",
         "👍\U0001F3FF",
         "yes <3",
+        "yes \u2714\uFE0F",
         "sounds good",
         "sounds good!",
         "let's go",
@@ -244,6 +246,7 @@ class TestClearYes:
         "lets gooo unless I'm sore",
         "yes ✔ my knee hurts",
         "yes <3 but change the days",
+        "yes </3",
         "👍 and make it heavier",
     ])
     def test_anything_past_a_bare_yes_is_refused(self, reply):
@@ -319,12 +322,13 @@ class TestPlanCheckFollowUps:
             passing_check_in(),
         )
         assert not forged.valid
-        assert "readiness" in " ".join(forged.errors).lower()
+        assert "under 18" in " ".join(forged.errors).lower()
 
         real = PlanValidator().validate_plan(
             plan, minor_screen(15), passing_check_in()
         )
-        assert real.valid
+        assert real.valid is False
+        assert "under 18" in " ".join(real.errors).lower()
 
     def test_user_block_alone_is_not_a_plan(self):
         plan = {
@@ -352,3 +356,39 @@ class TestPlanCheckFollowUps:
         blob = " ".join(result.errors).lower()
         assert "under 18" in blob
         assert "floor" not in blob
+
+
+def test_is_plan_yes_is_tied_to_the_proposal_hash():
+    import inspect
+
+    from signals import Outreach
+
+    assert is_clear_yes("yes") is True
+    assert is_plan_yes("yes", None) is False
+    assert is_plan_yes("yes", "") is False
+    assert is_plan_yes("yes", "abc") is True
+    assert is_plan_yes("ok", "abc") is True
+    source = inspect.getsource(Outreach.accept)
+    assert "is_plan_yes" in source
+    assert "is_clear_yes" not in source
+
+
+def test_seal_keys_live_in_a_gitignored_install_file():
+    from pathlib import Path
+
+    from seal_secret import install_secret, seal_hex
+
+    root = Path(__file__).resolve().parent
+    for name in ("red_flag_check.py", "readiness_screen.py", "record_confirmation.py"):
+        text = (root / name).read_text(encoding="utf-8")
+        assert "gainzbot-scan-check-in-v1" not in text
+        assert "gainzbot-readiness-screen-v1" not in text
+        assert "gainzbot-record-confirmation-v1" not in text
+    key = install_secret()
+    assert len(key) >= 32
+    assert (root / "data" / "seal.key").is_file()
+    assert install_secret() == key
+    assert "data/" in (root / ".gitignore").read_text(encoding="utf-8")
+    assert seal_hex(b"confirmation", "payload") == seal_hex("confirmation", "payload")
+    readme = (root / "README.md").read_text(encoding="utf-8")
+    assert "tamper-evidence, not security" in readme

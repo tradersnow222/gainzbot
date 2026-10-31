@@ -208,3 +208,32 @@ def test_par_q_answers_are_kept_and_a_mixed_reply_asks_only_the_gap():
     fake["par_q"] = {key: False for key, _question in PAR_Q}
     refused = _check_in(fake)
     assert not is_passing_check_in(refused)
+
+
+def test_all_no_counts_only_when_nothing_else_follows():
+    body = ["hold, male, age 30, 80 kg, 180 cm", "ok"]
+    unclear = (
+        "all no except chest pain",
+        "all no except joint problem",
+        "all no (I take blood pressure meds)",
+        "all no apart from my knee",
+        "all no 🫀",
+        "all no?",
+        "all no, well maybe",
+    )
+    for reply in unclear:
+        state, bots = run_chat(body + [reply, "yes"])
+        assert state["confirmed"] is False, reply
+        assert state["par_q"] == {}, reply
+        assert all(value is not False for value in state["par_q"].values())
+        assert bots[-2].startswith("Still need a yes or no:"), reply
+        assert "\n" not in bots[-2]
+        assert bots[-1].startswith("Still need a yes or no:")
+    for reply in ("all no.", "all no!", "all no,", "  all no  "):
+        state, _bots = run_chat(body + [reply, "yes"])
+        assert state["confirmed"] is True, reply
+        assert len(state["par_q"]) == len(PAR_Q)
+        assert all(value is False for value in state["par_q"].values())
+    longest, asked = run_chat(body + ["chest pain at rest yes, rest no"])
+    assert longest["par_q"]["chest_pain_at_rest"] is True
+    assert "chest pain at rest" not in asked[-1].lower()

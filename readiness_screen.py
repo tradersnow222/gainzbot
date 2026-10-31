@@ -12,7 +12,6 @@ from datetime import datetime, timezone
 from typing import Dict, List, Tuple
 from enum import Enum
 import difflib
-import hashlib
 import hmac
 import json
 import re
@@ -41,6 +40,7 @@ class ScreeningResult:
     par_q: Dict = field(default_factory=dict)
     clearance_date: str = ""
     doctor_cleared: bool = False
+    age: object = None
     issuer_seal: str = ""
 
     def to_dict(self) -> Dict:
@@ -78,15 +78,13 @@ def subject_hash(source) -> str:
     return hash_plan(payload)
 
 
-_READINESS_SECRET = b"gainzbot-readiness-screen-v1"
-
-
 def _screening_payload(result: ScreeningResult) -> str:
     clearance = result.clearance.value if isinstance(result.clearance, ClearanceLevel) else result.clearance
     body = {
         "blocked": result.blocked,
         "clearance": clearance,
         "clearance_date": result.clearance_date or "",
+        "age": result.age if isinstance(result.age, int) else None,
         "doctor_cleared": result.doctor_cleared is True,
         "par_q": dict(result.par_q or {}),
         "reasons": list(result.reasons or []),
@@ -97,7 +95,9 @@ def _screening_payload(result: ScreeningResult) -> str:
 
 
 def _screening_seal(result: ScreeningResult) -> str:
-    return hmac.new(_READINESS_SECRET, _screening_payload(result).encode("utf-8"), hashlib.sha256).hexdigest()
+    from seal_secret import seal_hex
+
+    return seal_hex(b"readiness", _screening_payload(result))
 
 
 def screening_seal_matches(result) -> bool:
@@ -114,8 +114,13 @@ def screening_seal_matches(result) -> bool:
 
 
 def passing_readiness(result) -> bool:
-    """True only for an issued clear or caution result that is not blocked."""
+    """True only for an issued clear or caution result that is not blocked.
+
+    Anyone under 18 does not pass, even when the result says clear.
+    """
     if not screening_seal_matches(result):
+        return False
+    if isinstance(getattr(result, "age", None), int) and result.age < 18:
         return False
     if result.blocked is not False:
         return False
@@ -154,6 +159,7 @@ class ReadinessScreen:
         re.IGNORECASE,
     )
     _DATE = re.compile(r"\d{4}-\d{2}-\d{2}")
+    _YEAR = re.compile(r"\b(\d{4})\b")
     _PLAN_FOLLOWS = "The plan follows the doctor's clearance."
 
     PAR_Q_RED_FLAGS = [
@@ -252,42 +258,25 @@ class ReadinessScreen:
                 clearance=ClearanceLevel.NEEDS_DOCTOR_CLEARANCE,
                 reasons=reasons,
                 blocked=True,
-                recommendations=recommendations
+                recommendations=recommendations,
+                age=age,
             )
         
-        if age < self.ADULT_AGE and not has_parental_consent:
-            reasons.append(
-                f"User is {age} years old (under {self.ADULT_AGE}) without parental consent."
-            )
-            recommendations.append(
-                f"Parental or guardian consent required for users under {self.ADULT_AGE}."
-            )
+        if age < self.ADULT_AGE:
             return self._result(
                 clearance=ClearanceLevel.NEEDS_DOCTOR_CLEARANCE,
-                reasons=reasons,
+                reasons=["There is no training plan for anyone under 18."],
                 blocked=True,
-                recommendations=recommendations
-            )
-        
-        if age < self.ADULT_AGE and has_parental_consent:
-            reasons.append(
-                f"User is {age} years old (under {self.ADULT_AGE}) but has parental consent."
-            )
-            recommendations.append(
-                "Youth training program with appropriate modifications required."
-            )
-            return self._result(
-                clearance=ClearanceLevel.CAUTION,
-                reasons=reasons,
-                blocked=False,
-                recommendations=recommendations
+                recommendations=["There is no training plan for anyone under 18."],
+                age=age,
             )
         
         return self._result(
             clearance=ClearanceLevel.CLEAR,
             reasons=[],
             blocked=False,
-            recommendations=[]
+            recommendations=[],
+            age=age,
         )
 
     def _yes_no(self, data: Dict, key: str, default: bool = False):
@@ -300,17 +289,54 @@ class ReadinessScreen:
             return None, str(e)
 
     def _interpret_clearance(self, value):
-        """A yes, or a sentence that a doctor cleared them. A denial is no."""
+        """A yes, or a sentence that a doctor cleared them. A denial is no.
+
+        A clear-word plus a year is a dated clearance attempt even without
+        the word doctor. Deny words still deny.
+        """
         if isinstance(value, bool):
             return value, None
         if isinstance(value, str):
             text = InputValidator.normalize_unicode(value).strip()
-            if self._DOCTOR_WORD.search(text) and self._CLEAR_WORD.search(text):
+            has_clear = self._CLEAR_WORD.search(text) is not None
+            has_doctor = self._DOCTOR_WORD.search(text) is not None
+            has_year = self._YEAR.search(text) is not None
+            if (has_doctor and has_clear) or (has_clear and has_year):
                 return self._DENY_WORD.search(text) is None, None
         try:
             return InputValidator.parse_boolean(value, "medical_clearance"), None
         except ValidationError as error:
             return None, str(error)
+
+    def _year_date(self, intake):
+        """YYYY-01-01 when the clearance sentence names a year."""
+        raw = intake.get("medical_clearance")
+        if not isinstance(raw, str):
+            return None
+        text = InputValidator.normalize_unicode(raw)
+        match = self._YEAR.search(text)
+        if not match:
+            return None
+        year = int(match.group(1))
+        if year < 1900 or year > 2100:
+            return None
+        return f"{year:04d}-01-01"
+
+    def _check_clearance_date(self, text):
+        try:
+            cleared_on = datetime.strptime(text, "%Y-%m-%d").date()
+        except ValueError:
+            return None, "clearance_date must be YYYY-MM-DD."
+        today = datetime.now(timezone.utc).date()
+        if cleared_on > today:
+            return None, "clearance_date cannot be in the future."
+        try:
+            anniversary = cleared_on.replace(year=cleared_on.year + 1)
+        except ValueError:
+            anniversary = cleared_on.replace(year=cleared_on.year + 1, day=28)
+        if today >= anniversary:
+            return None, "That clearance is more than 12 months old. Ask again."
+        return text, None
 
     def _parse_medical_clearance(self, intake: Dict):
         if "medical_clearance" not in intake:
@@ -318,29 +344,18 @@ class ReadinessScreen:
         return self._interpret_clearance(intake.get("medical_clearance"))
 
     def _read_clearance_date(self, intake: Dict, cleared: bool):
-        """The date they gave, or today when a doctor cleared them and they named none."""
+        """The date they gave. A year in the sentence is that year, not today."""
         if "clearance_date" not in intake:
+            implied = self._year_date(intake) if cleared else None
+            if implied:
+                return self._check_clearance_date(implied)
             if cleared:
                 return datetime.now(timezone.utc).date().isoformat(), None
             return "", None
         raw = intake.get("clearance_date")
         text = raw.strip() if isinstance(raw, str) else ""
         if self._DATE.fullmatch(text):
-            try:
-                cleared_on = datetime.strptime(text, "%Y-%m-%d").date()
-            except ValueError:
-                text = ""
-            else:
-                today = datetime.now(timezone.utc).date()
-                if cleared_on > today:
-                    return None, "clearance_date cannot be in the future."
-                try:
-                    anniversary = cleared_on.replace(year=cleared_on.year + 1)
-                except ValueError:
-                    anniversary = cleared_on.replace(year=cleared_on.year + 1, day=28)
-                if today >= anniversary:
-                    return None, "That clearance is more than 12 months old. Ask again."
-                return text, None
+            return self._check_clearance_date(text)
         return None, "clearance_date must be YYYY-MM-DD."
 
     def _plain_par_q(self, parsed: Dict) -> str:
@@ -632,12 +647,25 @@ class ReadinessScreen:
                     ["Remove or correct unrecognized fields before screening."],
                 ))
 
+        parsed_age = None
         if "age" not in intake:
             absorb(self._blocked(
                 ["Age is required. There is no default age."],
                 ["Please provide your age."],
             ))
         else:
+            try:
+                number = InputValidator.parse_number(
+                    intake["age"], "age", allow_zero=False, allow_negative=False
+                )
+            except (ValidationError, ValueError, TypeError):
+                number = None
+            if (
+                isinstance(number, (int, float))
+                and not isinstance(number, bool)
+                and number == int(number)
+            ):
+                parsed_age = int(number)
             parental_consent, consent_error = self._yes_no(intake, "parental_consent", False)
             if consent_error:
                 absorb(self._blocked([consent_error], ["Please answer parental consent with yes or no."]))
@@ -708,6 +736,7 @@ class ReadinessScreen:
             par_q=stored_par_q,
             clearance_date=clearance_date or "",
             doctor_cleared=doctor_cleared,
+            age=parsed_age,
         )
 
 

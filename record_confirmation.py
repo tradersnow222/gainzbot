@@ -44,7 +44,7 @@ def hash_plan(plan) -> str:
 _ALLOWED_EMOJI = frozenset("👍💪🔥✅✔")
 _SKIN_TONE = re.compile("[\U0001F3FB-\U0001F3FF]")
 _CLOCK_SKEW = timedelta(minutes=5)
-_CONFIRM_SECRET = b"gainzbot-record-confirmation-v1"
+_VARIATION = re.compile("[\uFE0E\uFE0F]")
 
 
 def normalize_reply(reply: str) -> str:
@@ -103,10 +103,13 @@ def is_clear_yes(reply) -> bool:
         return False
     if "?" in reply or "？" in reply or _has_format_character(reply):
         return False
+    if "</3" in reply:
+        return False
     folded = normalize_reply(reply)
-    if "?" in folded:
+    if "?" in folded or "</3" in folded:
         return False
     folded = _SKIN_TONE.sub("", folded)
+    folded = _VARIATION.sub("", folded)
     folded = folded.replace("<3", " ")
     stripped = "".join(ch for ch in folded if ch not in _ALLOWED_EMOJI)
     stripped = re.sub(r"\s+", " ", stripped).strip()
@@ -115,6 +118,19 @@ def is_clear_yes(reply) -> bool:
     if stripped == "" and "👍" in folded:
         return True
     return stripped in _BARE_YES
+
+
+def is_plan_yes(reply, proposal_hash) -> bool:
+    """The plan-step yes for one proposal hash.
+
+    A bare is_clear_yes is not enough. The hash has to name the proposal
+    being confirmed, and a symptom in the reply still refuses.
+    """
+    if not isinstance(proposal_hash, str) or not proposal_hash.strip():
+        return False
+    if reply_pause(reply) is not None:
+        return False
+    return is_clear_yes(reply)
 
 
 def reply_pause(reply):
@@ -145,11 +161,9 @@ def _confirmation_payload(record) -> str:
 
 
 def _confirmation_seal(record) -> str:
-    return hmac.new(
-        _CONFIRM_SECRET,
-        _confirmation_payload(record).encode("utf-8"),
-        hashlib.sha256,
-    ).hexdigest()
+    from seal_secret import seal_hex
+
+    return seal_hex(b"confirmation", _confirmation_payload(record))
 
 
 def confirmation_seal_matches(record) -> bool:

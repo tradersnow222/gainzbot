@@ -76,14 +76,37 @@ def _pause_text(result):
     return " ".join(parts)
 
 
+_CHECKIN_WORDS = {
+    "no", "none", "nope", "fine", "sore", "very", "bad", "sleep", "slept",
+    "min", "kg", "good", "low", "ok", "okay",
+}
+
+
 def symptom_is_clear(reply):
-    """One word no, or no beside the other answers. A yes or a symptom is not clear."""
-    if RedFlagChecker().scan_text(reply if isinstance(reply, str) else "").pause_plan:
+    """A leading no, plus only the short check-in words and numbers.
+
+    'no' and 'no 8 45' are clear. Anything else, including another script,
+    emoji, parentheses, 'but', or 'idea', is not.
+    """
+    if not isinstance(reply, str) or not reply.strip():
         return False
-    text = _fold(reply)
-    if re.search(r"\b(?:yes|yep|yeah)\b", text):
+    if "?" in reply or "？" in reply:
         return False
-    return re.search(r"\b(?:no|none|nope)\b", text) is not None
+    for char in reply:
+        if char.isspace() or char.isdigit() or ("a" <= char.lower() <= "z"):
+            continue
+        if char in ".,!;:'\"-":
+            continue
+        return False
+    tokens = re.findall(r"[a-z]+|\d+(?:\.\d+)?", reply.lower().replace("'", ""))
+    if not tokens or tokens[0] not in {"no", "none", "nope"}:
+        return False
+    for token in tokens:
+        if re.fullmatch(r"\d+(?:\.\d+)?", token):
+            continue
+        if token not in _CHECKIN_WORDS:
+            return False
+    return True
 
 
 def parse_evening(reply):
@@ -103,6 +126,8 @@ def parse_evening(reply):
     for word in ("yes", "yep", "yeah", "did", "no", "easy", "right", "hard"):
         ate = re.sub(rf"\b{word}\b", " ", ate)
     ate = " ".join(ate.split())
+    if ate in {"not", "nt"}:
+        ate = ""
     return {"did_it": did_it, "felt": felt, "ate": ate}
 
 
@@ -166,13 +191,9 @@ class DailyLoop:
         phase = self.phase.get(day)
         if phase == "symptom":
             self.notes.setdefault(day, {})["reply"] = reply
-            paused = self._text_pause(reply)
-            if paused:
-                self.phase[day] = "paused"
-                return paused
-            if not symptom_is_clear(reply):
-                return _SYMPTOM
-            return self._after_symptom(day, reply)
+            if symptom_is_clear(reply):
+                return self._after_symptom(day, reply)
+            return self._unclear_symptom(day, reply)
         if phase == "signals":
             pending = self.pending.get(day, {"gaps": [], "personal": []})
             self.notes[day]["reply"] = (self.notes[day].get("reply") or "") + " " + reply
@@ -197,6 +218,24 @@ class DailyLoop:
             return self._evening(day, reply)
         return "I'll pick it up in the morning."
 
+    def _unclear_symptom(self, day, reply):
+        """Not a clear no. scan_check_in runs, then one gentle re-ask. No workout."""
+        checker = RedFlagChecker()
+        scanned = checker.scan_check_in({"notes": reply if isinstance(reply, str) else ""})
+        real = [
+            flag for flag in (scanned.flags_detected or [])
+            if flag != "needs_clarification"
+        ]
+        paused = self._text_pause(reply)
+        if paused and real:
+            self.phase[day] = "paused"
+            return paused
+        if scanned.pause_plan and real:
+            self.phase[day] = "paused"
+            return _pause_text(scanned)
+        self.phase[day] = "symptom"
+        return _SYMPTOM
+
     def _text_pause(self, reply):
         scanned = RedFlagChecker().scan_text(reply if isinstance(reply, str) else "")
         if scanned.pause_plan:
@@ -220,6 +259,7 @@ class DailyLoop:
             return self._workout(day)
         self.notes[day].update(read_gap_reply(pending["gaps"], reply))
         abnormal = set(self.signals.abnormal(as_of)) if self.signals is not None else set()
+        abnormal.discard("resting_hr")
         unanswered = [
             gap for gap in pending["gaps"]
             if self._gap_open(day, gap) and gap not in abnormal
@@ -355,7 +395,7 @@ class DailyLoop:
             }
         checked = MorningCheckIn().check_in(
             {"sleep": 8, "soreness": 1, "energy": 5, "stress": 1},
-            confirmed_changes=self.history,
+            confirmed_changes=_sealed_changes(self.history),
             as_of=as_of,
         )
         changes = (checked.get("proposal") or {}).get("changes") or {}
@@ -374,6 +414,54 @@ class DailyLoop:
             "food": food,
             "text": text,
         }
+
+
+def _sealed_changes(history):
+    """Rows whose confirmation seal covers the stored proposal. Anything else is ignored."""
+    from log_store import _trusted_change
+
+    sealed = []
+    if not isinstance(history, list):
+        return sealed
+    for row in history:
+        if not isinstance(row, dict):
+            continue
+        changes = row.get("changes")
+        if not isinstance(changes, dict):
+            continue
+        trusted = _trusted_change(row, changes)
+        if trusted:
+            sealed.append(trusted)
+    return sealed
+
+
+def sealed_load_history(load, when):
+    """One confirmed load row this install actually sealed."""
+    from record_confirmation import ConfirmationRecorder
+    from red_flag_check import RedFlagChecker, is_passing_check_in
+
+    checker = RedFlagChecker()
+    answers = {aliases[0]: "no" for _flag, aliases in checker.CHECKLIST_GROUPS}
+    check_in = checker.scan_check_in({"symptom_checklist": answers, "notes": "no"})
+    if not is_passing_check_in(check_in):
+        return []
+    plan = {"changes": {"load": load}}
+    record = ConfirmationRecorder().record(plan, "yes", "user", check_in)
+    if not record.confirmed:
+        return []
+    return [{
+        "date": when,
+        "confirmed": True,
+        "changes": {"load": load},
+        "proposal": plan,
+        "record_id": record.record_id,
+        "plan_hash": record.plan_hash,
+        "quoted_words": record.quoted_words,
+        "speaker": record.speaker,
+        "timestamp": record.timestamp,
+        "issuer_seal": record.issuer_seal,
+        "message": record.message,
+    }]
 
 
 def adult_profile():
@@ -396,11 +484,7 @@ def simulate_happy_week():
         load=80,
         minutes=45,
         calories=2200,
-        history=[{
-            "date": "2026-10-19T07:00:00Z",
-            "confirmed": True,
-            "changes": {"load": 80},
-        }],
+        history=sealed_load_history(80, "2026-10-19T07:00:00Z"),
         profile=adult_profile(),
     )
     start = date(2026, 10, 26)

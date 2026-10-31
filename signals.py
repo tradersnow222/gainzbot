@@ -348,12 +348,10 @@ class Outreach:
     def accept(self, day, reply, proposal_hash=None):
         """Apply one delivered proposal after plan_check. The hash has to match."""
         from plan_check import PlanValidator
-        from record_confirmation import is_clear_yes
+        from record_confirmation import is_plan_yes
 
         day = self._day(day)
-        if not isinstance(proposal_hash, str) or not proposal_hash:
-            return False
-        if not is_clear_yes(reply):
+        if not is_plan_yes(reply, proposal_hash):
             return False
         changed = False
         for item in self._proactive.get(day, []):

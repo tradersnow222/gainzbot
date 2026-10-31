@@ -182,12 +182,17 @@ def test_under_18_needs_a_passing_readiness_screen():
     young = profile(age=16)
     refused = PlanBuilder().propose(young, passing_check_in())
     assert refused["ok"] is False
-    assert "readiness" in refused["message"].lower()
-    screen = screen_for(young)
+    assert refused["plan"] is None
+    assert refused["sessions"] is None
+    assert "under 18" in refused["message"].lower()
+    assert "training plan" in refused["message"].lower()
+    screen = screen_for(young, medical_clearance="my doctor cleared me for exercise")
+    assert screen.blocked is True
+    assert passing_readiness(screen) is False
     built = PlanBuilder().propose(young, passing_check_in(), readiness_result=screen)
-    assert built["ok"] is True
-    assert "nutrition" not in built["plan"]
-    assert built["plan"]["user"]["age"] == 16
+    assert built["ok"] is False
+    assert built["plan"] is None
+    assert "under 18" in built["message"].lower()
     assert PlanValidator.ADULT_AGE == 18
 
 
@@ -603,14 +608,17 @@ def test_an_adult_cut_gets_calories_protein_and_the_goal():
     assert "nutrition" not in held["plan"]
     young = profile(age=16, goal="cut")
     screened = PlanBuilder().propose(young, check_in, readiness_result=screen_for(young))
-    assert screened["ok"] is True
-    assert "nutrition" not in screened["plan"]
+    assert screened["ok"] is False
+    assert screened["plan"] is None
     cleared = screen_for(young, medical_clearance="my doctor cleared me for exercise")
     with_consent = PlanBuilder().propose(young, check_in, readiness_result=cleared)
-    assert with_consent["ok"] is True
-    assert "nutrition" not in with_consent["plan"]
-    stuffed = json.loads(json.dumps(with_consent["plan"]))
-    stuffed["nutrition"] = {"calories": 1800, "protein_g": 80}
+    assert with_consent["ok"] is False
+    assert with_consent["plan"] is None
+    stuffed = {
+        "user": {"sex": "M", "weight_kg": 80, "age": 16, "height_cm": 180},
+        "nutrition": {"calories": 1800, "protein_g": 80},
+        "training": {"previous_load": 80, "current_load": 80},
+    }
     refused = PlanValidator().validate_plan(
         stuffed, readiness_result=cleared, check_in_result=check_in,
     )
@@ -1032,3 +1040,63 @@ def test_the_builder_does_not_use_the_log_store_and_the_guide_has_no_em_dash():
     assert "record_confirmation" in guide
     assert "\u2014" not in source
     assert "\u2014" not in guide
+
+
+def test_an_orphan_backup_cannot_replace_a_log_with_more_rows(tmp_path):
+    from log_store import LogStore
+    from log_store import _backup_can_replace as log_replace
+    from plan_builder import _backup_can_replace as plan_replace
+    from plan_builder import _read_log
+
+    live = {
+        "meals": [{"date": "2026-10-30", "calories": 500}],
+        "checkins": [{"date": "2026-10-30", "sleep": 8}],
+        "confirmations": [{"record_id": "same", "confirmed": True}],
+        "sets": [],
+        "weights": [],
+        "used_records": [],
+        "sessions": [],
+    }
+    thinner = {
+        "meals": [],
+        "checkins": [],
+        "confirmations": [{"record_id": "same", "confirmed": True}],
+        "sets": [],
+        "weights": [],
+        "used_records": [],
+        "sessions": [],
+    }
+    live_bytes = (json.dumps(live) + "\n").encode("utf-8")
+    thin_bytes = (json.dumps(thinner) + "\n").encode("utf-8")
+    assert log_replace(thin_bytes, live_bytes) is False
+    assert plan_replace(thin_bytes, live_bytes) is False
+    assert log_replace(b"", live_bytes) is False
+    assert plan_replace(b"", live_bytes) is False
+    meals_only = json.loads(json.dumps(live))
+    meals_only["checkins"] = []
+    assert log_replace(b"", (json.dumps(meals_only) + "\n").encode("utf-8")) is False
+    checks_only = json.loads(json.dumps(live))
+    checks_only["meals"] = []
+    assert plan_replace(b"", (json.dumps(checks_only) + "\n").encode("utf-8")) is False
+    ids_only = json.loads(json.dumps(thinner))
+    assert log_replace(b"", (json.dumps(ids_only) + "\n").encode("utf-8")) is False
+
+    log_path = tmp_path / "log.json"
+    log_path.write_bytes(live_bytes)
+    (tmp_path / "log.json.bak").write_bytes(b"")
+    loaded = LogStore(log_path)
+    assert loaded.data["meals"][0]["calories"] == 500
+    assert loaded.data["checkins"][0]["sleep"] == 8
+    (tmp_path / "log.json.bak").write_bytes(thin_bytes)
+    again = LogStore(log_path)
+    assert again.data["meals"][0]["calories"] == 500
+    assert len(again.data["checkins"]) == 1
+
+    folder = tmp_path / "plan"
+    folder.mkdir()
+    plan_log = folder / "log.json"
+    plan_log.write_bytes(live_bytes)
+    (folder / "log.json.bak").write_bytes(thin_bytes)
+    read = _read_log(str(plan_log))
+    assert read["meals"][0]["calories"] == 500
+    assert len(read["checkins"]) == 1

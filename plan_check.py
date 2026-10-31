@@ -84,7 +84,7 @@ class PlanValidator:
         return errors
 
     def _age_policy_errors(self, age_value: float, readiness_result) -> List[str]:
-        """Reject children, implausible ages, and minors without a passing screen."""
+        """Reject children, implausible ages, and anyone under 18."""
         if age_value < self.MIN_AGE:
             return [
                 f"Age {age_value:g} is under {self.MIN_AGE}. "
@@ -94,10 +94,9 @@ class PlanValidator:
             return [
                 f"Age {age_value:g} is over {self.MAX_AGE} and is not a plausible age."
             ]
-        if age_value < self.ADULT_AGE and not self._readiness_passes(readiness_result):
+        if age_value < self.ADULT_AGE:
             return [
-                f"Age {age_value:g} is under {self.ADULT_AGE}. "
-                "A passing readiness screen result is required."
+                "There is no training plan and no calorie target for anyone under 18."
             ]
         return []
 
@@ -150,11 +149,6 @@ class PlanValidator:
             return ValidationResult(valid=False, errors=[str(e)])
 
         age_errors = self._age_policy_errors(age_value, readiness_result)
-        if age_value < self.ADULT_AGE:
-            return ValidationResult(
-                valid=False,
-                errors=["Calorie targets are not set for anyone under 18."],
-            )
         if age_errors:
             return ValidationResult(valid=False, errors=age_errors)
         age = int(age_value)

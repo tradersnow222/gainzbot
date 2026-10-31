@@ -27,7 +27,7 @@ Human confirmation: you say a clear yes to the exact plan.
 
 The check-in checklist comes first. `red_flag_check.scan_check_in` has to pass before a plan is checked. `record_confirmation` has to cover that exact plan before anything is applied.
 
-Safety bounds: 1,500/1,200 kcal floors, 10% weekly load cap, 200 kcal max step, no calorie or protein targets under 18, under 13 rejected.
+Safety bounds: 1,500/1,200 kcal floors, 10% weekly load cap, 200 kcal max step, no calorie or protein targets under 18, no training plan under 18, under 13 rejected. Readiness does not pass anyone under 18, even with a doctor's clearance or parental consent.
 
 ## What is built
 
@@ -55,7 +55,7 @@ pytest -v
 
 This is not medical advice.
 
-The checks catch mistakes. The result signing key is in the public repo, and the speaker is a caller-supplied string. A deliberate fake can still get through.
+The checks catch mistakes. Each install writes a random seal key to data/seal.key, which is gitignored. The seal is tamper-evidence, not security. The speaker is a caller-supplied string. A deliberate fake can still get through.
 
 ## License
 

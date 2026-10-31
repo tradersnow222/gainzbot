@@ -50,7 +50,9 @@ def test_tests_limits_and_the_license_are_on_the_page():
     assert "pytest -v" in README
     assert "not medical advice" in README
     assert "catch mistakes" in README
-    assert "signing key is in the public repo" in README
+    assert "data/seal.key" in README
+    assert "tamper-evidence, not security" in README
+    assert "signing key is in the public repo" not in README
     assert "caller-supplied string" in README
     assert "MIT" in README
     assert "1,500/1,200 kcal floors" in README

@@ -3,6 +3,7 @@
 
 from datetime import datetime, timedelta, timezone
 import re
+import unicodedata
 
 
 PAR_Q = (
@@ -209,60 +210,151 @@ def _polarity(clause):
     return None
 
 
+def bare_all_no(text):
+    """True when 'all no' has only ordinary punctuation or whitespace after it.
+
+    None means this is not an all-no reply. False means all no was followed
+    by something else, so the reply is unclear and nothing is stored as no.
+    A negated 'not all no' is not this phrase.
+    """
+    if not isinstance(text, str):
+        return None
+    raw = text.strip().lower().replace("'", "")
+    match = None
+    for found in re.finditer(r"\ball\s+no\b", raw):
+        before = raw[:found.start()]
+        if re.search(r"\b(?:not|never|no)\s*$", before):
+            continue
+        match = found
+        break
+    if match is None:
+        return None
+    rest = raw[match.end():]
+    if "?" in rest or "？" in rest:
+        return False
+    trailing = True
+    for char in rest:
+        if char.isspace():
+            continue
+        if ord(char) < 128 and unicodedata.category(char).startswith("P"):
+            continue
+        trailing = False
+        break
+    if trailing:
+        return True
+    if raw[:match.start()].strip() == "":
+        return False
+    return None
+
+
+def read_par_q(text):
+    """('all_no', answers), ('unclear', {}), or ('items', answers)."""
+    kind = bare_all_no(text)
+    if kind is True:
+        return "all_no", {key: False for key, _question in PAR_Q}
+    if kind is False:
+        return "unclear", {}
+    return "items", _parse_par_q_items(text)
+
+
 def parse_par_q(text):
-    """Per-item yes or no. A negated 'all no' does not wipe the list."""
+    """Per-item yes or no. An impure 'all no' stores nothing."""
+    _status, found = read_par_q(text)
+    return found
+
+
+def _parse_par_q_items(text):
+    """Longest phrase wins. A shorter phrase cannot override an explicit yes."""
     if not isinstance(text, str):
         return {}
     raw = text.strip().lower().replace("'", "")
     folded = _fold(text)
     found = {}
-    negated = re.search(r"\b(?:not|never|isnt)\s+all\s+no\b", folded) is not None
-    if re.search(r"\ball\s+yes\b", folded):
-        found = {key: True for key, _question in PAR_Q}
-    elif re.search(r"\ball\s+no\b", folded) and not negated:
-        found = {key: False for key, _question in PAR_Q}
-    specific = (
-        ("chest_pain_at_rest", ("chest pain at rest", "chest pain while resting", "resting chest pain")),
-        ("chest_pain_during_activity", ("chest pain during activity", "chest pain during")),
-        ("loss_of_balance_dizziness", ("lose balance", "dizziness", "dizzy", "balance")),
-        ("loss_of_consciousness", ("lost consciousness", "loss of consciousness", "consciousness")),
-        ("bone_joint_problem_worsened_by_activity", ("bone or joint", "joint problem", "bone joint")),
-        ("currently_taking_medications", ("medication", "medications", "medicine")),
-        ("doctor_advised_supervised_only", ("supervision", "supervised")),
+    lengths = {}
+    if re.search(r"\ball\s+yes\b", folded) and bare_all_no(text) is None:
+        if re.fullmatch(r"all\s+yes[\s.!,;:]*", raw):
+            return {key: True for key, _question in PAR_Q}
+    phrases = (
+        ("chest_pain_at_rest", "chest pain while resting"),
+        ("chest_pain_at_rest", "resting chest pain"),
+        ("chest_pain_at_rest", "chest pain at rest"),
+        ("chest_pain_during_activity", "chest pain during activity"),
+        ("chest_pain_during_activity", "chest pain during"),
+        ("loss_of_balance_dizziness", "lose balance"),
+        ("loss_of_balance_dizziness", "dizziness"),
+        ("loss_of_balance_dizziness", "dizzy"),
+        ("loss_of_balance_dizziness", "balance"),
+        ("loss_of_consciousness", "lost consciousness"),
+        ("loss_of_consciousness", "loss of consciousness"),
+        ("loss_of_consciousness", "consciousness"),
+        ("bone_joint_problem_worsened_by_activity", "bone or joint"),
+        ("bone_joint_problem_worsened_by_activity", "joint problem"),
+        ("bone_joint_problem_worsened_by_activity", "bone joint"),
+        ("currently_taking_medications", "medications"),
+        ("currently_taking_medications", "medication"),
+        ("currently_taking_medications", "medicine"),
+        ("doctor_advised_supervised_only", "supervision"),
+        ("doctor_advised_supervised_only", "supervised"),
+        ("chest_pain_at_rest", "rest"),
     )
-    generic_chest = None
-    rest_polarity = None
+    ordered = sorted(phrases, key=lambda item: len(item[1]), reverse=True)
+
+    def apply(key, polarity, length):
+        previous = lengths.get(key)
+        if previous is None:
+            found[key] = polarity
+            lengths[key] = length
+            return
+        if length > previous:
+            found[key] = polarity
+            lengths[key] = length
+            return
+        if length < previous:
+            return
+        if found.get(key) is True and polarity is not True:
+            return
+        if polarity is True:
+            found[key] = True
+
     clauses = re.split(r"\s*(?:,|\band\b|\bbut\b)\s*", raw)
     for piece in clauses:
         clause = _fold(piece)
         polarity = _polarity(clause)
         if polarity is None:
             continue
-        for key, phrases in specific:
-            if any(phrase in clause for phrase in phrases):
-                found[key] = polarity
-        if re.search(r"\brest\b", clause) and "during" not in clause:
-            rest_polarity = polarity
+        matched_span = False
+        for key, phrase in ordered:
+            if phrase not in clause:
+                continue
+            apply(key, polarity, len(phrase))
+            matched_span = True
+            if phrase != "rest":
+                break
+        if matched_span:
+            continue
         if "chest pain" in clause and not any(
             phrase in clause
             for phrase in ("chest pain at rest", "chest pain while resting", "chest pain during")
         ):
-            generic_chest = polarity
-    if rest_polarity is not None:
-        found["chest_pain_at_rest"] = rest_polarity
-    if generic_chest is not None:
-        if "chest_pain_during_activity" not in found:
-            found["chest_pain_during_activity"] = generic_chest
-        if "chest_pain_at_rest" not in found:
-            found["chest_pain_at_rest"] = generic_chest
+            if "chest_pain_during_activity" not in found:
+                apply("chest_pain_during_activity", polarity, len("chest pain"))
+            # Shorter than "rest", so a later rest clause can split a generic
+            # chest-pain answer. "chest pain at rest" is longer than "rest".
+            if "chest_pain_at_rest" not in found:
+                apply("chest_pain_at_rest", polarity, len("rest") - 1)
     return found
 
 
 def _parse_explicit(state, reply):
     answers = state["answers"]
     folded = _fold(reply)
-    parsed = parse_par_q(reply)
+    status, parsed = read_par_q(reply)
+    if status == "unclear":
+        state["par_q_unclear"] = True
+        state["par_q_reply"] = reply if isinstance(reply, str) else folded
+        return
     if parsed:
+        state["par_q_unclear"] = False
         state["par_q"].update(parsed)
         state["par_q_reply"] = reply if isinstance(reply, str) else folded
     for goal in ("cut", "lose", "gain", "hold"):
@@ -418,10 +510,7 @@ def _check_in(state):
     if scanned.pause_plan:
         return scanned
     folded = _fold(reply)
-    negated = re.search(r"\b(?:not|never|isnt)\s+all\s+no\b", folded) is not None
-    explicit_no = folded in {"no", "none", "nope", "all no"} or (
-        re.search(r"\ball\s+no\b", folded) is not None and not negated
-    )
+    explicit_no = folded in {"no", "none", "nope"} or bare_all_no(reply) is True
     clear = (
         len(state["par_q"]) == len(PAR_Q)
         and all(value is False for value in state["par_q"].values())
@@ -503,7 +592,9 @@ def speak(state):
     if missing is not None:
         state["phase"] = "intake"
         state["asked"] = missing["id"]
-        if missing["id"] == "par_q" and (state["par_q"] or state.get("par_q_skipped")):
+        if missing["id"] == "par_q" and (
+            state["par_q"] or state.get("par_q_skipped") or state.get("par_q_unclear")
+        ):
             return _unclear_par_q(state)
         return missing["text"]
     state["phase"] = "confirm"
