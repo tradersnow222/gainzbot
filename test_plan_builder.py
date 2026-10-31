@@ -369,7 +369,18 @@ def test_a_skipped_or_partial_par_q_needs_readiness(tmp_path):
             "sport_hours": 0,
         },
     }
-    sessions = [{"date": "2026-10-26", "load": 100, "minutes": 45}]
+    sessions = [{
+        "date": "2026-10-26",
+        "load": 100,
+        "minutes": 45,
+        "exercises": [{
+            "name": "Squat",
+            "sets": 3,
+            "reps": 8,
+            "rest": "90 sec",
+            "effort": "Leave 3 reps in reserve",
+        }],
+    }]
     yes = recorded(week_to_confirm(adult, sessions))
     path = tmp_path / "adult.json"
     bare = builder.save(adult, yes, path, sessions, check_in_result=check_in)
@@ -729,6 +740,116 @@ def test_the_log_is_restored_when_the_rewrite_also_fails(tmp_path, monkeypatch):
     assert log_path.read_bytes() == before
     assert LogStore(log_path).data["confirmations"] == []
     assert LogStore(log_path).data["meals"][0]["calories"] == 500
+    assert not (tmp_path / "log.json.bak").exists()
+
+
+def _one_lift(sessions, **changes):
+    edited = json.loads(json.dumps(sessions))
+    exercise = {
+        "name": "Squat",
+        "sets": 3,
+        "reps": 8,
+        "rest": "90 sec",
+        "effort": "Leave 3 reps in reserve",
+    }
+    exercise.update(changes)
+    edited[0]["exercises"] = [exercise]
+    return edited
+
+
+def test_save_rejects_loose_exercises_and_caps_load_by_body_weight(tmp_path):
+    builder = PlanBuilder()
+    check_in = passing_check_in()
+    built = builder.propose(profile(), check_in)
+    path = tmp_path / "week.json"
+
+    def refused(sessions):
+        yes = recorded(week_to_confirm(built["plan"], sessions))
+        result = _save(builder, built, yes, path, sessions=sessions, check_in=check_in)
+        assert result["saved"] is False
+        assert not path.exists()
+        assert not (tmp_path / "log.json").exists()
+
+    base = _one_lift(built["sessions"])
+    missing = json.loads(json.dumps(built["sessions"]))
+    missing[0].pop("exercises")
+    refused(missing)
+    empty = json.loads(json.dumps(built["sessions"]))
+    empty[0]["exercises"] = []
+    refused(empty)
+    refused(_one_lift(built["sessions"], sets=True))
+    refused(_one_lift(built["sessions"], sets=6.9))
+    refused(_one_lift(built["sessions"], reps="100-20"))
+    refused(_one_lift(built["sessions"], reps="1e3"))
+    refused(_one_lift(built["sessions"], reps="-5"))
+    refused(_one_lift(built["sessions"], reps="20x5"))
+    refused(_one_lift(built["sessions"], reps=float("nan")))
+    refused(_one_lift(built["sessions"], load_kg=float("nan")))
+    refused(_one_lift(built["sessions"], load_kg="nan"))
+    refused(_one_lift(built["sessions"], load_kg=True))
+    refused(_one_lift(built["sessions"], weight_kg=40))
+    refused(_one_lift(built["sessions"], load=40))
+    refused(_one_lift(built["sessions"], effort="until you fail"))
+    refused(_one_lift(built["sessions"], effort="max effort RPE 10"))
+    refused(_one_lift(built["sessions"], effort="fail\u200b"))
+    legal = _one_lift(built["sessions"], load_kg=80)
+    yes = recorded(week_to_confirm(built["plan"], legal))
+    assert _save(builder, built, yes, path, sessions=legal, check_in=check_in)["saved"] is True
+    over = _one_lift(built["sessions"], load_kg=81)
+    over_yes = recorded(week_to_confirm(built["plan"], over))
+    over_path = tmp_path / "over.json"
+    assert _save(builder, built, over_yes, over_path, sessions=over, check_in=check_in)["saved"] is False
+    later = builder.propose(profile(experience="intermediate"), check_in)
+    heavy = _one_lift(later["sessions"], load_kg=120)
+    heavy_path = tmp_path / "heavy.json"
+    heavy_yes = recorded(week_to_confirm(later["plan"], heavy))
+    assert _save(builder, later, heavy_yes, heavy_path, sessions=heavy, check_in=check_in)["saved"] is True
+    too_heavy = _one_lift(later["sessions"], load_kg=121)
+    too_yes = recorded(week_to_confirm(later["plan"], too_heavy))
+    assert builder.save(
+        later["plan"], too_yes, tmp_path / "too.json", too_heavy, check_in_result=check_in,
+    )["saved"] is False
+    advanced = builder.propose(profile(experience="advanced"), check_in)
+    capped = _one_lift(advanced["sessions"], load_kg=160)
+    capped_yes = recorded(week_to_confirm(advanced["plan"], capped))
+    assert builder.save(
+        advanced["plan"], capped_yes, tmp_path / "cap.json", capped, check_in_result=check_in,
+    )["saved"] is True
+
+
+def test_a_crashed_save_is_recovered_on_the_next_load(tmp_path):
+    from log_store import LogStore
+
+    builder = PlanBuilder()
+    check_in = passing_check_in()
+    built = builder.propose(profile(goal="cut"), check_in)
+    path = tmp_path / "week.json"
+    yes = recorded(built["confirm"])
+    assert _save(builder, built, yes, path, check_in=check_in)["saved"] is True
+    log_path = tmp_path / "log.json"
+    assert not (tmp_path / "log.json.bak").exists()
+    saved = log_path.read_bytes()
+    week = json.loads(path.read_text(encoding="utf-8"))
+    record_id = week["confirmation"]["record_id"]
+    crashed = json.loads(saved.decode("utf-8"))
+    crashed["confirmations"].append({
+        "record_id": "crashed-yes",
+        "date": "2026-10-31T00:00:00Z",
+        "confirmed": True,
+        "quoted_words": "yes",
+        "speaker": "user",
+        "plan_hash": "abc",
+    })
+    (tmp_path / "log.json.bak").write_bytes(saved)
+    log_path.write_text(json.dumps(crashed) + "\n", encoding="utf-8")
+    restored = LogStore(log_path)
+    assert restored.data["confirmations"]
+    assert all(row.get("record_id") != "crashed-yes" for row in restored.data["confirmations"])
+    assert not (tmp_path / "log.json.bak").exists()
+    assert json.loads(path.read_text(encoding="utf-8"))["confirmation"]["record_id"] == record_id
+    (tmp_path / "log.json.bak").write_bytes(b'{"confirmations": []}\n')
+    kept = LogStore(log_path)
+    assert any(row.get("record_id") == record_id for row in kept.data["confirmations"])
     assert not (tmp_path / "log.json.bak").exists()
 
 

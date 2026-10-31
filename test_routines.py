@@ -47,6 +47,10 @@ def test_a_picked_routine_and_time_is_the_yes():
     assert enable("weekly_review", "stop texting me at night")["enabled"] is False
     assert enable("daily_checkin", "never, 3am is fine lol")["enabled"] is False
     assert enable("weekly_review", "i'll think about it tonight")["enabled"] is False
+    assert enable("weekly_review", "sunday unless I'm busy")["enabled"] is False
+    assert enable("weekly_review", "weekly review on sunday unless I'm busy")["enabled"] is False
+    assert enable("weekly_review", "weekly review at 25:99")["enabled"] is False
+    assert enable("daily_checkin", "daily check-in at 25:99")["enabled"] is False
 
 
 def test_the_guide_lists_each_routine_as_opt_in():

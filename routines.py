@@ -18,18 +18,36 @@ _CLOCK = re.compile(
 )
 _HEDGE = re.compile(
     r"\b(?:no|not|never|stop|later|maybe|sure|whatever|nah|nope|"
-    r"don't|dont|won't|wont|can't|cant|think|guess)\b"
+    r"don't|dont|won't|wont|can't|cant|think|guess|"
+    r"unless|although|though|but|except|if|when|busy)\b"
 )
+_CLOCK_TIME = re.compile(r"\b(\d{1,2}):(\d{2})\b")
+_CLOCK_AMPM = re.compile(r"\b(\d{1,2})\s*(am|pm)\b")
+_CLOCK_HOUR = re.compile(r"\b(\d{1,2})\b")
+
+
+def _real_clock(text):
+    """False when a written time cannot exist, such as 25:99."""
+    for hour, minute in _CLOCK_TIME.findall(text):
+        if int(hour) > 23 or int(minute) > 59:
+            return False
+    for hour, _marker in _CLOCK_AMPM.findall(text):
+        if not 1 <= int(hour) <= 12:
+            return False
+    for hour in _CLOCK_HOUR.findall(text):
+        if int(hour) > 23:
+            return False
+    return True
 
 
 def _opted_in(choice, reply, item):
-    """A plain yes, or this routine's name together with a time."""
+    """A plain yes, or this routine's name together with a real time."""
     if not isinstance(reply, str):
         return False
     text = " ".join(reply.lower().split())
     if text in _YES:
         return True
-    if _HEDGE.search(text):
+    if _HEDGE.search(text) or not _real_clock(text):
         return False
     title = item["title"].lower()
     named = title in text or choice.replace("_", " ") in text

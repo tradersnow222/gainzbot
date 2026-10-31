@@ -7,13 +7,15 @@ one exact plan version. Any later edit needs a new confirmation.
 """
 
 from dataclasses import dataclass, field
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from typing import Dict, List, Optional
 import hashlib
+import hmac
 import json
 import os
 import re
 import sys
+import unicodedata
 import uuid
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
@@ -38,16 +40,35 @@ def hash_plan(plan) -> str:
     return hashlib.sha256(payload.encode("utf-8")).hexdigest()
 
 
+# Emoji that may sit beside a bare yes. Every other symbol stays and refuses.
+_ALLOWED_EMOJI = frozenset("👍💪🔥✅")
+_CLOCK_SKEW = timedelta(minutes=5)
+_CONFIRM_SECRET = b"gainzbot-record-confirmation-v1"
+
+
 def normalize_reply(reply: str) -> str:
-    """Fold a reply for the clear-yes check. The stored quote stays exact."""
+    """Fold a reply for the clear-yes check. The stored quote stays exact.
+
+    Only ASCII punctuation other than '?', whitespace, and Unicode format
+    characters are removed. Letters from other scripts, digits, marks, and
+    symbols stay, so they cannot vanish into a bare yes.
+    """
     text = InputValidator.normalize_unicode(reply).lower().strip()
     if len(text) >= 2 and text[0] == text[-1] and text[0] in {"'", '"'}:
         text = text[1:-1].strip()
-    text = re.sub(r"[^a-z0-9'\s]", " ", text)
-    return re.sub(r"\s+", " ", text).strip()
+    kept = []
+    for ch in text:
+        category = unicodedata.category(ch)
+        if category == "Cf" or ch.isspace():
+            kept.append(" ")
+            continue
+        if ch != "?" and ord(ch) < 128 and category.startswith("P"):
+            continue
+        kept.append(ch)
+    return re.sub(r"\s+", " ", "".join(kept)).strip()
 
 
-# Exact phrases only. Punctuation and emoji fold away. Any other word refuses.
+# Exact phrases only. Allowed emoji may sit beside them. Anything else refuses.
 _BARE_YES = CLEAR_YES | {
     "yep",
     "yeah",
@@ -57,15 +78,28 @@ _BARE_YES = CLEAR_YES | {
 }
 
 
+def _has_format_character(reply: str) -> bool:
+    return any(unicodedata.category(ch) == "Cf" for ch in reply)
+
+
 def is_clear_yes(reply) -> bool:
-    """True only for a bare yes, with nothing after it but punctuation or emoji.
+    """True only for a bare yes, plus ASCII punctuation other than '?' or the allowed emoji.
 
     Allowed words: yes, yep, yeah, confirm, confirmed, lock it in,
     and the fixed lines in CLEAR_YES such as 'I confirm this plan'.
+    A question mark, a format character, another script, or any other
+    symbol refuses the reply.
     """
     if not isinstance(reply, str) or not reply.strip():
         return False
-    return normalize_reply(reply) in _BARE_YES
+    if "?" in reply or "？" in reply or _has_format_character(reply):
+        return False
+    folded = normalize_reply(reply)
+    if "?" in folded:
+        return False
+    stripped = "".join(ch for ch in folded if ch not in _ALLOWED_EMOJI)
+    stripped = re.sub(r"\s+", " ", stripped).strip()
+    return stripped in _BARE_YES
 
 
 def reply_pause(reply):
@@ -83,6 +117,59 @@ def new_record_id() -> str:
     return str(uuid.uuid4())
 
 
+def _confirmation_payload(record) -> str:
+    body = {
+        "confirmed": record.confirmed is True,
+        "plan_hash": record.plan_hash if isinstance(record.plan_hash, str) else "",
+        "quoted_words": record.quoted_words if isinstance(record.quoted_words, str) else "",
+        "record_id": record.record_id if isinstance(record.record_id, str) else "",
+        "speaker": record.speaker if isinstance(record.speaker, str) else "",
+        "timestamp": record.timestamp if isinstance(record.timestamp, str) else "",
+    }
+    return json.dumps(body, sort_keys=True, separators=(",", ":"), ensure_ascii=True)
+
+
+def _confirmation_seal(record) -> str:
+    return hmac.new(
+        _CONFIRM_SECRET,
+        _confirmation_payload(record).encode("utf-8"),
+        hashlib.sha256,
+    ).hexdigest()
+
+
+def confirmation_seal_matches(record) -> bool:
+    """True only when record_confirmation set the marker on this exact record."""
+    if not isinstance(record, ConfirmationRecord):
+        return False
+    seal = record.issuer_seal if isinstance(record.issuer_seal, str) else ""
+    if not seal:
+        return False
+    expected = _confirmation_seal(record)
+    if len(seal) != len(expected):
+        return False
+    return hmac.compare_digest(seal, expected)
+
+
+def timestamp_is_current(stamp, now=None) -> bool:
+    """True when the stamp is UTC Z and not past a small clock skew."""
+    if not isinstance(stamp, str):
+        return False
+    try:
+        parsed = datetime.strptime(stamp, "%Y-%m-%dT%H:%M:%SZ").replace(tzinfo=timezone.utc)
+    except ValueError:
+        return False
+    current = now if now is not None else datetime.now(timezone.utc)
+    if current.tzinfo is None:
+        current = current.replace(tzinfo=timezone.utc)
+    return parsed <= current + _CLOCK_SKEW
+
+
+def _issue(record):
+    """Mark a record this module just built. A copy with edited fields will not match."""
+    record.issuer_seal = _confirmation_seal(record)
+    return record
+
+
 @dataclass
 class ConfirmationRecord:
     """One confirmation attempt. confirmed is true only when every check passed."""
@@ -94,6 +181,7 @@ class ConfirmationRecord:
     errors: List[str]
     record_id: str = field(default_factory=new_record_id)
     timestamp: str = ""
+    issuer_seal: str = ""
 
     def to_dict(self) -> Dict:
         return {
@@ -105,6 +193,7 @@ class ConfirmationRecord:
             "errors": self.errors,
             "record_id": self.record_id,
             "timestamp": self.timestamp,
+            "issuer_seal": self.issuer_seal,
         }
 
 
@@ -167,7 +256,7 @@ class ConfirmationRecorder:
 
         stamp = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
         if errors:
-            return ConfirmationRecord(
+            return _issue(ConfirmationRecord(
                 confirmed=False,
                 plan_hash=plan_hash,
                 quoted_words=quoted,
@@ -175,9 +264,9 @@ class ConfirmationRecorder:
                 message="Not confirmed. " + " ".join(errors),
                 errors=errors,
                 timestamp=stamp,
-            )
+            ))
 
-        return ConfirmationRecord(
+        return _issue(ConfirmationRecord(
             confirmed=True,
             plan_hash=plan_hash,
             quoted_words=reply,
@@ -185,11 +274,15 @@ class ConfirmationRecorder:
             message=f"Confirmed. Quoted words: {reply}",
             errors=[],
             timestamp=stamp,
-        )
+        ))
 
     def covers(self, record: Optional[ConfirmationRecord], plan) -> bool:
         """True when this record confirms this exact plan version."""
-        if record is None or not record.confirmed:
+        if not confirmation_seal_matches(record):
+            return False
+        if not timestamp_is_current(record.timestamp):
+            return False
+        if record.confirmed is not True:
             return False
         if not isinstance(plan, dict):
             return False

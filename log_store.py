@@ -28,6 +28,98 @@ def _blank():
     return {kind: [] for kind in KINDS}
 
 
+def _confirmation_ids(raw):
+    if not raw:
+        return set()
+    try:
+        data = json.loads(raw.decode("utf-8"))
+    except (UnicodeDecodeError, json.JSONDecodeError):
+        return set()
+    if not isinstance(data, dict):
+        return set()
+    found = set()
+    for row in data.get("confirmations") or []:
+        if isinstance(row, dict) and isinstance(row.get("record_id"), str):
+            found.add(row["record_id"])
+    return found
+
+
+def _week_landed(folder, new_ids):
+    """True when a week file in this folder already holds one of the new ids."""
+    if not new_ids or not folder or not os.path.isdir(folder):
+        return False
+    for name in os.listdir(folder):
+        if not name.endswith(".json") or name == "log.json":
+            continue
+        path = os.path.join(folder, name)
+        try:
+            with open(path, encoding="utf-8") as handle:
+                data = json.load(handle)
+        except (OSError, json.JSONDecodeError):
+            continue
+        if not isinstance(data, dict):
+            continue
+        confirmation = data.get("confirmation")
+        if isinstance(confirmation, dict) and confirmation.get("record_id") in new_ids:
+            return True
+    return False
+
+
+def _replace_bytes(path, raw):
+    folder = os.path.dirname(path)
+    if folder:
+        os.makedirs(folder, exist_ok=True)
+    temporary = path + ".tmp"
+    with open(temporary, "wb") as handle:
+        handle.write(raw)
+        handle.flush()
+        os.fsync(handle.fileno())
+    os.replace(temporary, path)
+
+
+def reconcile_log_backup(log_path):
+    """Finish a save that crashed between the log write and the week write.
+
+    The backup is removed when the week file already has the new confirmation.
+    Otherwise the log is put back from the backup before it is read.
+    """
+    if not isinstance(log_path, str) or not log_path:
+        return
+    backup_path = log_path + ".bak"
+    if not os.path.exists(backup_path):
+        return
+    try:
+        with open(backup_path, "rb") as handle:
+            backup_bytes = handle.read()
+        live_bytes = b""
+        if os.path.exists(log_path):
+            with open(log_path, "rb") as handle:
+                live_bytes = handle.read()
+    except OSError:
+        return
+    new_ids = _confirmation_ids(live_bytes) - _confirmation_ids(backup_bytes)
+    landed = _week_landed(os.path.dirname(log_path), new_ids)
+    try:
+        if landed or backup_bytes == live_bytes:
+            os.remove(backup_path)
+            return
+        if backup_bytes == b"":
+            if os.path.exists(log_path):
+                os.remove(log_path)
+            temporary = log_path + ".tmp"
+            if os.path.exists(temporary):
+                os.remove(temporary)
+            if os.path.exists(backup_path):
+                os.remove(backup_path)
+            return
+        _replace_bytes(log_path, backup_bytes)
+        with open(log_path, "rb") as handle:
+            if handle.read() == backup_bytes and os.path.exists(backup_path):
+                os.remove(backup_path)
+    except OSError:
+        return
+
+
 def _trusted_change(row, changes):
     """History only when this row is a record that covers the stored proposal."""
     proposal = row.get("proposal")
@@ -41,6 +133,9 @@ def _trusted_change(row, changes):
         return None
     from record_confirmation import ConfirmationRecord, ConfirmationRecorder
 
+    stamp = row.get("timestamp") if isinstance(row.get("timestamp"), str) else ""
+    if not stamp and isinstance(row.get("date"), str):
+        stamp = row["date"]
     record = ConfirmationRecord(
         confirmed=True,
         plan_hash=plan_hash,
@@ -49,6 +144,8 @@ def _trusted_change(row, changes):
         message=row.get("message") if isinstance(row.get("message"), str) else "",
         errors=row.get("errors") if isinstance(row.get("errors"), list) else [],
         record_id=record_id,
+        timestamp=stamp,
+        issuer_seal=row.get("issuer_seal") if isinstance(row.get("issuer_seal"), str) else "",
     )
     if not ConfirmationRecorder().covers(record, proposal):
         return None
@@ -230,6 +327,7 @@ class LogStore:
         return logs
 
     def _read(self):
+        reconcile_log_backup(self.path)
         if not os.path.exists(self.path):
             return _blank()
         try:

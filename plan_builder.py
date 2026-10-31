@@ -13,6 +13,7 @@ import json
 import math
 import os
 import re
+import unicodedata
 
 from guardrails.validate import InputValidator, ValidationError
 from plan_check import PlanValidator
@@ -59,8 +60,14 @@ _DOSE = {
 _MAX_EXERCISES = 8
 _MAX_SETS = 6
 _MAX_REPS = 20
-_MAX_LOAD_KG = 300
 _SECONDS_PER_REP = 4
+# Conservative load ceilings, as a multiple of body weight.
+_LOAD_MULTIPLE = {
+    "beginner": 1.0,
+    "intermediate": 1.5,
+    "advanced": 2.0,
+}
+_EXERCISE_KEYS = {"name", "sets", "reps", "rest", "effort", "load_kg"}
 _GYM = {
     "Full body": ("Back squat", "Bench press", "Barbell row", "Romanian deadlift", "Plank", "Farmer carry"),
     "Full body A": ("Back squat", "Bench press", "Barbell row", "Romanian deadlift", "Plank", "Farmer carry"),
@@ -223,38 +230,89 @@ def _is_duration(exercise):
     return isinstance(reps, str) and reps.strip().lower().endswith("min")
 
 
+def _whole_number(value):
+    """A real int. Bools, floats, and numeric strings are not counts."""
+    if isinstance(value, bool) or not isinstance(value, int):
+        return None
+    return value
+
+
+def _duration_minutes(reps):
+    if not isinstance(reps, str):
+        return None
+    match = re.fullmatch(r"(\d+)\s*min", reps.strip().lower())
+    if match is None:
+        return None
+    return int(match.group(1))
+
+
 def _high_reps(reps):
-    """The top of a rep range, or None when the text is not a rep count."""
-    if isinstance(reps, bool):
+    """A whole rep count, or the high end of a low-high range."""
+    counted = _whole_number(reps)
+    if counted is not None:
+        return counted
+    if not isinstance(reps, str):
         return None
-    if isinstance(reps, (int, float)):
-        return float(reps)
-    if not isinstance(reps, str) or not reps.strip():
+    match = re.fullmatch(r"(\d+)-(\d+)", reps.strip())
+    if match is None:
         return None
-    text = reps.strip().lower()
-    if "failure" in text:
+    low = int(match.group(1))
+    high = int(match.group(2))
+    if low < 1 or high < low:
         return None
-    if text.endswith("min"):
+    return high
+
+
+def _fold_cue(value):
+    if not isinstance(value, str):
+        return ""
+    text = unicodedata.normalize("NFKC", value)
+    text = "".join(ch for ch in text if unicodedata.category(ch) != "Cf")
+    return text.lower()
+
+
+def _to_failure(exercise):
+    folded = _fold_cue(exercise.get("reps")) + " " + _fold_cue(exercise.get("effort"))
+    if "fail" in folded or "max effort" in folded:
+        return True
+    return re.search(r"rpe\s*10", folded) is not None
+
+
+def _finite_load(value):
+    if isinstance(value, bool) or isinstance(value, str):
         return None
-    numbers = re.findall(r"\d+(?:\.\d+)?", text)
-    if not numbers:
+    if isinstance(value, int):
+        return float(value)
+    if isinstance(value, float) and math.isfinite(value):
+        return value
+    return None
+
+
+def _load_cap(sessions, user):
+    """Body weight times the most conservative experience named on the week."""
+    if not isinstance(user, dict):
         return None
-    return float(numbers[-1])
+    weight = _finite_load(user.get("weight_kg"))
+    if weight is None or weight <= 0:
+        return None
+    multiples = []
+    for row in sessions:
+        if not isinstance(row, dict):
+            continue
+        name = row.get("experience")
+        if isinstance(name, str) and name.strip().lower() in _LOAD_MULTIPLE:
+            multiples.append(_LOAD_MULTIPLE[name.strip().lower()])
+    multiple = min(multiples) if multiples else _LOAD_MULTIPLE["beginner"]
+    return weight * multiple
 
 
 def _block_minutes(exercise):
-    sets = exercise.get("sets")
-    try:
-        sets = int(sets)
-    except (TypeError, ValueError):
+    sets = _whole_number(exercise.get("sets"))
+    if sets is None:
         return None
-    if _is_duration(exercise):
-        text = exercise["reps"].strip().lower().replace("min", "").strip()
-        try:
-            work = float(text)
-        except ValueError:
-            return None
-        return work if sets <= 1 else None
+    duration = _duration_minutes(exercise.get("reps"))
+    if duration is not None:
+        return duration if sets == 1 else None
     reps = _high_reps(exercise.get("reps"))
     rest = _rest_minutes(exercise.get("rest"))
     if reps is None or rest is None or sets < 1:
@@ -295,11 +353,12 @@ def _fit_minutes(chosen, minutes):
     return chosen
 
 
-def _exercise_problem(sessions):
+def _exercise_problem(sessions, user=None):
     """A reason the exercises are outside the bounds, or None."""
+    cap = _load_cap(sessions, user)
     for row in sessions:
-        if "exercises" not in row:
-            continue
+        if not isinstance(row, dict):
+            return "Each session needs its exercises."
         exercises = row.get("exercises")
         if not isinstance(exercises, list) or not exercises:
             return "Each session needs its exercises."
@@ -308,38 +367,39 @@ def _exercise_problem(sessions):
         for exercise in exercises:
             if not isinstance(exercise, dict):
                 return "Each exercise has to be an object."
+            if any(key not in _EXERCISE_KEYS for key in exercise):
+                return "That exercise has a field the week does not use."
             name = exercise.get("name")
             if not isinstance(name, str) or not name.strip():
                 return "Each exercise needs a name."
-            try:
-                sets = int(exercise.get("sets"))
-            except (TypeError, ValueError):
-                return "Each exercise needs its sets."
+            if _to_failure(exercise):
+                return "Training to failure is outside the bounds."
+            sets = _whole_number(exercise.get("sets"))
+            if sets is None:
+                return "Sets have to be a whole number."
             if sets < 1 or sets > _MAX_SETS:
                 return "That many sets is outside the bounds."
-            text = " ".join(
-                str(exercise.get(key, "")) for key in ("reps", "effort")
-            ).lower()
-            if "failure" in text:
-                return "Training to failure is outside the bounds."
-            if not _is_duration(exercise):
+            if _duration_minutes(exercise.get("reps")) is None:
                 reps = _high_reps(exercise.get("reps"))
-                if reps is None or reps < 1 or reps > _MAX_REPS:
+                if reps is None:
+                    return "Reps have to be a whole number."
+                if reps < 1 or reps > _MAX_REPS:
                     return "Those reps are outside the bounds."
             if _rest_minutes(exercise.get("rest")) is None:
                 return "Each exercise needs a rest."
             if "load_kg" in exercise:
-                try:
-                    load_kg = float(exercise.get("load_kg"))
-                except (TypeError, ValueError):
-                    return "load_kg has to be a number."
-                if load_kg <= 0 or load_kg > _MAX_LOAD_KG:
+                load_kg = _finite_load(exercise.get("load_kg"))
+                if load_kg is None or load_kg <= 0:
+                    return "load_kg has to be a finite number."
+                if cap is None or load_kg > cap + 1e-9:
                     return "That load_kg is outside the bounds."
             if _block_minutes(exercise) is None:
                 return "Those exercises could not be checked."
         try:
             minutes = float(row.get("minutes"))
         except (TypeError, ValueError):
+            return "Each session needs its minutes."
+        if isinstance(minutes, float) and not math.isfinite(minutes):
             return "Each session needs its minutes."
         volume = session_volume(exercises)
         if volume is None or volume > minutes + 1e-6:
@@ -394,8 +454,77 @@ def _blank_log():
     return {kind: [] for kind in _LOG_KINDS}
 
 
+def _confirmation_ids(raw):
+    if not raw:
+        return set()
+    try:
+        data = json.loads(raw.decode("utf-8"))
+    except (UnicodeDecodeError, json.JSONDecodeError):
+        return set()
+    if not isinstance(data, dict):
+        return set()
+    found = set()
+    for row in data.get("confirmations") or []:
+        if isinstance(row, dict) and isinstance(row.get("record_id"), str):
+            found.add(row["record_id"])
+    return found
+
+
+def _week_landed(folder, new_ids):
+    if not new_ids or not folder or not os.path.isdir(folder):
+        return False
+    for name in os.listdir(folder):
+        if not name.endswith(".json") or name == "log.json":
+            continue
+        path = os.path.join(folder, name)
+        try:
+            with open(path, encoding="utf-8") as handle:
+                data = json.load(handle)
+        except (OSError, json.JSONDecodeError):
+            continue
+        if not isinstance(data, dict):
+            continue
+        confirmation = data.get("confirmation")
+        if isinstance(confirmation, dict) and confirmation.get("record_id") in new_ids:
+            return True
+    return False
+
+
+def _reconcile_backup(log_path):
+    """Put a crashed log back, or drop the backup once the week file has landed."""
+    backup_path = log_path + ".bak"
+    if not os.path.exists(backup_path):
+        return
+    try:
+        backup_bytes = _read_bytes(backup_path)
+        live_bytes = _read_bytes(log_path) if os.path.exists(log_path) else b""
+    except OSError:
+        return
+    new_ids = _confirmation_ids(live_bytes) - _confirmation_ids(backup_bytes)
+    landed = _week_landed(os.path.dirname(log_path), new_ids)
+    try:
+        if landed or backup_bytes == live_bytes:
+            os.remove(backup_path)
+            return
+        if backup_bytes == b"":
+            if os.path.exists(log_path):
+                os.remove(log_path)
+            temporary = log_path + ".tmp"
+            if os.path.exists(temporary):
+                os.remove(temporary)
+            if os.path.exists(backup_path):
+                os.remove(backup_path)
+            return
+        _write_bytes(log_path, backup_bytes)
+        if _read_bytes(log_path) == backup_bytes and os.path.exists(backup_path):
+            os.remove(backup_path)
+    except OSError:
+        return
+
+
 def _read_log(path):
     """The user log beside the week file. A bad file is refused, not rebuilt."""
+    _reconcile_backup(path)
     if not os.path.exists(path):
         return _blank_log()
     try:
@@ -494,6 +623,7 @@ class PlanBuilder:
                 "minutes": shown_minutes,
                 "equipment": equipment,
                 "sport": sport,
+                "experience": experience,
                 "exercises": exercises,
             }
             if not exercises:
@@ -501,7 +631,7 @@ class PlanBuilder:
             if note:
                 row["note"] = note
             sessions.append(row)
-        problem = _exercise_problem(sessions)
+        problem = _exercise_problem(sessions, user if isinstance(user, dict) else None)
         if problem:
             return self._no(problem)
         training = {
@@ -589,7 +719,7 @@ class PlanBuilder:
             confirmation, week_to_confirm(plan, sessions)
         ):
             return self._saved_no("This week needs record_confirmation before it is saved.")
-        problem = _exercise_problem(sessions)
+        problem = _exercise_problem(sessions, plan.get("user") if isinstance(plan.get("user"), dict) else None)
         if problem:
             return self._saved_no(problem)
         target = os.fspath(path)
@@ -674,6 +804,8 @@ class PlanBuilder:
             "quoted_words": confirmation.quoted_words,
             "speaker": confirmation.speaker,
             "date": stamp,
+            "timestamp": confirmation.timestamp,
+            "issuer_seal": confirmation.issuer_seal,
             "confirmed": True,
             "message": confirmation.message,
         })
@@ -682,6 +814,8 @@ class PlanBuilder:
                 continue
             loaded_log["confirmations"].append({
                 "date": stamp,
+                "timestamp": confirmation.timestamp,
+                "issuer_seal": confirmation.issuer_seal,
                 "confirmed": True,
                 "changes": {key: proposal["changes"][key]},
                 "proposal": proposal,
@@ -690,14 +824,14 @@ class PlanBuilder:
                 "quoted_words": confirmation.quoted_words,
                 "speaker": confirmation.speaker,
             })
-        original_bytes = None
+        original_bytes = b""
         backup_path = log_path + ".bak"
-        if log_existed:
-            try:
+        try:
+            if log_existed:
                 original_bytes = _read_bytes(log_path)
-                _write_bytes(backup_path, original_bytes)
-            except OSError:
-                return self._saved_no("The log could not be saved.")
+            _write_bytes(backup_path, original_bytes)
+        except OSError:
+            return self._saved_no("The log could not be saved.")
         try:
             _write_json(log_path, loaded_log)
         except OSError:

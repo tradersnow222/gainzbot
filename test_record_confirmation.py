@@ -3,7 +3,16 @@
 
 import pytest
 from readiness_screen import ReadinessScreen
-from record_confirmation import ConfirmationRecorder, hash_plan, is_clear_yes, normalize_reply
+from datetime import datetime, timedelta, timezone
+
+from record_confirmation import (
+    ConfirmationRecord,
+    ConfirmationRecorder,
+    hash_plan,
+    is_clear_yes,
+    normalize_reply,
+    timestamp_is_current,
+)
 from red_flag_check import RedFlagChecker, RedFlagResult, is_passing_check_in
 from plan_check import PlanValidator
 
@@ -167,6 +176,9 @@ class TestClearYes:
         "yes.",
         "lock it in!",
         "yes 👍",
+        "yes 💪",
+        "yes 🔥",
+        "yes ✅",
     ])
     def test_bare_yes_words_are_accepted(self, reply):
         assert is_clear_yes(reply)
@@ -198,6 +210,18 @@ class TestClearYes:
         "maybe",
         "do it",
         "yes, what's for dinner?",
+        "yes, болит грудь",
+        "yes 胸が痛い",
+        "yes 我胸口疼",
+        "yes, ألم في الصدر",
+        "yes 😊 चक्कर आ रहा है",
+        "yes 🤕",
+        "yes 🚑",
+        "yes 🤮",
+        "yes 🫀💔",
+        "yes?",
+        "yes??",
+        "yes\u200b",
     ])
     def test_anything_past_a_bare_yes_is_refused(self, reply):
         assert not is_clear_yes(reply)
@@ -216,6 +240,31 @@ class TestClearYes:
         )
         assert record.confirmed is False
         assert scanned.message in record.message
+
+    def test_a_built_record_a_bumped_copy_and_a_future_stamp_do_not_cover(self):
+        forged = ConfirmationRecord(
+            confirmed=True,
+            plan_hash=hash_plan(ADULT_PLAN),
+            quoted_words="yes",
+            speaker="user",
+            message="Confirmed. Quoted words: yes",
+            errors=[],
+            timestamp="2099-01-01T00:00:00Z",
+        )
+        assert ConfirmationRecorder().covers(forged, ADULT_PLAN) is False
+        real = ConfirmationRecorder().record(ADULT_PLAN, "yes", "user", passing_check_in())
+        assert ConfirmationRecorder().covers(real, ADULT_PLAN) is True
+        real.record_id = "forged-id"
+        real.timestamp = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+        assert ConfirmationRecorder().covers(real, ADULT_PLAN) is False
+        future = ConfirmationRecorder().record(ADULT_PLAN, "yes", "user", passing_check_in())
+        future.timestamp = "2099-01-01T00:00:00Z"
+        assert ConfirmationRecorder().covers(future, ADULT_PLAN) is False
+        now = datetime(2026, 10, 31, 12, 0, tzinfo=timezone.utc)
+        assert timestamp_is_current(now.strftime("%Y-%m-%dT%H:%M:%SZ"), now)
+        assert timestamp_is_current((now + timedelta(minutes=4)).strftime("%Y-%m-%dT%H:%M:%SZ"), now)
+        assert timestamp_is_current((now + timedelta(minutes=6)).strftime("%Y-%m-%dT%H:%M:%SZ"), now) is False
+        assert timestamp_is_current("2099-01-01T00:00:00Z", now) is False
 
 
 class TestPlanCheckFollowUps:
