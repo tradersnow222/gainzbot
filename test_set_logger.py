@@ -26,6 +26,28 @@ def confirm(proposal):
     return ConfirmationRecorder().record(proposal, "yes", "user", passing_check_in())
 
 
+def _logged(weight):
+    log = SetLogger()
+    log.log_set("squat", weight, 8, "2026-10-28")
+    return log
+
+
+def _confirmed(load):
+    return [{
+        "date": "2026-10-21T00:00:00Z",
+        "confirmed": True,
+        "changes": {"load": load},
+    }]
+
+
+def _asks(result):
+    assert result["suggestion"] is None
+    assert result["proposal"] is None
+    assert "What load is confirmed?" in result["message"]
+    assert "150" not in result["message"]
+    assert "stays at this weight" not in result["message"]
+
+
 def history(load, as_of=AS_OF, hours_ago=7 * 24, confirmed=True):
     when = datetime(2026, 10, 29, tzinfo=timezone.utc) - timedelta(hours=hours_ago)
     if as_of != AS_OF:
@@ -80,15 +102,17 @@ class TestSuggestion:
         assert second["suggestion"]["weight"] != 121
         assert second["suggestion"]["weight"] != 133.1
 
-    def test_logging_100_then_110_with_nothing_confirmed_does_not_suggest_121_or_133_1(self):
+    def test_logging_100_then_121_then_133_1_with_no_history_asks(self):
         log = SetLogger()
         log.log_set("squat", 100, 8, "2026-10-30")
-        log.log_set("squat", 110, 8, "2026-10-30")
+        log.log_set("squat", 121, 8, "2026-10-30")
+        log.log_set("squat", 133.1, 8, "2026-10-30")
         result = log.suggest_next("squat", as_of=AS_OF)
-        assert result["suggestion"]["weight"] == 110
-        assert result["suggestion"]["weight"] != 121
-        assert result["suggestion"]["weight"] != 133.1
+        assert result["suggestion"] is None
         assert result["proposal"] is None
+        assert "What load is confirmed?" in result["message"]
+        assert "133.1" not in result["message"]
+        assert "stays at this weight" not in result["message"]
 
     def test_a_confirmed_load_under_7_days_does_not_move_up(self):
         log = SetLogger()
@@ -111,6 +135,36 @@ class TestSuggestion:
         assert result["proposal"] is None
         assert "150" not in result["message"]
         assert "stays at this weight" in result["message"]
+
+    def test_a_missing_as_of_asks_instead_of_repeating_150(self):
+        result = _logged(150).suggest_next("squat", _confirmed(100))
+        _asks(result)
+
+    def test_a_date_only_as_of_asks_instead_of_repeating_150(self):
+        result = _logged(150).suggest_next("squat", _confirmed(100), "2026-10-30")
+        _asks(result)
+
+    def test_a_us_date_as_of_asks_instead_of_repeating_150(self):
+        result = _logged(150).suggest_next("squat", _confirmed(100), "10/30/2026")
+        _asks(result)
+
+    def test_a_date_only_history_entry_asks_instead_of_repeating_150(self):
+        history = [{
+            "date": "2026-10-20",
+            "confirmed": True,
+            "changes": {"load": 100},
+        }]
+        result = _logged(150).suggest_next("squat", history, AS_OF)
+        _asks(result)
+
+    def test_a_string_history_asks_instead_of_repeating_150(self):
+        result = _logged(150).suggest_next("squat", "confirmed 100", AS_OF)
+        _asks(result)
+
+    def test_one_bad_history_row_asks_instead_of_repeating_150(self):
+        history = _confirmed(100) + [{"nope": True}]
+        result = _logged(150).suggest_next("squat", history, AS_OF)
+        _asks(result)
 
     def test_a_short_set_does_not_jump_the_weight(self):
         log = SetLogger()

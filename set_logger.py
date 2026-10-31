@@ -3,10 +3,11 @@
 Log each set and suggest the next one.
 
 The baseline is the last confirmed load from the shared history reader.
-Nothing moves up when that load is missing or younger than 7 times 24 hours
-in UTC. A logged weight above that confirmed load stays at the confirmed
-value. A rise is at most 10 percent of that confirmed load, and apply does
-nothing until record_confirmation covers that exact proposal.
+When that load cannot be read, there is no weight suggestion. The last
+logged weight is not repeated. A logged weight above a readable confirmed
+load stays at that confirmed value until it is 7 times 24 hours old in UTC.
+A rise is at most 10 percent of that confirmed load, and apply does nothing
+until record_confirmation covers that exact proposal.
 """
 
 from datetime import date, datetime
@@ -87,12 +88,18 @@ class SetLogger:
             return self._no("Log a set first.")
         last_weight, last_reps = self._last(name, done)
         found = last_confirmed_change(confirmed_changes, "load", as_of)
-        confirmed = found.value if found.ok else None
-        baseline = confirmed if confirmed is not None and seven_days_old(found.at, as_of) else None
-        if confirmed is not None and baseline is None:
+        if not found.ok or found.value is None:
+            return {
+                "ok": True,
+                "applied": False,
+                "suggestion": None,
+                "proposal": None,
+                "message": "No confirmed load can be read. What load is confirmed?",
+            }
+        confirmed = found.value
+        baseline = confirmed if seven_days_old(found.at, as_of) else None
+        if baseline is None:
             weight = min(last_weight, confirmed)
-        elif baseline is None:
-            weight = last_weight
         else:
             cap = baseline * (1 + PlanValidator.MAX_TRAINING_LOAD_INCREASE_PERCENT / 100)
             if last_reps >= 8 and last_weight < cap:
