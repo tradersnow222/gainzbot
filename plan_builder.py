@@ -215,9 +215,16 @@ def _loads_back(name):
 
 
 def _loads_shoulder(name):
-    if "overhead" in name or "pike" in name or "dip" in name:
+    """No pressing that week. Rows and leg work stay."""
+    if "leg press" in name:
+        return False
+    if "chest-supported" in name or "chest supported" in name:
+        return False
+    if any(part in name for part in (
+        "overhead", "pike", "dip", "push-up", "pushup", "bench", "shoulder press",
+    )):
         return True
-    return "shoulder press" in name
+    return "press" in name
 
 
 def _loads_hamstring(name):
@@ -228,12 +235,32 @@ def _loads_wrist(name):
     return any(part in name for part in ("push-up", "pushup", "bench", "dip"))
 
 
+def _loads_elbow(name):
+    return "curl" in name or "skull" in name or "triceps" in name
+
+
+def _loads_hip(name):
+    return _loads_knee(name)
+
+
+def _loads_ankle(name):
+    return "lunge" in name or "jump" in name
+
+
+def _loads_neck(name):
+    if "shrug" in name:
+        return True
+    return "overhead" in name or "pike" in name or "shoulder press" in name
+
+
 def _blocks_exercise(name, injuries):
     text = _injury_text(injuries)
     if not text:
         return False
     folded = name.lower()
     if "knee" in text and _loads_knee(folded):
+        return True
+    if "hip" in text and _loads_hip(folded):
         return True
     if "back" in text and _loads_back(folded):
         return True
@@ -242,6 +269,12 @@ def _blocks_exercise(name, injuries):
     if "hamstring" in text and _loads_hamstring(folded):
         return True
     if "wrist" in text and _loads_wrist(folded):
+        return True
+    if "elbow" in text and _loads_elbow(folded):
+        return True
+    if "ankle" in text and _loads_ankle(folded):
+        return True
+    if "neck" in text and _loads_neck(folded):
         return True
     return False
 
@@ -253,9 +286,11 @@ def _injury_replacements(injuries):
     names = []
     if "back" in text:
         names.extend(("Chest-supported row", "Glute bridge"))
-    if "knee" in text:
+    if "knee" in text or "hip" in text:
         names.extend(("Box squat to a high box", "Glute bridge"))
-    if "hamstring" in text and "Glute bridge" not in names:
+    if ("hamstring" in text or "ankle" in text or "elbow" in text or "neck" in text or "shoulder" in text) and (
+        "Glute bridge" not in names
+    ):
         names.append("Glute bridge")
     return names
 
@@ -490,6 +525,8 @@ def _exercises(equipment, experience, minutes, sport, injuries, index, day_count
             continue
         if name not in kept:
             kept.append(name)
+    if not kept:
+        kept = ["Glute bridge"]
     if minutes <= 30:
         count = 3
     elif minutes <= 45:
@@ -509,6 +546,8 @@ def _exercises(equipment, experience, minutes, sport, injuries, index, day_count
             "effort": effort,
         })
     sport_row = _sport_exercise(sport)
+    if sport_row is not None and "ankle" in _injury_text(injuries) and "run" in sport_row["name"].lower():
+        sport_row = None
     if sport_row is not None:
         chosen.append(sport_row)
     chosen = _fit_minutes(chosen, minutes)

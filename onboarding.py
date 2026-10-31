@@ -48,6 +48,7 @@ _SETUP_WORDS = ("clone", "pip", "pytest", "release_check", "install", "git ")
 HAPPY_PATH = (
     "hello",
     "hold, male, age 30, 80 kg, 180 cm, no injuries",
+    "30",
     "ok",
     "all no",
     "yes",
@@ -313,40 +314,44 @@ def _training_weekdays(folded):
     return found
 
 
-def _paired_session_minutes(folded):
-    """Session length from '30 min' next to days per week, not a parkrun time.
-
-    '3 days 30 min, parkrun saturdays' is a 30 minute session. Only an explicit
-    'parkrun is about 32 min' is the parkrun time, and that number is ignored.
-    """
-    if re.search(r"\b[1-7]\s+days?\b", folded) is None:
-        return None
+def _without_parkrun_minutes(folded):
+    """Drop a parkrun duration. Leave a session length that only sits near parkrun."""
     masked = re.sub(
-        r"\bparkrun\s+is\s+about\s+\d+(?:\.\d+)?\s+min(?:ute)?s?\b",
+        r"\bparkrun\b(?:\s+(?:is|about|a|the|my|in|takes|for|around))*"
+        r"\s+\d+(?:\.\d+)?\s+min(?:ute)?s?\b",
         " ",
         folded,
     )
-    match = re.search(r"\b(\d{2,3})\s+min(?:ute)?s?\b", masked)
+    if len(re.findall(r"\b\d+(?:\.\d+)?\s+min(?:ute)?s?\b", masked)) > 1:
+        masked = re.sub(r"\b\d+(?:\.\d+)?\s+min(?:ute)?s?\s+parkrun\b", " ", masked)
+    return masked
+
+
+def _paired_session_minutes(reply):
+    """Session length next to days per week. A parkrun duration is never it.
+
+    'parkrun is about 32 min' and '32 min parkrun' are the parkrun time, in
+    either order. '3 days 30 min, parkrun saturdays' keeps 30.
+    """
+    if not isinstance(reply, str):
+        return None
+    found = None
+    for piece in re.split(r"[,.!?;]", reply):
+        folded = _fold(piece)
+        if re.search(r"\b[1-7]\s+days?\b", folded) is None:
+            continue
+        match = re.search(r"\b(\d{2,3})\s+min(?:ute)?s?\b", _without_parkrun_minutes(folded))
+        if match is not None:
+            found = match.group(1)
+    if found is not None:
+        return found
+    folded = _fold(reply)
+    if re.search(r"\b[1-7]\s+days?\b", folded) is None:
+        return None
+    match = re.search(r"\b(\d{2,3})\s+min(?:ute)?s?\b", _without_parkrun_minutes(folded))
     if match is None:
         return None
     return match.group(1)
-
-
-_AGE_CUE = (
-    re.compile(r"\bage\s+(\d{1,3})\b"),
-    re.compile(r"\b(\d{1,3})\s*yo\b"),
-    re.compile(r"\b(\d{1,3})\s+y\s+o\b"),
-    re.compile(r"\b(\d{1,3})\s+years?\s+old\b"),
-    re.compile(r"\b(?:im|i am)\s+actually\s+(\d{1,3})\b"),
-    re.compile(
-        r"\b(?:im|i am)\s+(\d{1,3})\b"
-        r"(?!\s*(?:kg|lb|lbs|pounds?|cm|mins?|minutes?|days?|reps?|sets?|sessions?|times?)\b)"
-    ),
-)
-_OTHER_PERSON = (
-    "mom", "dad", "wife", "husband", "son", "daughter", "friend",
-    "partner", "brother", "sister", "kid",
-)
 
 
 def _school_age_hint(folded):
@@ -366,38 +371,63 @@ def _school_age_hint(folded):
     return False
 
 
-def _target_from_want(folded):
-    """'want N' is a target weight only after a current body weight in this message.
+def _as_kg(value, unit):
+    number = float(value)
+    if unit and (unit.startswith("lb") or unit.startswith("pound")):
+        number *= 0.45359237
+    return number
 
-    N has to be from 30 to 300 kg. The current weight, with a unit, has to
-    come before 'want' or 'target'. N is not a target when days, minutes,
-    sets, reps, sessions, or times follow it. A weight that shows up only
-    after 'want', or only in an earlier message, does not count. None means
-    the message did not name a target. 'ask' means ask instead of guessing.
-    """
-    match = re.search(r"\b(?:want|target)\s+(\d+(?:\.\d+)?)\b", folded)
+
+def _kg_text(number):
+    shown = round(float(number) + 1e-9, 1)
+    if abs(shown - round(shown)) < 1e-9:
+        return str(int(round(shown)))
+    return f"{shown:.1f}"
+
+
+def _weight_kg_in(text):
+    cleaned = re.sub(
+        r"\b\d+(?:\.\d+)?\s+to\s+\d+(?:\.\d+)?\s*(?:kg|lb|lbs|pounds?)\b",
+        " ",
+        text,
+    )
+    match = re.search(r"\b(\d+(?:\.\d+)?)\s*(kg|lb|lbs|pounds?)\b", cleaned)
     if match is None:
         return None
-    raw = match.group(1)
+    return _as_kg(match.group(1), match.group(2))
+
+
+def _target_from_want(folded):
+    """'want N' is a target only after a current weight, inside 60 to 140 percent.
+
+    Pounds are converted to kg. N has to land from 30 to 300 kg and within
+    60 to 140 percent of the current weight in this message. The current
+    weight has to come before 'want' or 'target'. Days, minutes, sets, reps,
+    sessions, or times after N are not a target. None means no target was
+    named. 'ask' means ask instead of guessing.
+    """
+    match = re.search(
+        r"\b(?:want|target)\s+(\d+(?:\.\d+)?)(?:\s*(kg|lb|lbs|pounds?))?\b",
+        folded,
+    )
+    if match is None:
+        return None
     after = folded[match.end():].strip()
     if re.match(r"(?:days?|mins?|minutes?|sets?|reps?|sessions?|times?)\b", after):
         return "ask"
-    value = float(raw)
+    value = _as_kg(match.group(1), match.group(2))
     if not _kg_in_range(value):
         return "ask"
-    prefix = re.sub(
-        r"\b\d+(?:\.\d+)?\s+to\s+\d+(?:\.\d+)?\s*(?:kg|lb|lbs|pounds?)\b",
-        " ",
-        folded[:match.start()],
-    )
-    if re.search(r"\b\d+(?:\.\d+)?\s*(?:kg|lb|lbs|pounds?)\b", prefix) is None:
+    current = _weight_kg_in(folded[:match.start()])
+    if current is None or current <= 0:
         return "ask"
-    shown = raw[:-2] if raw.endswith(".0") else raw
-    return shown + " kg"
+    if value < current * 0.6 - 1e-6 or value > current * 1.4 + 1e-6:
+        return "ask"
+    return _kg_text(value) + " kg"
 
 
 _SAFE_ALL_NO_WORDS = {
-    "is", "a", "the", "my", "i", "also", "and",
+    "is", "a", "the", "i", "and",
     "parkrun", "run", "running", "saturday", "saturdays", "sat",
     "min", "mins", "minute", "minutes", "well", "thanks", "lol", "honestly",
     "ok", "okay",
@@ -764,14 +794,6 @@ def _parse_explicit(state, reply):
             if re.search(rf"\b{goal}\b", folded):
                 answers["goal"] = goal
                 break
-    age = _intake_age(folded)
-    if age is not None and "age" not in answers:
-        answers["age"] = str(age)
-    elif "age" not in answers and _should_ask_age(folded):
-        state["phase"] = "age"
-        state["need_age"] = True
-        state["awaiting"] = None
-        state["error"] = _AGE_ASK
     height = re.search(r"\b(\d{2,3})\s*cm\b", folded)
     if height:
         answers["height"] = height.group(1) + " cm"
@@ -804,7 +826,7 @@ def _parse_explicit(state, reply):
     elif named_days:
         answers["training_days"] = str(len(named_days))
         answers["days"] = _dates(len(named_days), named_days)
-    minutes = _paired_session_minutes(folded)
+    minutes = _paired_session_minutes(reply)
     if minutes:
         answers["minutes"] = minutes
     for equipment in ("full gym", "bodyweight", "dumbbells", "barbell", "none"):
@@ -1029,18 +1051,13 @@ def _clear_proposal(state):
 
 
 def _reply_age(reply):
-    """The age question accepts a bare number, or that same number with an age cue."""
-    number = _typed_int(reply)
-    if number is not None and 1 <= number <= 120:
-        return number
+    """Only a reply to the age question. A number, optionally yo or years old."""
     folded = _fold(reply)
     for pattern in (
-        r"age\s+(\d{1,3})",
+        r"(\d{1,3})\s+years\s+old",
+        r"(\d{1,3})\s+years",
         r"(\d{1,3})\s*yo",
-        r"(\d{1,3})\s+y\s+o",
-        r"(\d{1,3})\s+years?\s+old",
-        r"(?:im|i am)\s+actually\s+(\d{1,3})",
-        r"(?:im|i am)\s+(\d{1,3})",
+        r"(\d{1,3})",
     ):
         match = re.fullmatch(pattern, folded)
         if match is None:
@@ -1049,6 +1066,41 @@ def _reply_age(reply):
         if 1 <= value <= 120:
             return value
     return None
+
+
+def _nonblocking_stat(folded):
+    """Height or a short duration. It is not an age, and it does not clear one."""
+    if re.fullmatch(r"(?:im|i am)\s+\d+\s+foots?", folded):
+        return True
+    if re.fullmatch(r"(?:im|i am)\s+\d+\s+weeks?", folded):
+        return True
+    return False
+
+
+def _age_correction(folded):
+    """A mention of age. It asks again. It does not store the number."""
+    if not folded or _nonblocking_stat(folded):
+        return False
+    if _school_age_hint(folded):
+        return True
+    if re.search(r"\bage\b", folded) and re.search(r"\b\d{1,3}\b", folded):
+        return True
+    if re.search(r"\b(?:im|i am)\s+actually\s+\d{1,3}\b", folded):
+        return True
+    if re.search(
+        r"\bactually\s+\d{1,3}\b(?!\s*(?:kg|lb|lbs|pounds?|cm|foots?|weeks?)\b)",
+        folded,
+    ):
+        return True
+    if re.search(r"\b(?:im|i am)\s+\d{1,3}\b", folded):
+        return True
+    return False
+
+
+def _clear_age(state):
+    state["answers"].pop("age", None)
+    state["need_age"] = True
+    _clear_proposal(state)
 
 
 def _take_age_number(state, reply):
@@ -1115,58 +1167,53 @@ def _take_weight_number(state, reply):
     return True
 
 
-def _intake_age(folded):
-    """An age only beside an explicit cue. A bare list number is not an age."""
-    found = []
-    for pattern in _AGE_CUE:
-        for match in pattern.finditer(folded):
-            value = int(match.group(1))
-            if 1 <= value <= 120:
-                found.append(value)
-    if len(set(found)) == 1:
-        return found[0]
-    return None
-
-
-def _should_ask_age(folded):
-    """A grade, a lift, another person, or a birth year. It is not a typed age."""
-    if _school_age_hint(folded):
-        return True
-    if re.search(r"\bpush\s*ups?\b", folded):
-        return True
-    if re.search(r"\bborn\b", folded):
-        return True
-    if re.search(r"\bclass\s+of\b", folded):
-        return True
-    person = "|".join(_OTHER_PERSON)
-    if re.search(rf"\b(?:{person})s?\b", folded) and re.search(r"\d", folded):
-        return True
-    if re.search(r"\b(?:bench|deadlift|squat)\b", folded) and re.search(r"\d", folded):
-        return True
-    return False
-
-
 _INJURY_AREAS = (
+    ("hip replacement", "hip"),
+    ("knee replacement", "knee"),
+    ("herniated disc", "back"),
+    ("bulging disc", "back"),
+    ("plantar fasciitis", "ankle"),
+    ("tennis elbow", "elbow"),
+    ("golfers elbow", "elbow"),
+    ("rotator cuff", "shoulder"),
+    ("torn acl", "knee"),
+    ("bad knees", "knee"),
+    ("sciatica", "back"),
+    ("meniscus", "knee"),
     ("lower back", "lower back"),
     ("low back", "lower back"),
+    ("hamstrings", "hamstring"),
     ("hamstring", "hamstring"),
+    ("shoulders", "shoulder"),
     ("shoulder", "shoulder"),
+    ("knees", "knee"),
     ("knee", "knee"),
+    ("ankles", "ankle"),
     ("ankle", "ankle"),
+    ("wrists", "wrist"),
     ("wrist", "wrist"),
+    ("elbows", "elbow"),
     ("elbow", "elbow"),
     ("neck", "neck"),
+    ("hips", "hip"),
     ("hip", "hip"),
+    ("acl", "knee"),
     ("back", "back"),
 )
+_INJURY_EMOJI = ("\U0001F9B5", "\U0001F915")
+_INJURY_ASK = "Which area is injured?"
+
+
+def _injury_emoji_only(reply):
+    """A lone injury emoji names no area. Ask which one."""
+    if not isinstance(reply, str):
+        return False
+    stripped = "".join(ch for ch in reply.strip() if not ch.isspace())
+    return bool(stripped) and all(ch in _INJURY_EMOJI for ch in stripped)
 
 
 def _stated_injury(folded):
-    """A named injury, or an explicit no. Ok, fine, and yes are not an answer."""
-    if re.search(r"\bno\s+injur(?:y|ies)\b", folded) or re.search(r"\binjur(?:y|ies)\s+none\b", folded):
-        return "none"
-    if folded in {"no", "none", "nope"}:
-        return "none"
+    """A named area wins over 'no injuries'. Ok, fine, and yes are not an answer."""
     found = []
     for phrase, label in _INJURY_AREAS:
         if not re.search(rf"\b{re.escape(phrase)}\b", folded):
@@ -1177,14 +1224,42 @@ def _stated_injury(folded):
             found.append(label)
     if found:
         return ", ".join(found)
-    for word in ("surgery", "sprain", "tear", "injury", "pain"):
+    for word in ("tweaked", "niggle", "sore", "surgery", "sprain", "tear", "injury", "pain"):
         if re.search(rf"\bno\s+{word}s?\b", folded):
             continue
         if word == "pain" and re.search(r"\bchest\s+pain\b", folded):
             continue
         if re.search(rf"\b{word}s?\b", folded):
             return word
+    if re.search(r"\bno\s+injur(?:y|ies)\b", folded) or re.search(r"\binjur(?:y|ies)\s+none\b", folded):
+        return "none"
+    if folded in {"no", "none", "nope"} or re.search(r"\binjuries\s+none\b", folded):
+        return "none"
     return None
+
+
+def _ask_which_area(state):
+    _clear_proposal(state)
+    state["phase"] = "intake"
+    state["awaiting"] = "injury"
+    state["confirmed"] = False
+    state["record"] = None
+    state["error"] = _INJURY_ASK
+
+
+def _take_injury_answer(state, reply):
+    if _injury_emoji_only(reply):
+        state["error"] = _INJURY_ASK
+        state["awaiting"] = "injury"
+        return
+    stated = _stated_injury(_fold(reply))
+    if stated is None:
+        state["error"] = _INJURY_ASK
+        state["awaiting"] = "injury"
+        return
+    state["answers"]["injuries"] = stated
+    state["awaiting"] = None
+    state["error"] = None
 
 
 def _injury_clause(injuries):
@@ -1207,21 +1282,52 @@ def _injury_clause(injuries):
     )
 
 
+def _note_age_correction(state, reply):
+    """A mention of age clears the stored number and asks again."""
+    if not _age_correction(_fold(reply)):
+        return False
+    _clear_age(state)
+    if state.get("error") == _WEIGHT_ASK:
+        return False
+    state["phase"] = "age"
+    state["awaiting"] = None
+    state["error"] = _AGE_ASK
+    return True
+
+
 def apply_reply(state, reply):
     state["error"] = None
     if hold_is_active():
         _adopt_hold(state)
         _handle_symptom(state, reply)
         return
+    if _injury_emoji_only(reply):
+        _ask_which_area(state)
+        return
+    from record_confirmation import reply_pause
+
+    paused = reply_pause(reply)
+    if paused is not None:
+        _hold_symptom(state, reply, paused)
+        return
     phase = state.get("phase")
     if phase == "symptom":
         _handle_symptom(state, reply)
         return
     if phase == "age":
+        if _age_correction(_fold(reply)) and _reply_age(reply) is None:
+            _clear_age(state)
+            state["phase"] = "age"
+            state["awaiting"] = None
+            state["error"] = _AGE_ASK
+            return
         _handle_age(state, reply)
         return
     if phase == "blocked":
         _handle_blocked(state, reply)
+        return
+    if state.get("awaiting") == "injury":
+        _take_injury_answer(state, reply)
         return
     folded = _fold(reply)
     if phase == "confirm" and _handle_confirm(state, reply):
@@ -1236,6 +1342,8 @@ def apply_reply(state, reply):
         _fill_group(state, state["asked"])
         return
     _parse_explicit(state, reply)
+    if _note_age_correction(state, reply):
+        return
     if state["phase"] == "confirm":
         _review_confirm_edit(state, reply)
 
@@ -1636,10 +1744,13 @@ def _handle_confirm(state, reply):
     edit = _explicit_edit(reply)
     if edit is not None:
         return _apply_edit(state, edit)
-    if _harmless_aside(reply):
+    if _harmless_aside(reply) or _nonblocking_stat(_fold(reply)):
         state["error"] = None
         state["phase"] = "confirm"
         return True
+    if _age_correction(_fold(reply)):
+        _clear_age(state)
+        return _hold_age(state)
     return _hold_age(state)
 
 
