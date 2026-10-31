@@ -130,8 +130,14 @@ def test_first_run_clones_the_repo_and_uses_that_path():
     assert import_line in PROMPT
     assert import_line in QUICKSTART
     assert "if the clone or the import fails, stop" in PROMPT.lower()
-    assert "--branch v0.1.0" in PROMPT
-    assert "--branch v0.1.0" in QUICKSTART
+    assert "--branch <release_tag>" in PROMPT
+    assert "--branch <release_tag>" in QUICKSTART
+    assert "equals v0.1.0" not in PROMPT
+    assert "equals v0.1.0" not in QUICKSTART
+    assert "must equal v0.1.0" not in README
+    assert "v0.1.0" not in PROMPT
+    assert "v0.1.0" not in QUICKSTART
+    assert "v0.1.0" not in README
     assert "do not fall back to main" in PROMPT.lower()
     assert "do not fall back to main" in QUICKSTART.lower()
     existing = "git -C /workspace/gainzbot describe --tags --exact-match"
@@ -153,6 +159,10 @@ def test_first_run_clones_the_repo_and_uses_that_path():
         assert "to upgrade an existing install to a newer tag" in lowered
         assert "do not delete `/workspace/gainzbot/data/`" in lowered
         assert "git clean -x" in lowered
+        assert "v<semver>" in text
+        assert "only place the version is set" in lowered
+        assert "release_check.py" in text
+        assert "equals `release_tag`" in lowered or "equal `release_tag`" in lowered
     assert "every file path in `template/template.json` is relative to the repo root" in QUICKSTART.lower()
     assert TEMPLATE["release_tag"] == "v0.1.0"
     assert "the second message runs readiness_screen, then check_in, then plan_check, then shows the proposal, then asks for the yes" in PROMPT.lower()
