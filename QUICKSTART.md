@@ -12,7 +12,16 @@ git clone --depth 1 --branch v0.1.0 https://github.com/tradersnow222/gainzbot /w
 
 That tag is v0.1.0. If the tag is missing, stop. Do not fall back to main.
 
-If `/workspace/gainzbot` already exists, check that `git -C /workspace/gainzbot describe --tags --exact-match` equals v0.1.0. If it isn't a git repo or the tag doesn't match, stop and ask the user. Never delete, move or overwrite that folder.
+If `/workspace/gainzbot` already exists, check that `git -C /workspace/gainzbot describe --tags --exact-match` equals v0.1.0. If it isn't a git repo or the tag doesn't match, stop and ask the user. Never delete, move or overwrite that folder. Also run `git -C /workspace/gainzbot status --porcelain`. Any local edits mean stop and ask. Never discard them.
+
+To upgrade an existing install to a newer tag, run those two checks first. When `git -C /workspace/gainzbot status --porcelain` prints nothing, fetch the newer tag and check it out in the same folder:
+
+```bash
+git -C /workspace/gainzbot fetch --depth 1 origin tag <newer-tag>
+git -C /workspace/gainzbot checkout <newer-tag>
+```
+
+That leaves `/workspace/gainzbot/data/` where it is. Do not delete `/workspace/gainzbot`. Do not delete `/workspace/gainzbot/data/`. Do not run `git reset --hard` or `git clean -x`.
 
 From that folder, check that the scripts run:
 
