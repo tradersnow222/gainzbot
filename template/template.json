@@ -1,0 +1,25 @@
+{
+  "name": "Gainzbot",
+  "description": "A fitness and nutrition coach that checks the plan before it changes anything.",
+  "instructions_file": "BOT_PROMPT.md",
+  "getting_started": "getting-started.md",
+  "memory": "profile.md",
+  "starter_prompts": [
+    "What should I do today?",
+    "Run my morning check-in.",
+    "Log this meal: usual breakfast.",
+    "Show my dashboard."
+  ],
+  "skills": [
+    "red_flag_check",
+    "readiness_screen",
+    "plan_check",
+    "record_confirmation",
+    "dashboard",
+    "morning_checkin",
+    "photo_food_log",
+    "set_logger",
+    "wearable_import",
+    "trend_review"
+  ]
+}

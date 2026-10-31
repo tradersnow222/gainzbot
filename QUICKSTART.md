@@ -1,0 +1,68 @@
+# First plan
+
+From a fresh checkout to a Grok Bot you can message in under 5 minutes.
+
+## 1. Check the scripts
+
+You need Python 3.11 or newer. From this folder, the test suite is:
+
+```bash
+pytest -v
+```
+
+## 2. Create the bot
+
+In Grok, make a new bot and name it Gainzbot.
+
+Paste `BOT_PROMPT.md` into the bot instructions. That file is the coach. It calls the scripts in this order: red flag, readiness, plan check, then a recorded yes.
+
+Copy the starter prompts from `template/template.json`.
+
+Paste `template/getting-started.md` in as the getting-started skill. The first chat asks one question at a time.
+
+Leave `template/profile.md` as the place the bot writes their sport, goal, and schedule. Do not put a real name or health history in the repo.
+
+## 3. Confirm one adult plan
+
+Paste this in the repo folder with `python3`:
+
+```python
+from plan_check import PlanValidator
+from record_confirmation import ConfirmationRecorder
+from red_flag_check import RedFlagChecker, is_passing_check_in
+
+checker = RedFlagChecker()
+answers = {aliases[0]: "no" for _flag, aliases in checker.CHECKLIST_GROUPS}
+check_in = checker.scan_check_in({
+    "symptom_checklist": answers,
+    "notes": "Easy lift, slept fine.",
+})
+assert is_passing_check_in(check_in)
+
+plan = {
+    "user": {
+        "sex": "M",
+        "weight_kg": 80,
+        "age": 30,
+        "height_cm": 180,
+        "medical_clearance": False,
+    },
+    "nutrition": {"calories": 2200, "protein_g": 144},
+    "training": {"previous_load": 100, "current_load": 105, "weeks_since_deload": 4},
+}
+checked = PlanValidator().validate_plan(plan, check_in_result=check_in)
+assert checked.valid
+
+record = ConfirmationRecorder().record(plan, "yes", "user", check_in)
+assert record.confirmed
+assert ConfirmationRecorder().covers(record, plan)
+print(record.confirmed)
+```
+
+`True` prints only when the checklist passed, the plan passed `plan_check`, and the yes covers that exact plan.
+
+## 4. Message the bot
+
+Send "What should I do today?" The bot leads with today. It will not raise a load until you give a recorded yes.
+
+An old yes does not cover a plan you edit later. Run the same steps again for the new plan.
