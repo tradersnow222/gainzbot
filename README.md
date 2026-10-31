@@ -6,6 +6,8 @@ A fitness and nutrition coach that will not change your plan until the checks pa
 
 People who want training and food guidance with the safety checks in this repo.
 
+Intake is 3 question cards. Only name, age, weight, and height are typed. One safety question replaces the old list. The bot picks the training days and derives the level. Plans vary by level and goal, and each week includes a warm-up, a cooldown, and mobility inside the minutes they have.
+
 ## Four layers
 
 ```mermaid

@@ -53,6 +53,26 @@ def test_questions_go_out_in_a_few_groups():
     ids = [group["id"] for group in GROUPS]
     assert ids == ["goal", "training", "par_q"]
     assert "one word ok" in sent[0].lower()
+    import json
+
+    from onboarding import intake_cards
+
+    cards = intake_cards()
+    assert [card["id"] for card in cards] == ["goal", "training", "par_q"]
+    multi = set()
+    for card, text in zip(cards, sent):
+        assert card["widget"] == "question_card"
+        assert 1 <= len(card["steps"]) <= 8
+        widget = json.loads(text.split("\n", 1)[1])
+        assert widget["widget"] == "question_card"
+        assert widget["steps"] == card["steps"]
+        for step in card["steps"]:
+            options = step.get("options")
+            if options is not None:
+                assert 2 <= len(options) <= 5
+            if step.get("multiSelect"):
+                multi.add(step["id"])
+    assert {"likes", "dislikes", "equipment"} <= multi
     keys = [key for key, _question in PAR_Q]
     assert keys == list(ReadinessScreen.PAR_Q_RED_FLAGS)
     par = next(group for group in GROUPS if group["id"] == "par_q")
@@ -90,8 +110,8 @@ def test_the_profile_and_guides_match():
     assert "Sport:" in profile
     for label in ("Sex:", "Height:", "Weight:", "Training days:", "Minutes:", "Equipment:", "Experience:", "Injuries:", "Food style:"):
         assert label in profile
-    assert "chest_pain_at_rest" in guide
-    assert "7" in guide
+    assert "Has a doctor told you to limit exercise" in guide
+    assert "chest_pain_at_rest" not in guide
     assert "one question at a time" in started.lower()
     assert "any sport" in started.lower()
     assert "always ask age" in started.lower()
@@ -1150,6 +1170,22 @@ def test_a_named_injury_stays_and_the_plan_keeps_weight_off_it():
         assert state["answers"]["injuries"] == "none", word
 
 
+def test_a_safety_question_mark_runs_readiness_screen():
+    from readiness_screen import screening_seal_matches
+
+    body = [
+        _marked("hold, male, 80 kg, 180 cm, general training, 3 days 45 min, bodyweight, beginner"),
+        "30",
+        "none",
+    ]
+    state, bots = run_chat(body + ["no?"])
+    assert screening_seal_matches(state.get("readiness"))
+    assert state["confirmed"] is False
+    assert state["par_q"] == {}
+    assert "one yes confirms the plan" not in bots[-1].lower()
+    _drop_hold()
+
+
 def test_ok_does_not_invent_age_sex_weight_or_height():
     state, bots = run_chat(["hello", "cut", "ok", "ok", "all no", "yes"])
     assert state["confirmed"] is False
@@ -1187,7 +1223,7 @@ def test_par_q_answers_are_kept_and_a_mixed_reply_asks_only_the_gap():
     assert skipped["confirmed"] is False
     assert skipped.get("par_q_skipped") is True
     assert skipped["par_q"] == {}
-    assert skip_bots[-2].startswith("Still need a yes or no:")
+    assert skip_bots[-2].startswith("Has a doctor told you to limit exercise")
     assert skip_bots[-2].count("\n") == 0
     assert "one yes confirms the plan" not in skip_bots[-1].lower()
     mixed, _mixed_bots = run_chat(body + ["joint problem yes, medications no"])
@@ -1290,7 +1326,6 @@ def test_all_no_counts_only_when_the_whole_reply_is_that_phrase():
         "all no 👍",
         "all no 👍🏻",
         "no to all",
-        "none",
         "nope all no",
         "honestly all no",
         "all no :)",
@@ -1302,6 +1337,12 @@ def test_all_no_counts_only_when_the_whole_reply_is_that_phrase():
         assert state["confirmed"] is False, reply
         assert state["par_q"] == {}, reply
         _drop_hold()
+    none_then_yes, _none_bots = run_chat(body + ["none", "yes"])
+    assert none_then_yes["confirmed"] is False
+    assert none_then_yes["answers"]["injuries"] == "none"
+    assert none_then_yes["par_q"]["chest_pain_during_activity"] is True
+    assert none_then_yes["par_q"]["chest_pain_at_rest"] is False
+    _drop_hold()
     button, _button_bots = run_chat(body + ["none", "all_no", "yes"])
     assert button["confirmed"] is True
     assert len(button["par_q"]) == len(PAR_Q)
@@ -1945,6 +1986,8 @@ def test_a_named_area_wins_and_an_emoji_asks_which_area():
     assert knee["answers"]["injuries"] == "knee"
     assert "Your knee is an old injury, so the load on it comes back gradually." in "\n".join(knee_bots)
     for row in knee["sessions"]:
+        if row["name"] in {"Mobility", "Yoga"}:
+            continue
         names = [item["name"].lower() for item in row["exercises"]]
         assert names
         assert any("box squat" in name or "glute bridge" in name for name in names)
@@ -2697,7 +2740,7 @@ def test_danas_profile_payload_confirms_in_five_turns_and_schedules_runs():
     heavy = ("squat", "lunge", "deadlift", "leg press", "romanian", "hip hinge")
     upper = state["sessions"][long_at - 1]
     upper_names = " ".join(item["name"].lower() for item in upper["exercises"])
-    assert upper["exercises"][0]["name"] == "Dumbbell bench"
+    assert any(item["name"] == "Dumbbell bench" for item in upper["exercises"])
     assert "glute bridge" not in upper_names
     assert not any(word in upper_names for word in heavy)
     for row in state["sessions"]:

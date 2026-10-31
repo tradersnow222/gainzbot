@@ -89,7 +89,7 @@ def test_a_beginner_week_passes_and_does_not_raise_the_load():
     assert "nutrition" not in built["plan"]
     assert [row["load"] for row in built["sessions"]] == [80, 80, 80]
     assert built["sessions"][0]["equipment"] == "bodyweight"
-    assert "note" not in built["sessions"][0]
+    assert "Add a rep when every set is easy" in built["sessions"][0]["note"]
 
 
 def test_intermediate_stays_at_100_and_an_injury_does_not_add_load():
@@ -100,7 +100,7 @@ def test_intermediate_stays_at_100_and_an_injury_does_not_add_load():
     assert built["ok"] is True
     assert built["plan"]["training"]["current_load"] == 100
     assert built["plan"]["training"]["previous_load"] == 100
-    assert built["sessions"][0]["note"] == "Do not add load."
+    assert "2 reps left" in built["sessions"][0]["note"]
     assert built["sessions"][0]["load"] == 100
 
 
@@ -546,18 +546,24 @@ def test_three_gym_days_are_a_deterministic_full_body_split():
     assert first["ok"] is True
     assert first["sessions"] == second["sessions"]
     assert [row["name"] for row in first["sessions"]] == [
-        "Full body A", "Full body B", "Full body C",
+        "Full body A", "Full body B", "Mobility",
     ]
     for row in first["sessions"]:
         assert row["exercises"]
         for exercise in row["exercises"]:
             assert {"name", "sets", "reps", "rest", "effort"} <= set(exercise)
-            assert exercise["sets"] == 4
+    squat = next(item for item in first["sessions"][0]["exercises"] if item["name"] == "Back squat")
+    assert squat["sets"] == 4
+    assert squat["reps"] == "6-10"
+    plank = next(item for item in first["sessions"][0]["exercises"] if "plank" in item["name"].lower())
+    assert plank["sets"] != squat["sets"] or plank["reps"] != squat["reps"]
     names = [item["name"] for item in first["sessions"][0]["exercises"]]
     assert "Back squat" in names
     knee = PlanBuilder().propose(profile(equipment="full gym", injuries="left knee"), check_in)
     assert knee["ok"] is True
     for row in knee["sessions"]:
+        if row["name"] in {"Mobility", "Yoga", "Easy run", "Long run"}:
+            continue
         knee_names = [item["name"].lower() for item in row["exercises"]]
         assert any("box squat" in name for name in knee_names)
         assert any("glute bridge" in name for name in knee_names)
@@ -1334,11 +1340,11 @@ def test_an_old_running_injury_gets_easy_and_long_runs_and_a_fresh_one_does_not(
     heavy = ("squat", "lunge", "deadlift", "leg press", "romanian")
     upper_row = old["sessions"][long_at - 1]
     upper = " ".join(item["name"].lower() for item in upper_row["exercises"])
-    assert upper_row["exercises"][0]["name"] == "Dumbbell bench"
+    assert any(item["name"] == "Dumbbell bench" for item in upper_row["exercises"])
     assert "glute bridge" not in upper
     assert not any(word in upper for word in heavy)
-    easy = old["sessions"][names.index("Easy run")]["exercises"][0]
-    long = old["sessions"][long_at]["exercises"][0]
+    easy = next(item for item in old["sessions"][names.index("Easy run")]["exercises"] if item["name"] == "Easy run")
+    long = next(item for item in old["sessions"][long_at]["exercises"] if item["name"] == "Long run")
     assert easy["reps"].endswith(" min")
     assert long["reps"].endswith(" min")
     assert int(long["reps"].split()[0]) >= int(easy["reps"].split()[0])
@@ -1348,8 +1354,11 @@ def test_an_old_running_injury_gets_easy_and_long_runs_and_a_fresh_one_does_not(
 
 def _run_minutes(built, name):
     for row in built["sessions"]:
-        if row["name"] == name:
-            return int(row["exercises"][0]["reps"].split()[0])
+        if row["name"] != name:
+            continue
+        for item in row["exercises"]:
+            if item.get("name") == name:
+                return int(item["reps"].split()[0])
     return None
 
 
