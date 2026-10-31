@@ -4,9 +4,12 @@ Morning check-in for sleep, soreness, energy, and stress.
 
 The day is push, normal, or easy. The session scales from the last confirmed
 load, inside the 10 percent cap, and only after 7 times 24 hours. A planned
-load passed by the caller is ignored. A missed session rebuilds the rest of
-the week from that confirmed load, not from the loads the caller sends in.
-Nothing is applied until record_confirmation covers that proposal.
+load passed by the caller is ignored. A missed session rebuilds later
+days from that confirmed load. A day before the miss, and any session
+dated after this check, is min(sent load, confirmed load), so 80 stays 80
+and 200 becomes 100. A lighter deload is not raised. A missed date after
+the check is rejected. Nothing is applied until record_confirmation covers
+that proposal.
 """
 
 from datetime import date, datetime, timezone
@@ -108,6 +111,8 @@ class MorningCheckIn:
         if len(matched) != 1:
             return self._bad("That session is not in this week.")
         clock = _clock(as_of)
+        if clock is not None and missed > clock.date():
+            return self._bad("The missed session is after this check.")
         found = last_confirmed_change(confirmed_changes, "load", clock) if clock is not None else None
         if found is None or not found.ok or found.value is None:
             return self._bad("The week is built from the confirmed load.")
@@ -115,8 +120,12 @@ class MorningCheckIn:
         can_raise = seven_days_old(found.at, clock)
         room = base * (PlanValidator.MAX_TRAINING_LOAD_INCREASE_PERCENT / 100) if can_raise else 0.0
         missed_row = matched[0]
+        check_day = clock.date()
         later = [row for row in rows if row["date"] > missed]
-        rooms = [room for _ in later]
+        rooms = [
+            0.0 if row["load"] < base or row["date"] > check_day else room
+            for row in later
+        ]
         to_place = min(missed_row["load"], base)
         assigned = self._spread(to_place, rooms)
         updated = []
@@ -128,17 +137,18 @@ class MorningCheckIn:
                     "missed": True,
                 })
                 continue
-            if row["date"] < missed:
+            if row["date"] < missed or row["date"] > check_day:
                 updated.append({
                     "date": row["date"].isoformat(),
-                    "load": _whole(base),
+                    "load": _whole(min(row["load"], base)),
                     "missed": False,
                 })
                 continue
             index = later.index(row)
+            start = row["load"] if row["load"] < base else base
             updated.append({
                 "date": row["date"].isoformat(),
-                "load": _whole(base + assigned[index]),
+                "load": _whole(start + assigned[index]),
                 "missed": False,
             })
         left_out = _whole(to_place - sum(assigned))
