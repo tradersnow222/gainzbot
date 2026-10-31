@@ -1,6 +1,6 @@
 # Reminder routines
 
-At the end of onboarding, offer these four reminders. Each is opt-in. Do not create a routine unless they say yes to that one. A yes to one does not turn the others on.
+At the end of onboarding, offer these four reminders. Each is opt-in. Do not create a routine unless they say yes to that one. When they have already picked a routine and a time, that pick is the yes. Do not ask for another yes. A yes to one does not turn the others on.
 
 1. Daily check-in. A morning message for the red-flag list and the 4 scores.
 2. Weekly review. Every 7 days, call `trend_review.review` with 7 days.

@@ -32,6 +32,8 @@ def test_questions_go_out_in_a_few_groups():
     ):
         assert name in asked
     assert len(asked) == len(set(asked))
+    ids = [group["id"] for group in GROUPS]
+    assert ids == ["body", "training", "par_q", "food"]
     keys = [key for key, _question in PAR_Q]
     assert keys == list(ReadinessScreen.PAR_Q_RED_FLAGS)
     par = next(group for group in GROUPS if group["id"] == "par_q")
@@ -53,6 +55,12 @@ def test_a_skipped_par_q_answer_runs_readiness_before_training():
     assert sentence in "\n".join(messages())
     assert sentence in guide
     assert sentence in started
+    order = "Sport and the schedule come before the PAR-Q. The PAR-Q still comes before any plan is built."
+    prompt = (ROOT / "BOT_PROMPT.md").read_text(encoding="utf-8")
+    assert order in guide
+    assert order in started
+    assert order in prompt
+    assert "plan_builder" not in "\n".join(messages()).lower() or "before any plan" in "\n".join(messages()).lower()
 
 
 def test_the_profile_and_guides_match():

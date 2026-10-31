@@ -7,9 +7,10 @@ injuries they gave. It does not raise the load. It is saved only after
 plan_check passes and record_confirmation covers that same plan.
 """
 
-from datetime import date, timedelta
+from datetime import date, datetime, timedelta, timezone
 import copy
 import json
+import math
 import os
 
 from guardrails.validate import InputValidator, ValidationError
@@ -40,11 +41,240 @@ _WEEKDAYS = {
     "sun": 6,
 }
 _NO_INJURY = {"none", "no", "n/a", "na"}
+_LOG_KINDS = (
+    "meals",
+    "sets",
+    "checkins",
+    "weights",
+    "confirmations",
+    "used_records",
+    "sessions",
+)
+_DOSE = {
+    "beginner": (3, "8-12", "90 sec", "Leave 3 reps in reserve"),
+    "intermediate": (4, "6-10", "2 min", "Leave 2 reps in reserve"),
+    "advanced": (5, "4-8", "3 min", "Leave 1 rep in reserve"),
+}
+_GYM = {
+    "Full body": ("Back squat", "Bench press", "Barbell row", "Romanian deadlift", "Plank", "Farmer carry"),
+    "Full body A": ("Back squat", "Bench press", "Barbell row", "Romanian deadlift", "Plank", "Farmer carry"),
+    "Full body B": ("Front squat", "Overhead press", "Pull-up", "Hip thrust", "Dead bug", "Carry"),
+    "Full body C": ("Leg press", "Incline bench", "Seated cable row", "Walking lunge", "Back extension", "Side plank"),
+    "Upper": ("Bench press", "Barbell row", "Overhead press", "Lat pulldown", "Curl", "Face pull"),
+    "Lower": ("Back squat", "Romanian deadlift", "Leg press", "Walking lunge", "Calf raise", "Plank"),
+    "Push": ("Bench press", "Overhead press", "Incline bench", "Dip", "Lateral raise", "Triceps press"),
+    "Pull": ("Barbell row", "Pull-up", "Seated cable row", "Face pull", "Curl", "Rear delt raise"),
+    "Legs": ("Back squat", "Romanian deadlift", "Leg press", "Walking lunge", "Calf raise", "Plank"),
+}
+_SAFE = ("Glute bridge", "Dead bug", "Bird dog", "Carry", "Side plank", "Calf raise")
+_SPORT_MOVE = (
+    ("run", "Easy run"),
+    ("cycl", "Easy spin"),
+    ("bike", "Easy spin"),
+    ("swim", "Easy swim"),
+)
+
+
+def _confirm_changes(plan):
+    """Load and calories in the shape the confirmed-history reader stores."""
+    if not isinstance(plan, dict):
+        return {}
+    changes = {}
+    training = plan.get("training")
+    if isinstance(training, dict) and training.get("current_load") not in (None, ""):
+        changes["load"] = training["current_load"]
+    nutrition = plan.get("nutrition")
+    if isinstance(nutrition, dict) and nutrition.get("calories") not in (None, ""):
+        changes["calories"] = nutrition["calories"]
+    return changes
 
 
 def week_to_confirm(plan, sessions):
     """The object record_confirmation has to cover: the plan and the sessions."""
-    return {"plan": plan, "sessions": sessions}
+    body = {"plan": plan, "sessions": sessions}
+    changes = _confirm_changes(plan)
+    if changes:
+        body["changes"] = changes
+    return body
+
+
+def _split_name(count, index):
+    if count <= 1:
+        return "Full body"
+    if count == 2:
+        return ("Full body A", "Full body B")[index]
+    if count == 3:
+        return ("Full body A", "Full body B", "Full body C")[index]
+    if count == 4:
+        return ("Upper", "Lower", "Upper", "Lower")[index]
+    return ("Push", "Pull", "Legs")[index % 3]
+
+
+def _gear(equipment):
+    text = equipment if isinstance(equipment, str) else " ".join(equipment)
+    text = text.lower()
+    gym_words = ("gym", "barbell", "rack", "cable", "machine", "full")
+    if any(word in text for word in gym_words):
+        return "gym"
+    if "dumbbell" in text or "kettlebell" in text:
+        return "dumbbell"
+    return "bodyweight"
+
+
+def _bodyweight_name(name):
+    table = {
+        "Back squat": "Squat",
+        "Front squat": "Split squat",
+        "Leg press": "Squat",
+        "Bench press": "Push-up",
+        "Incline bench": "Push-up",
+        "Overhead press": "Pike push-up",
+        "Barbell row": "Inverted row",
+        "Seated cable row": "Inverted row",
+        "Lat pulldown": "Inverted row",
+        "Pull-up": "Inverted row",
+        "Romanian deadlift": "Hip hinge",
+        "Walking lunge": "Reverse lunge",
+        "Hip thrust": "Glute bridge",
+        "Dip": "Bench dip",
+        "Curl": "Towel curl",
+        "Face pull": "Band pull-apart",
+        "Rear delt raise": "Band pull-apart",
+        "Lateral raise": "Arm circle",
+        "Triceps press": "Bench dip",
+        "Back extension": "Bird dog",
+        "Calf raise": "Calf raise",
+        "Farmer carry": "Carry",
+        "Carry": "Carry",
+        "Plank": "Plank",
+        "Side plank": "Side plank",
+        "Dead bug": "Dead bug",
+    }
+    return table.get(name, name)
+
+
+def _dumbbell_name(name):
+    swapped = (
+        name.replace("Barbell ", "Dumbbell ")
+        .replace("Back squat", "Goblet squat")
+        .replace("Front squat", "Goblet squat")
+        .replace("Leg press", "Split squat")
+        .replace("Pull-up", "Dumbbell row")
+        .replace("Lat pulldown", "Dumbbell row")
+        .replace("Seated cable row", "Dumbbell row")
+        .replace("Incline bench", "Dumbbell bench")
+        .replace("Bench press", "Dumbbell bench")
+        .replace("Overhead press", "Dumbbell shoulder press")
+    )
+    return swapped
+
+
+def _blocked_parts(injuries):
+    text = injuries.lower()
+    if text.strip() in _NO_INJURY:
+        return ()
+    parts = []
+    if "knee" in text:
+        parts.extend(("squat", "lunge", "leg press"))
+    if "shoulder" in text:
+        parts.extend(("overhead", "bench", "push-up", "pike", "dip", "press"))
+    if "back" in text:
+        parts.extend(("deadlift", "row", "extension"))
+    if "wrist" in text:
+        parts.extend(("push-up", "bench", "dip"))
+    return tuple(parts)
+
+
+def _sport_exercise(sport):
+    text = sport.lower()
+    for key, name in _SPORT_MOVE:
+        if key in text:
+            return {
+                "name": name,
+                "sets": 1,
+                "reps": "10 min",
+                "rest": "0 sec",
+                "effort": "Easy, conversational",
+            }
+    return None
+
+
+def _exercises(equipment, experience, minutes, sport, injuries, index, day_count):
+    """Deterministic sets, reps, rest, and an effort cue for one session."""
+    label = _split_name(day_count, index)
+    gear = _gear(equipment)
+    source = _GYM.get(label, _GYM["Full body"])
+    if gear == "dumbbell":
+        names = [_dumbbell_name(name) for name in source]
+    elif gear == "bodyweight":
+        names = [_bodyweight_name(name) for name in source]
+    else:
+        names = list(source)
+    blocked = _blocked_parts(injuries)
+    kept = []
+    for name in names + list(_SAFE):
+        if any(part in name.lower() for part in blocked):
+            continue
+        if name not in kept:
+            kept.append(name)
+    if minutes <= 30:
+        count = 3
+    elif minutes <= 45:
+        count = 4
+    elif minutes <= 60:
+        count = 5
+    else:
+        count = 6
+    sets, reps, rest, effort = _DOSE[experience]
+    chosen = []
+    for name in kept[:count]:
+        chosen.append({
+            "name": name,
+            "sets": sets,
+            "reps": reps,
+            "rest": rest,
+            "effort": effort,
+        })
+    sport_row = _sport_exercise(sport)
+    if sport_row is not None:
+        chosen.append(sport_row)
+    return label, chosen
+
+
+def _blank_log():
+    return {kind: [] for kind in _LOG_KINDS}
+
+
+def _read_log(path):
+    """The user log beside the week file. A bad file is refused, not rebuilt."""
+    if not os.path.exists(path):
+        return _blank_log()
+    try:
+        with open(path, encoding="utf-8") as handle:
+            data = json.load(handle)
+    except (OSError, json.JSONDecodeError):
+        return None
+    if not isinstance(data, dict):
+        return None
+    cleaned = _blank_log()
+    for key, value in data.items():
+        if key not in _LOG_KINDS or not isinstance(value, list):
+            return None
+        if any(not isinstance(item, dict) for item in value):
+            return None
+        cleaned[key] = value
+    return cleaned
+
+
+def _write_json(path, payload):
+    folder = os.path.dirname(path)
+    if folder:
+        os.makedirs(folder, exist_ok=True)
+    temporary = path + ".tmp"
+    with open(temporary, "w", encoding="utf-8") as handle:
+        json.dump(payload, handle)
+        handle.write("\n")
+    os.replace(temporary, path)
 
 
 class PlanBuilder:
@@ -86,17 +316,26 @@ class PlanBuilder:
         load = 80 if experience == "beginner" else 100
         if load is None or load <= 0:
             return self._no("A baseline load is required.")
+        goal = self._goal(profile.get("goal"))
+        if isinstance(goal, dict):
+            return goal
         note = None
         if injuries.strip().lower() not in _NO_INJURY:
             note = "Do not add load."
+        shown_minutes = minutes if minutes != int(minutes) else int(minutes)
         sessions = []
-        for day in days:
+        for index, day in enumerate(days):
+            label, exercises = _exercises(
+                equipment, experience, minutes, sport, injuries, index, len(days),
+            )
             row = {
                 "date": day.isoformat(),
+                "name": label,
                 "load": load,
-                "minutes": minutes if minutes != int(minutes) else int(minutes),
+                "minutes": shown_minutes,
                 "equipment": equipment,
                 "sport": sport,
+                "exercises": exercises,
             }
             if note:
                 row["note"] = note
@@ -111,6 +350,18 @@ class PlanBuilder:
         plan = {"training": training}
         if user:
             plan["user"] = user
+        if (
+            isinstance(user, dict)
+            and goal in {"cut", "lose", "gain"}
+            and user.get("age") is not None
+            and user["age"] >= PlanValidator.ADULT_AGE
+        ):
+            targets = self._nutrition(user, goal)
+            if isinstance(targets, dict):
+                return targets
+            nutrition, goals = targets
+            plan["nutrition"] = nutrition
+            plan["goals"] = goals
         if answers is not None:
             plan["par_q"] = self._with_source(answers, user)
         checked = PlanValidator().validate_plan(
@@ -175,6 +426,7 @@ class PlanBuilder:
         ):
             return self._saved_no("This week needs record_confirmation before it is saved.")
         target = os.fspath(path)
+        log_path = os.path.join(os.path.dirname(target), "log.json")
         existing = {}
         if os.path.exists(target):
             try:
@@ -187,16 +439,45 @@ class PlanBuilder:
             existing = loaded
         existing["plan"] = plan
         existing["sessions"] = sessions
+        log_existed = os.path.exists(log_path)
+        loaded_log = _read_log(log_path)
+        if loaded_log is None:
+            return self._saved_no("The log could not be read.")
+        previous_log = copy.deepcopy(loaded_log)
+        stamp = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+        proposal = week_to_confirm(plan, sessions)
+        loaded_log["confirmations"].append({
+            "record_id": confirmation.record_id,
+            "plan_hash": confirmation.plan_hash,
+            "quoted_words": confirmation.quoted_words,
+            "speaker": confirmation.speaker,
+            "date": stamp,
+            "confirmed": True,
+            "message": confirmation.message,
+        })
+        for key in ("load", "calories"):
+            if key not in proposal.get("changes", {}):
+                continue
+            loaded_log["confirmations"].append({
+                "date": stamp,
+                "confirmed": True,
+                "changes": {key: proposal["changes"][key]},
+                "proposal": proposal,
+                "record_id": confirmation.record_id,
+                "plan_hash": confirmation.plan_hash,
+                "quoted_words": confirmation.quoted_words,
+                "speaker": confirmation.speaker,
+            })
+        for row in sessions:
+            loaded_log["sessions"].append(copy.deepcopy(row))
         try:
-            folder = os.path.dirname(target)
-            if folder:
-                os.makedirs(folder, exist_ok=True)
-            temporary = target + ".tmp"
-            with open(temporary, "w", encoding="utf-8") as handle:
-                json.dump(existing, handle)
-                handle.write("\n")
-            os.replace(temporary, target)
+            _write_json(log_path, loaded_log)
         except OSError:
+            return self._saved_no("The log could not be saved.")
+        try:
+            _write_json(target, existing)
+        except OSError:
+            self._restore_log(log_path, previous_log, log_existed)
             return self._saved_no("The week could not be saved.")
         return {
             "ok": True,
@@ -204,6 +485,7 @@ class PlanBuilder:
             "applied": False,
             "message": "Week saved.",
             "path": target,
+            "log_path": log_path,
         }
 
     def _days(self, profile):
@@ -293,6 +575,61 @@ class PlanBuilder:
         if key not in ("beginner", "intermediate", "advanced"):
             return self._no("Experience has to be beginner, intermediate, or advanced.")
         return key
+
+    def _restore_log(self, log_path, previous_log, log_existed):
+        """Put the log back when the week file did not save. Nothing stays half-written."""
+        try:
+            if not log_existed:
+                if os.path.exists(log_path):
+                    os.remove(log_path)
+                temporary = log_path + ".tmp"
+                if os.path.exists(temporary):
+                    os.remove(temporary)
+                return
+            _write_json(log_path, previous_log)
+        except OSError:
+            return
+
+    def _goal(self, value):
+        if value in (None, ""):
+            return None
+        if not isinstance(value, str):
+            return self._no("The goal has to be cut, lose, gain, or hold.")
+        text = value.strip().lower()
+        if text not in {"cut", "lose", "gain", "hold"}:
+            return self._no("The goal has to be cut, lose, gain, or hold.")
+        return text
+
+    def _nutrition(self, user, goal):
+        """A first calorie and protein target that stays on the safe side of plan_check."""
+        try:
+            sex = InputValidator.parse_sex(user["sex"], "sex").value
+            weight = InputValidator.parse_number(user["weight_kg"], "weight_kg")
+            height = InputValidator.parse_number(user["height_cm"], "height_cm")
+            age = int(user["age"])
+        except ValidationError as exc:
+            return self._no(str(exc))
+        bmr = PlanValidator.estimate_bmr(weight, sex, age, height)
+        floor = PlanValidator.CALORIE_FLOOR_MEN if sex == "M" else PlanValidator.CALORIE_FLOOR_WOMEN
+        calories = max(floor, math.ceil(bmr - 1e-9))
+        if goal == "gain":
+            calories = max(calories, math.ceil(bmr - 1e-9) + 200)
+        low = math.ceil(weight * PlanValidator.MIN_PROTEIN_G_PER_KG - 1e-9)
+        high = math.floor(weight * PlanValidator.MAX_PROTEIN_G_PER_KG + 1e-9)
+        protein = int(round(weight * 1.8))
+        protein = min(max(protein, low), max(high, low))
+        rate = round(weight * 0.005, 2)
+        cap = round(weight * (PlanValidator.MAX_WEIGHT_LOSS_PERCENT / 100), 2)
+        if rate < 0.01:
+            rate = 0.01
+        if cap >= 0.01 and rate > cap:
+            rate = cap
+        if goal == "gain":
+            rate = -rate
+        return (
+            {"calories": int(calories), "protein_g": int(protein)},
+            {"goal": goal, "weight_loss_kg_per_week": rate},
+        )
 
     def _text(self, value, message):
         if not isinstance(value, str) or not value.strip():

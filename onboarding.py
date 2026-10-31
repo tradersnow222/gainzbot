@@ -20,7 +20,8 @@ def _par_q_text():
         lines.append(f"- {key}: {question}")
     lines.append(
         "A skipped or unclear PAR-Q answer runs readiness_screen, the same as a yes. "
-        "There is no training until readiness_screen passes."
+        "There is no training until readiness_screen passes. "
+        "The PAR-Q still comes before any plan is built."
     )
     return "\n".join(lines)
 
@@ -36,19 +37,20 @@ GROUPS = (
         ),
     },
     {
+        "id": "training",
+        "asks": ("sport", "training_days", "minutes", "equipment", "experience", "injuries"),
+        "text": (
+            "Which sport do you train, or is this general training? Any sport is fine. "
+            "In this same message ask the training days, minutes, equipment "
+            "(none or bodyweight is fine), experience "
+            "(beginner, intermediate, or advanced), and injuries (or none). "
+            "Sport and the schedule come before the PAR-Q."
+        ),
+    },
+    {
         "id": "par_q",
         "asks": tuple(key for key, _question in PAR_Q),
         "text": _par_q_text(),
-    },
-    {
-        "id": "training",
-        "asks": ("training_days", "minutes", "equipment", "experience", "injuries", "sport"),
-        "text": (
-            "Which days do you train, how many minutes, what equipment do you have "
-            "(none or bodyweight is fine), what is your experience "
-            "(beginner, intermediate, or advanced), any injuries (or none), "
-            "and which sport? Any sport is fine."
-        ),
     },
     {
         "id": "food",

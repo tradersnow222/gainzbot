@@ -46,6 +46,99 @@ def normalize_reply(reply: str) -> str:
     return re.sub(r"\s+", " ", text).strip()
 
 
+# A yes has to start with one of these. Longer phrases win so "confirm"
+# does not swallow "confirmed", and "i confirm" still matches the fixed lines.
+_YES_START = (
+    "yes i confirm this plan",
+    "yes i confirm this change",
+    "i confirm this plan",
+    "i confirm this change",
+    "yes i confirm",
+    "i confirm",
+    "lock it in",
+    "confirm",
+    "yeah",
+    "yep",
+    "yes",
+)
+_BLOCK_WORDS = {
+    "but",
+    "except",
+    "maybe",
+    "guess",
+    "whatever",
+    "probably",
+    "change",
+    "changes",
+    "instead",
+    "swap",
+    "raise",
+    "lower",
+    "drop",
+    "increase",
+    "decrease",
+    "replace",
+    "skip",
+    "add",
+    "remove",
+    "no",
+    "not",
+}
+
+
+def _bare(reply: str) -> str:
+    text = InputValidator.normalize_unicode(reply).lower().strip()
+    if len(text) >= 2 and text[0] == text[-1] and text[0] in {"'", '"'}:
+        text = text[1:-1].strip()
+    return text
+
+
+def _starts_with_yes(folded: str) -> bool:
+    for phrase in _YES_START:
+        if folded == phrase or folded.startswith(phrase + " "):
+            return True
+    return False
+
+
+def _questioned_yes(reply: str) -> bool:
+    """A question mark on the yes itself is not a yes. A later question can be."""
+    raw = _bare(reply)
+    if re.match(r"^(yes|yep|yeah|confirm|lock it in|i confirm)\s*\?", raw):
+        return True
+    if raw.endswith("?") and raw.count("?") == 1:
+        head = normalize_reply(raw[:-1])
+        if head in CLEAR_YES or head in _YES_START:
+            return True
+    return False
+
+
+def is_clear_yes(reply) -> bool:
+    """True for an unhedged yes that answers the shown proposal.
+
+    The reply has to start with yes, yep, yeah, confirm, or lock it in
+    (the fixed 'i confirm' lines still count). but, except, a number, or a
+    requested change refuses it. A trailing question is fine when it has
+    none of those.
+    """
+    if not isinstance(reply, str) or not reply.strip():
+        return False
+    if _questioned_yes(reply):
+        return False
+    folded = normalize_reply(reply)
+    if folded in CLEAR_YES:
+        return True
+    if not _starts_with_yes(folded):
+        return False
+    if re.search(r"\d", folded):
+        return False
+    words = set(folded.split())
+    if words & _BLOCK_WORDS:
+        return False
+    if any(phrase in folded for phrase in ("not yet", "kind of", "sort of", "i think", "i guess")):
+        return False
+    return True
+
+
 def new_record_id() -> str:
     """One id for one yes. A copy keeps this id. A new yes gets a new one."""
     return str(uuid.uuid4())
@@ -114,7 +207,7 @@ class ConfirmationRecorder:
 
         if not isinstance(reply, str) or not reply.strip():
             errors.append("The confirmation has to be the user's own words.")
-        elif normalize_reply(reply) not in CLEAR_YES:
+        elif not is_clear_yes(reply):
             errors.append(
                 "That reply is not a clear yes. "
                 "Vague replies like 'sure I guess', 'looks fine', or 'whatever' do not confirm a plan."

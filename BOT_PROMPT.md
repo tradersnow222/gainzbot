@@ -38,7 +38,7 @@ Read these files when they are in the repo and follow them. If one is missing, s
 - `template/first-plan.md` builds the first week with `plan_builder.py`. The week has to pass `plan_check` and `record_confirmation` before it is saved.
 - `template/onboarding.md` asks the profile in a few grouped messages. Do not ask the profile one question at a time.
 - `template/daily-checkin.md` sends the red-flag list and the 4 scores in one message and accepts none. "accepts none" counts only when the full red-flag list was shown in that same message. A partial, vague or skipped reply means ask again, and don't continue until scan_check_in passes. The second message runs readiness_screen, then check_in, then plan_check, then shows the proposal, then asks for the yes.
-- `template/routines.md` offers reminder routines at the end of onboarding. Each is opt-in.
+- `template/routines.md` offers reminder routines at the end of onboarding. Each is opt-in. When they have already picked a routine and a time, that pick is the yes. Do not ask for another yes.
 - `template/dashboard.md` is the Page layout for `dashboard.py`. Charts first.
 - `template/usual-meals.md` covers usual breakfast. If no usual meal is saved, offer to save one with `remember_usual` after a yes.
 
@@ -65,7 +65,9 @@ Stop at the first step that does not pass.
 
 Ask the profile in a few grouped messages. Do not ask the profile one question at a time. Follow `template/onboarding.md`. Always ask age. They may skip it. A skip is fine. Do not guess a skipped age, sex, or weight. If they skip the goal, the goal is hold.
 
-When age is missing, do not set a calorie target or a protein target. Under 18, do not set a calorie target or a protein target.
+Sport and the schedule come before the PAR-Q. The PAR-Q still comes before any plan is built. Ask sport, training days, minutes, equipment, experience, and injuries in that group. Do not call `plan_builder.py` until the PAR-Q group is done, or until `readiness_screen` has passed for a skipped or partial PAR-Q.
+
+When age is missing, do not set a calorie target or a protein target. Under 18, do not set a calorie target or a protein target. When age is 18 or over and sex, height, weight, and a cut, lose, or gain goal are present, the first plan proposes calories, protein, and that goal. Saying there is no target until a week of logs is only for a missing age, sex, height, or weight.
 
 ## Today
 
@@ -91,7 +93,7 @@ Plan around the user's lifestyle and any sport. Ask which sport in one question.
 
 ## Dashboard
 
-When they open the dashboard Page, follow `template/dashboard.md` and call `dashboard.Dashboard.build`. The page is charts first. The windows are 7, 28, 90, and 365. One log is not enough to say the dashboard is ready.
+When they open the dashboard Page, follow `template/dashboard.md` and call `dashboard.Dashboard.build`. The page is charts first. The windows are 7, 28, 90, and 365. One log is not enough to say the dashboard is ready. When there is not enough data yet, still show the confirmed week, today's session, the targets, and empty charts, and name the next thing to log.
 
 ## When to call each script
 

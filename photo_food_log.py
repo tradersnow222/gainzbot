@@ -18,7 +18,7 @@ protein target. usual breakfast needs a confirmation. Logging a meal does
 not change the plan.
 """
 
-from datetime import date, datetime
+from datetime import date, datetime, timezone
 from typing import Dict, List, Optional
 import json
 import os
@@ -366,6 +366,11 @@ class FoodLog:
             "record_id": record_id,
             "kind": "meal",
             "date": entry["date"],
+            "plan_hash": confirmation.plan_hash,
+            "quoted_words": confirmation.quoted_words,
+            "speaker": confirmation.speaker,
+            "confirmed": True,
+            "timestamp": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
         })
         if not noted["ok"]:
             store.drop_last("used_records")

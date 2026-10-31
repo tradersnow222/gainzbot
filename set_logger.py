@@ -10,7 +10,7 @@ A rise is at most 10 percent of that confirmed load, and apply does nothing
 until record_confirmation covers that exact proposal.
 """
 
-from datetime import date, datetime
+from datetime import date, datetime, timezone
 from typing import Dict, List, Optional
 import os
 import sys
@@ -139,7 +139,7 @@ class SetLogger:
             "message": message,
         }
 
-    def apply(self, proposal, confirmation=None) -> Dict:
+    def apply(self, proposal, confirmation=None, log_path=None) -> Dict:
         if not isinstance(proposal, dict) or "changes" not in proposal:
             return {
                 "applied": False,
@@ -169,6 +169,24 @@ class SetLogger:
                 "changes": {},
                 "message": "This proposal needs record_confirmation before it applies.",
             }
+        if log_path is not None:
+            from log_store import LogStore
+
+            saved = LogStore(log_path).append("confirmations", {
+                "record_id": confirmation.record_id,
+                "plan_hash": confirmation.plan_hash,
+                "quoted_words": confirmation.quoted_words,
+                "speaker": confirmation.speaker,
+                "date": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
+                "confirmed": True,
+                "kind": "set",
+            })
+            if not saved.get("ok"):
+                return {
+                    "applied": False,
+                    "changes": {},
+                    "message": "The confirmed set was not saved.",
+                }
         self.working[name] = {"weight": weight, "reps": reps}
         return {
             "applied": True,

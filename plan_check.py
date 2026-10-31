@@ -382,7 +382,7 @@ class PlanValidator:
         known_top_level = {"user", "nutrition", "goals", "training", "par_q"}
         known_user = {"sex", "weight_kg", "age", "height_cm", "medical_clearance"}
         known_nutrition = {"calories", "protein_g", "previous_calories"}
-        known_goals = {"weight_loss_kg_per_week"}
+        known_goals = {"weight_loss_kg_per_week", "goal"}
         known_training = {"previous_load", "current_load", "weeks_since_deload", "structured_hours", "sport_hours"}
         
         for key in plan.keys():
@@ -547,6 +547,10 @@ class PlanValidator:
         if "goals" in plan:
             goals = plan["goals"]
             
+            if "goal" in goals:
+                label = goals.get("goal")
+                if not isinstance(label, str) or label.strip().lower() not in {"cut", "lose", "gain", "hold"}:
+                    all_errors.append("The goal has to be cut, lose, gain, or hold.")
             if "weight_loss_kg_per_week" in goals:
                 if not user_validated:
                     all_errors.append("Weight loss validation requires user.weight_kg.")

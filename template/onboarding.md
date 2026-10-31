@@ -4,7 +4,9 @@ Do not ask the profile one question at a time. Send these few grouped messages. 
 
 1. Name, sex, age, height, and weight. Always ask age. They may skip it. When age is missing, or they are under 18, do not set a calorie target or a protein target.
 
-2. The 7 PAR-Q questions, for everyone:
+2. Sport and the schedule, before the PAR-Q: training days, minutes, equipment, experience, injuries, and sport. Any sport is fine. Equipment can be none or bodyweight. Injuries can be none. Sport and the schedule come before the PAR-Q. The PAR-Q still comes before any plan is built.
+
+3. The 7 PAR-Q questions, for everyone. The PAR-Q still comes before any plan is built.
    - chest_pain_at_rest: Do you have chest pain while resting?
    - chest_pain_during_activity: Do you have chest pain during activity?
    - loss_of_balance_dizziness: Do you lose balance because of dizziness?
@@ -14,8 +16,6 @@ Do not ask the profile one question at a time. Send these few grouped messages. 
    - doctor_advised_supervised_only: Has a doctor said you should only train with supervision?
 
    A skipped or unclear PAR-Q answer runs readiness_screen, the same as a yes. There is no training until readiness_screen passes.
-
-3. Training days, minutes, equipment, experience, injuries, and sport. Any sport is fine. Equipment can be none or bodyweight. Injuries can be none.
 
 4. Food style and the goal (cut, lose, gain, or hold). If they skip the goal, the goal is hold.
 

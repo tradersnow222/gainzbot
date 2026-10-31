@@ -35,10 +35,23 @@ def test_each_routine_is_opt_in():
     assert yearly["window_days"] == 365
 
 
+def test_a_picked_routine_and_time_is_the_yes():
+    picked = enable("weekly_review", "weekly review on Sunday at 8")
+    assert picked["enabled"] is True
+    assert picked["id"] == "weekly_review"
+    named = enable("daily_checkin", "daily check-in")
+    assert named["enabled"] is True
+    clock = enable("monthly_review", "the 1st at 9am")
+    assert clock["enabled"] is True
+    assert enable("yearly_review", "daily check-in at 8")["enabled"] is False
+    assert enable("weekly_review", "maybe Sunday")["enabled"] is False
+
+
 def test_the_guide_lists_each_routine_as_opt_in():
     guide = (ROOT / "template" / "routines.md").read_text(encoding="utf-8")
     lowered = guide.lower()
     assert "each is opt-in" in lowered
+    assert "that pick is the yes" in lowered
     assert "daily check-in" in lowered
     assert "weekly review" in lowered
     assert "monthly review" in lowered

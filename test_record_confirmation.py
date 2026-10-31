@@ -3,7 +3,7 @@
 
 import pytest
 from readiness_screen import ReadinessScreen
-from record_confirmation import ConfirmationRecorder, hash_plan, normalize_reply
+from record_confirmation import ConfirmationRecorder, hash_plan, is_clear_yes, normalize_reply
 from red_flag_check import RedFlagChecker, RedFlagResult, is_passing_check_in
 from plan_check import PlanValidator
 
@@ -154,6 +154,51 @@ class TestClearYes:
     def test_normalize_keeps_clear_yes_only(self):
         assert normalize_reply("YES") == "yes"
         assert normalize_reply("sure I guess") == "sure i guess"
+
+    @pytest.mark.parametrize("reply", [
+        "yes",
+        "yep",
+        "yeah",
+        "confirm",
+        "lock it in",
+        "Yes, lock in this exact week",
+        "yes lock it in",
+        "Yes, I confirm.",
+        "I confirm this plan",
+        "yes, what's for dinner?",
+    ])
+    def test_plain_yes_words_are_accepted(self, reply):
+        assert is_clear_yes(reply)
+        record = ConfirmationRecorder().record(
+            ADULT_PLAN, reply, "user", passing_check_in()
+        )
+        assert record.confirmed
+        assert record.quoted_words == reply
+
+    @pytest.mark.parametrize("reply", [
+        "sure I guess",
+        "looks fine",
+        "whatever",
+        "maybe",
+        "sounds good, let's go",
+        "do it",
+        "confirmed",
+        "yes but drop the last set",
+        "yes except legs",
+        "yes make it 4 days",
+        "yes, change the squat",
+        "yes?",
+        "no",
+        "not yet",
+        "yes, is 60 minutes enough?",
+    ])
+    def test_hedged_or_changed_replies_are_refused(self, reply):
+        assert not is_clear_yes(reply)
+        record = ConfirmationRecorder().record(
+            ADULT_PLAN, reply, "user", passing_check_in()
+        )
+        assert not record.confirmed
+        assert record.quoted_words == reply
 
 
 class TestPlanCheckFollowUps:

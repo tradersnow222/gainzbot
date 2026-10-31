@@ -5,6 +5,7 @@ import json
 from pathlib import Path
 
 from plan_builder import PlanBuilder, week_to_confirm
+from record_confirmation import hash_plan
 from plan_check import PlanValidator
 from readiness_screen import (
     ClearanceLevel,
@@ -513,6 +514,180 @@ def test_a_readiness_result_built_in_code_does_not_pass(tmp_path):
     )
     assert saved["saved"] is False
     assert not path.exists()
+
+
+def test_three_gym_days_are_a_deterministic_full_body_split():
+    person = profile(
+        equipment="full gym",
+        experience="intermediate",
+        minutes=60,
+        sport="lifting",
+        injuries="none",
+    )
+    check_in = passing_check_in()
+    first = PlanBuilder().propose(person, check_in)
+    second = PlanBuilder().propose(person, check_in)
+    assert first["ok"] is True
+    assert first["sessions"] == second["sessions"]
+    assert [row["name"] for row in first["sessions"]] == [
+        "Full body A", "Full body B", "Full body C",
+    ]
+    for row in first["sessions"]:
+        assert row["exercises"]
+        for exercise in row["exercises"]:
+            assert {"name", "sets", "reps", "rest", "effort"} <= set(exercise)
+            assert exercise["sets"] == 4
+    names = [item["name"] for item in first["sessions"][0]["exercises"]]
+    assert "Back squat" in names
+    knee = PlanBuilder().propose(profile(equipment="full gym", injuries="left knee"), check_in)
+    assert knee["ok"] is True
+    knee_names = [item["name"].lower() for item in knee["sessions"][0]["exercises"]]
+    assert not any("squat" in name or "lunge" in name for name in knee_names)
+
+
+def test_a_swapped_exercise_is_not_the_confirmed_week(tmp_path):
+    builder = PlanBuilder()
+    check_in = passing_check_in()
+    built = builder.propose(profile(equipment="full gym", sport="lifting"), check_in)
+    path = tmp_path / "week.json"
+    yes = recorded(week_to_confirm(built["plan"], built["sessions"]))
+    assert _save(builder, built, yes, path, check_in=check_in)["saved"] is True
+    swapped = json.loads(json.dumps(built["sessions"]))
+    swapped[0]["exercises"][0]["name"] = "Something else"
+    refused = _save(builder, built, yes, path, sessions=swapped, check_in=check_in)
+    assert refused["saved"] is False
+    stored = json.loads(path.read_text(encoding="utf-8"))["sessions"]
+    assert stored[0]["exercises"] == built["sessions"][0]["exercises"]
+
+
+def test_an_adult_cut_gets_calories_protein_and_the_goal():
+    check_in = passing_check_in()
+    built = PlanBuilder().propose(profile(goal="cut"), check_in)
+    assert built["ok"] is True
+    nutrition = built["plan"]["nutrition"]
+    user = built["plan"]["user"]
+    bmr = PlanValidator.estimate_bmr(user["weight_kg"], "M", int(user["age"]), user["height_cm"])
+    assert nutrition["calories"] >= PlanValidator.CALORIE_FLOOR_MEN
+    assert nutrition["calories"] >= bmr
+    per_kg = nutrition["protein_g"] / user["weight_kg"]
+    assert PlanValidator.MIN_PROTEIN_G_PER_KG <= per_kg <= PlanValidator.MAX_PROTEIN_G_PER_KG
+    assert built["plan"]["goals"]["goal"] == "cut"
+    checked = PlanValidator().validate_plan(built["plan"], check_in_result=check_in)
+    assert checked.valid, checked.errors
+    woman = PlanBuilder().propose(
+        profile(sex="F", weight_kg=60, height_cm=165, goal="lose"),
+        check_in,
+    )
+    assert woman["ok"] is True
+    assert woman["plan"]["nutrition"]["calories"] >= PlanValidator.CALORIE_FLOOR_WOMEN
+    assert woman["plan"]["goals"]["goal"] == "lose"
+    assert PlanValidator().validate_plan(woman["plan"], check_in_result=check_in).valid
+    gain = PlanBuilder().propose(profile(goal="gain"), check_in)
+    assert gain["ok"] is True
+    assert gain["plan"]["nutrition"]["calories"] > built["plan"]["nutrition"]["calories"]
+    assert gain["plan"]["goals"]["goal"] == "gain"
+    assert PlanValidator().validate_plan(gain["plan"], check_in_result=check_in).valid
+    held = PlanBuilder().propose(profile(goal="hold"), check_in)
+    assert held["ok"] is True
+    assert "nutrition" not in held["plan"]
+    young = profile(age=16, goal="cut")
+    screened = PlanBuilder().propose(young, check_in, readiness_result=screen_for(young))
+    assert screened["ok"] is True
+    assert "nutrition" not in screened["plan"]
+
+
+def test_the_saved_week_starts_the_seven_day_clock(tmp_path):
+    from datetime import datetime, timedelta, timezone
+
+    from confirmed_change import confirmed_baseline, confirmed_history, parse_utc
+    from log_store import LogStore
+    from trend_review import TrendReview
+
+    builder = PlanBuilder()
+    check_in = passing_check_in()
+    built = builder.propose(profile(goal="cut"), check_in)
+    path = tmp_path / "week.json"
+    yes = recorded(built["confirm"])
+    saved = _save(builder, built, yes, path, check_in=check_in)
+    assert saved["saved"] is True
+    log = LogStore(tmp_path / "log.json")
+    record = next(row for row in log.data["confirmations"] if "changes" not in row)
+    assert record["plan_hash"] == yes.plan_hash
+    assert record["plan_hash"] == hash_plan(built["confirm"])
+    assert record["quoted_words"] == "yes"
+    assert record["speaker"] == "user"
+    assert record["record_id"] == yes.record_id
+    assert record["date"].endswith("Z")
+    when = parse_utc(record["date"])
+    assert when is not None
+    history = confirmed_history(log.as_trend(), built["plan"]["user"])
+    later = (when + timedelta(days=7)).strftime("%Y-%m-%dT%H:%M:%SZ")
+    earlier = (when + timedelta(days=7) - timedelta(seconds=1)).strftime("%Y-%m-%dT%H:%M:%SZ")
+    load = built["plan"]["training"]["current_load"]
+    calories = built["plan"]["nutrition"]["calories"]
+    assert confirmed_baseline(history, "load", later) == load
+    assert confirmed_baseline(history, "load", earlier) is None
+    assert confirmed_baseline(history, "calories", later) == calories
+    assert confirmed_baseline(history, "calories", earlier) is None
+
+    def stamp(value):
+        return datetime.fromisoformat(value.replace("Z", "+00:00")).astimezone(timezone.utc)
+
+    start = stamp(earlier).date() - timedelta(days=6)
+    sessions = []
+    training = []
+    for offset in range(8):
+        day = (start + timedelta(days=offset)).isoformat()
+        sessions.append({"date": day, "load": load, "planned": True, "completed": True})
+        training.append({"date": day, "load": load})
+    logs = {
+        "confirmed_changes": history,
+        "sessions": sessions,
+        "training": training,
+    }
+    user = built["plan"]["user"]
+    early = TrendReview().review(logs, user, 7, earlier)
+    late = TrendReview().review(logs, user, 7, later)
+    early_loads = [item for item in early["proposals"] if "load" in item.get("changes", {})]
+    late_loads = [item for item in late["proposals"] if "load" in item.get("changes", {})]
+    assert early_loads == []
+    assert late_loads
+    assert late_loads[0]["changes"]["load"] != load
+
+
+def test_a_failed_week_write_rolls_the_log_back(tmp_path, monkeypatch):
+    import os
+
+    import plan_builder
+    from log_store import LogStore
+
+    real = plan_builder._write_json
+
+    def boom(path, payload):
+        if os.path.basename(path) == "week.json":
+            raise OSError("full")
+        real(path, payload)
+
+    monkeypatch.setattr(plan_builder, "_write_json", boom)
+    builder = PlanBuilder()
+    check_in = passing_check_in()
+    built = builder.propose(profile(), check_in)
+    path = tmp_path / "week.json"
+    yes = recorded(week_to_confirm(built["plan"], built["sessions"]))
+    refused = _save(builder, built, yes, path, check_in=check_in)
+    assert refused["saved"] is False
+    assert not path.exists()
+    log_path = tmp_path / "log.json"
+    assert not log_path.exists()
+    LogStore(log_path).append("meals", {"date": "2026-10-30", "calories": 500, "protein_g": 30})
+    refused_again = builder.save(
+        built["plan"], yes, path, built["sessions"], check_in_result=check_in,
+    )
+    assert refused_again["saved"] is False
+    assert not path.exists()
+    kept = LogStore(log_path)
+    assert kept.data["confirmations"] == []
+    assert kept.data["meals"][0]["calories"] == 500
 
 
 def test_the_builder_does_not_use_the_log_store_and_the_guide_has_no_em_dash():
