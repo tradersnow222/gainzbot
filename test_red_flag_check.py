@@ -1024,6 +1024,14 @@ class TestNewStemsAndIdioms:
         dizzy = RedFlagChecker().scan_text("\U0001F635")
         assert fever.pause_plan and "heat_illness" in fever.flags_detected
         assert dizzy.pause_plan and "fainting" in dizzy.flags_detected
+        sick = RedFlagChecker().scan_text("\U0001F922")
+        hot = RedFlagChecker().scan_text("\U0001F975")
+        heart = RedFlagChecker().scan_text("\U0001F494")
+        assert sick.pause_plan and "nausea" in sick.flags_detected
+        assert hot.pause_plan and "heat_illness" in hot.flags_detected
+        assert "medical emergency" in hot.message.lower()
+        assert heart.pause_plan and "cardiac_symptoms" in heart.flags_detected
+        assert "medical emergency" in heart.message.lower()
 
 
 if __name__ == "__main__":

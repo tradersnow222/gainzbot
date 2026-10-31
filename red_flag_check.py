@@ -434,6 +434,12 @@ class RedFlagChecker:
             flags.add("heat_illness")
         if "\U0001F635" in text:
             flags.add("fainting")
+        if "\U0001F922" in text:
+            flags.add("nausea")
+        if "\U0001F975" in text:
+            flags.add("heat_illness")
+        if "\U0001F494" in text:
+            flags.add("cardiac_symptoms")
         if self._chest_hit(text):
             flags.add("chest_pain")
         if self._heart_hit(text) or self._active(text, self._CARDIAC_WORD):

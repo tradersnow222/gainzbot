@@ -245,6 +245,11 @@ class TestSuggestion:
         same = log.suggest_next("pull-ups", history(100), AS_OF, rep_top=10)
         assert same["suggestion"]["exercise"] == "pullup"
         assert same["suggestion"]["weight"] == 72.5
+        for name in ("calf raises", "calf raise"):
+            saved = log.log_set(name, 70, 10, "2026-11-09")
+            assert saved["entry"]["exercise"] == "calfraise", name
+        presses = log.log_set("presses", 70, 10, "2026-11-09")
+        assert presses["entry"]["exercise"] == "press"
 
     def test_one_set_short_of_the_top_keeps_the_weight(self):
         log = SetLogger()

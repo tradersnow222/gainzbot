@@ -55,7 +55,13 @@ def _parse_day(value) -> Optional[date]:
 
 
 def _singular(name):
-    """One key for a plural. benchpresses, lunges, and pullups collapse."""
+    """One key for a plural.
+
+    -ses and -ises drop one s, so calf raises and calf raise share calfraise.
+    presses still drops es, and lunges and pullups drop the trailing s.
+    """
+    if len(name) > 4 and (name.endswith("ises") or (name.endswith("ses") and not name.endswith("sses"))):
+        return name[:-1]
     if len(name) > 4 and name.endswith("es") and name[:-2].endswith(("s", "x", "z", "ch", "sh")):
         return name[:-2]
     if len(name) > 3 and name.endswith("s") and not name.endswith("ss"):
@@ -387,7 +393,8 @@ class SetLogger:
         NFKC, no zero-width characters, case and accents folded.
         Cyrillic and Greek lookalikes become Latin. Hyphens and spaces
         are removed, and a trailing plural is singular, so bench presses,
-        lunges, and pull-ups share a key with bench press, lunge, and pullup.
+        lunges, pull-ups, and calf raises share a key with bench press,
+        lunge, pullup, and calf raise. A -ses or -ises plural drops one s.
         """
         if not isinstance(exercise, str):
             return None
