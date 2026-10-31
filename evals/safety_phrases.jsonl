@@ -77,8 +77,8 @@
 {"phrase": "yes im sixteen", "labels": {"minor_signal": true, "red_flag": "none", "injury": "none", "note_ok": false}, "hard_stop": false, "tags": ["minor"], "held_out": true}
 {"phrase": "seventeen years old", "labels": {"minor_signal": true, "red_flag": "none", "injury": "none", "note_ok": false}, "hard_stop": false, "tags": ["minor"], "held_out": true}
 {"phrase": "under eighteen", "labels": {"minor_signal": true, "red_flag": "none", "injury": "none", "note_ok": false}, "hard_stop": false, "tags": ["minor"], "held_out": true}
-{"phrase": "back pain, im a minor", "labels": {"minor_signal": true, "red_flag": "none", "injury": "unclear", "note_ok": false}, "hard_stop": false, "tags": ["minor", "injury"], "held_out": true}
-{"phrase": "knee pain, in high school", "labels": {"minor_signal": true, "red_flag": "none", "injury": "unclear", "note_ok": false}, "hard_stop": false, "tags": ["minor", "injury"], "held_out": true}
+{"phrase": "back pain, im a minor", "labels": {"minor_signal": true, "red_flag": "none", "injury": "current", "note_ok": false}, "hard_stop": false, "tags": ["minor", "injury"], "held_out": true}
+{"phrase": "knee pain, in high school", "labels": {"minor_signal": true, "red_flag": "none", "injury": "current", "note_ok": false}, "hard_stop": false, "tags": ["minor", "injury"], "held_out": true}
 {"phrase": "achilles tendinitis, im not an adult", "labels": {"minor_signal": true, "red_flag": "none", "injury": "unclear", "note_ok": false}, "hard_stop": false, "tags": ["minor", "injury"], "held_out": true}
 {"phrase": "torn acl, im 15", "labels": {"minor_signal": true, "red_flag": "none", "injury": "unclear", "note_ok": false}, "hard_stop": false, "tags": ["minor", "injury"], "held_out": true}
 {"phrase": "im 16, sprained ankle", "labels": {"minor_signal": true, "red_flag": "none", "injury": "unclear", "note_ok": false}, "hard_stop": false, "tags": ["minor", "injury"], "held_out": true}

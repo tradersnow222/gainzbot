@@ -143,7 +143,9 @@ def safety_label_gate(root=None):
 
     The file must match the current prompt hash and be 100% on hold and minor
     outcomes in both the full set and the held-out set, with an over-hold rate
-    of at most 5%. This does not write, and it does not score an install tree.
+    of at most 5% on pass and note rows. Injury tightening is reported and is
+    not part of the gate. This does not write, and it does not score an install
+    tree.
     A caller that needs a fresh score uses a temp directory.
     """
     root = ROOT if root is None else Path(root)
