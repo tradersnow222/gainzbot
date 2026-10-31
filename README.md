@@ -179,3 +179,24 @@ if record.confirmed and recorder.covers(record, plan):
 ```bash
 pytest test_record_confirmation.py -v  # 23 tests
 ```
+
+### dashboard.py
+
+Builds chart data for one window: 7, 28, 90, or 365 days. The spec is chart-first. The charts are weight, calories vs target, protein vs target, adherence, and personal records.
+
+The builder only reads logs. It does not change the plan. A calorie target is left off the chart when age or sex is missing, when the user is under 18, or when the target is below the floor. A protein target outside 1.6 to 2.2 g/kg is left off too. Too little data returns "not enough data yet" and empty charts.
+
+**Usage:**
+```python
+from dashboard import Dashboard
+
+board = Dashboard()
+result = board.build(logs, user, window_days=28, as_of="2026-10-28", targets={"calories": 2200, "protein_g": 144})
+for chart in result["charts"]:
+    print(chart["title"])
+```
+
+**Testing:**
+```bash
+pytest test_dashboard.py -v  # 16 tests
+```
