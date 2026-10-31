@@ -18,7 +18,7 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from confirmed_change import last_confirmed_change, parse_utc, seven_days_old
 from guardrails.validate import InputValidator, ValidationError
 from plan_check import PlanValidator
-from record_confirmation import ConfirmationRecorder
+from record_confirmation import ConfirmationRecord, ConfirmationRecorder
 
 
 def _parse_day(value) -> Optional[date]:
@@ -141,7 +141,7 @@ class MorningCheckIn:
                 "changes": {},
                 "message": "This proposal needs record_confirmation before it applies.",
             }
-        if not ConfirmationRecorder().covers(confirmation, proposal):
+        if not isinstance(confirmation, ConfirmationRecord) or not ConfirmationRecorder().covers(confirmation, proposal):
             return {
                 "applied": False,
                 "changes": {},

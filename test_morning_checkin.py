@@ -147,6 +147,12 @@ class TestMissedSession:
 
 
 class TestConfirmation:
+    def test_a_bare_true_does_not_apply(self):
+        proposal = check(PUSH)["proposal"]
+        applied = MorningCheckIn().apply(proposal, True)
+        assert applied["applied"] is False
+        assert applied["changes"] == {}
+
     def test_check_in_apply_without_confirmation_does_nothing(self):
         proposal = check(PUSH)["proposal"]
         applied = MorningCheckIn().apply(proposal, None)
