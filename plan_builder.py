@@ -252,7 +252,7 @@ def _loads_calf(name):
 
 
 def _no_running(text):
-    return any(part in text for part in ("ankle", "calf", "achilles", "shin"))
+    return any(part in text for part in ("ankle", "calf", "achilles", "shin", "knee", "hip"))
 
 
 def _loads_neck(name):
@@ -554,27 +554,62 @@ def _weeks_until(event, today=None):
     return max(0, (when - current).days / 7.0)
 
 
-def _run_lengths(experience, minutes, weeks):
-    """Easy and long run minutes that fit inside the session, warmup included."""
-    room = int(minutes) - _WARMUP_MINUTES
-    if room < 1:
-        room = max(1, int(minutes))
-    near = weeks is not None and weeks <= 8
-    beginner = experience not in {"intermediate", "advanced"}
-    if beginner:
-        easy, long = (min(30, room), room) if near else (min(25, room), min(30, room))
-    else:
-        easy, long = (min(35, room), room) if near else (min(30, room), min(40, room))
+def _build_factor(weeks):
+    """0 when the event is far, 1 at the peak two weeks out."""
+    if weeks is None or weeks >= 12:
+        return 0.0
+    if weeks <= 2:
+        return 1.0
+    return (12.0 - float(weeks)) / 10.0
+
+
+def _fit_run(easy, long, room):
+    easy = min(int(round(easy)), room)
+    long = min(int(round(long)), room)
     if room >= 10:
-        easy = max(10, min(easy, room))
+        easy = max(10, easy)
     else:
         easy = min(easy, room)
-    long = max(easy, min(long, room))
+    long = max(easy, long)
     return int(easy), int(long)
 
 
+def _run_lengths(experience, minutes, weeks, returning=False):
+    """Easy and long run minutes that fit inside the session, warmup included.
+
+    Far from the event the week uses the base. Closer than 12 weeks it may
+    build, and that build is at most 10% above the base. Race week, under
+    one week out, tapers below the base. Beginners stay on the beginner cap
+    even when the event is close. An old running injury starts shorter and
+    uses that same 10% build on the way back.
+    """
+    room = int(minutes) - _WARMUP_MINUTES
+    if room < 1:
+        room = max(1, int(minutes))
+    beginner = experience not in {"intermediate", "advanced"}
+    base_easy, base_long = (25, 30) if beginner else (30, 40)
+    rise = 0.0 if beginner else 0.10
+    if returning:
+        base_easy = max(10, int(round(base_easy * 0.6)))
+        base_long = max(base_easy, int(round(base_long * 0.6)))
+        rise = 0.10
+    if weeks is not None and weeks < 1:
+        return _fit_run(base_easy * 0.6, base_long * 0.6, room)
+    factor = _build_factor(weeks)
+    return _fit_run(
+        base_easy * (1 + rise * factor),
+        base_long * (1 + rise * factor),
+        room,
+    )
+
+
 def _run_roles(days):
-    """Long run on Saturday, else the last day. No heavy legs the session before it."""
+    """Long run on Saturday, else the last day. No heavy legs the session before it.
+
+    A run stays off the session after Lower when another day can take it.
+    Saturday stays a long run instead of Lower, so a weekend run is not
+    stacked on that lower day.
+    """
     long_i = next((index for index, day in enumerate(days) if day.weekday() == 5), len(days) - 1)
     roles = ["strength"] * len(days)
     roles[long_i] = "long"
@@ -583,6 +618,34 @@ def _run_roles(days):
     easy_at = next((index for index, role in enumerate(roles) if role == "strength"), None)
     if easy_at is not None:
         roles[easy_at] = "easy"
+    elif len(roles) >= 2 and roles[long_i - 1] == "upper":
+        roles[long_i - 1] = "easy"
+    return _shift_run_after_lower(roles)
+
+
+def _shift_run_after_lower(roles):
+    """Move a run off the session after Lower when a free strength day exists."""
+    count = len(roles)
+    lower = [
+        index for index, role in enumerate(roles)
+        if role == "strength" and _split_name(count, index) == "Lower"
+    ]
+    forbidden = {index + 1 for index in lower if index + 1 < count}
+    for index in list(forbidden):
+        if roles[index] not in {"easy", "long"}:
+            continue
+        swap = next(
+            (
+                other for other, role in enumerate(roles)
+                if role == "strength"
+                and other not in forbidden
+                and _split_name(count, other) != "Lower"
+            ),
+            None,
+        )
+        if swap is None:
+            continue
+        roles[index], roles[swap] = roles[swap], roles[index]
     return roles
 
 
@@ -599,9 +662,9 @@ def _run_block(name, run_minutes):
 def running_week(profile, today=None):
     """Easy run, long run, and strength roles, or None for a normal strength week.
 
-    A running sport or a running event schedules those sessions only when an
-    event is on record or the injury is already marked old. A fresh ankle,
-    calf, achilles, or shin keeps the week off running.
+    A running sport schedules an easy run and a long run even when the event
+    has no date. A fresh ankle, calf, achilles, shin, knee, or hip keeps the
+    week off running. An old one still runs, shorter at first.
     """
     if not isinstance(profile, dict):
         return None
@@ -612,8 +675,6 @@ def running_week(profile, today=None):
     if not _wants_running(sport, event):
         return None
     if _no_running(_injury_text(injuries)) and not injury_old:
-        return None
-    if event is None and not injury_old:
         return None
     parsed = []
     for item in profile.get("days") or []:
@@ -635,7 +696,13 @@ def running_week(profile, today=None):
     if not math.isfinite(minutes) or minutes <= 0:
         return None
     experience = profile.get("experience") if isinstance(profile.get("experience"), str) else "beginner"
-    easy, long = _run_lengths(experience.strip().lower(), minutes, _weeks_until(event, today))
+    returning = injury_old and _no_running(_injury_text(injuries))
+    easy, long = _run_lengths(
+        experience.strip().lower(),
+        minutes,
+        _weeks_until(event, today),
+        returning=returning,
+    )
     return {"roles": _run_roles(parsed), "easy": easy, "long": long}
 
 

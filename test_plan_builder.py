@@ -1342,4 +1342,144 @@ def test_an_old_running_injury_gets_easy_and_long_runs_and_a_fresh_one_does_not(
     assert easy["reps"].endswith(" min")
     assert long["reps"].endswith(" min")
     assert int(long["reps"].split()[0]) >= int(easy["reps"].split()[0])
-    assert int(long["reps"].split()[0]) <= 40
+    assert int(easy["reps"].split()[0]) < 25
+    assert int(long["reps"].split()[0]) < 30
+
+
+def _run_minutes(built, name):
+    for row in built["sessions"]:
+        if row["name"] == name:
+            return int(row["exercises"][0]["reps"].split()[0])
+    return None
+
+
+def test_run_volume_builds_gradually_tapers_and_keeps_beginners_capped():
+    from datetime import date, timedelta
+
+    today = date.today()
+    check_in = passing_check_in()
+    near = (today + timedelta(days=21)).isoformat()
+    beginner = PlanBuilder().propose(
+        profile(
+            minutes=120,
+            experience="beginner",
+            sport="running",
+            injuries="none",
+            event={"name": "half marathon", "date": near},
+        ),
+        check_in,
+    )
+    assert beginner["ok"] is True
+    assert _run_minutes(beginner, "Easy run") == 25
+    assert _run_minutes(beginner, "Long run") == 30
+    trained = PlanBuilder().propose(
+        profile(
+            minutes=120,
+            experience="intermediate",
+            sport="running",
+            injuries="none",
+            event={"name": "half marathon", "date": near},
+        ),
+        check_in,
+    )
+    assert trained["ok"] is True
+    long = _run_minutes(trained, "Long run")
+    easy = _run_minutes(trained, "Easy run")
+    assert long <= 44
+    assert easy + long <= 77
+    assert long < 115
+    race = (today + timedelta(days=3)).isoformat()
+    taper = PlanBuilder().propose(
+        profile(
+            minutes=60,
+            experience="intermediate",
+            sport="running",
+            injuries="none",
+            event={"name": "half marathon", "date": race},
+        ),
+        check_in,
+    )
+    assert taper["ok"] is True
+    assert _run_minutes(taper, "Long run") < long
+    assert _run_minutes(taper, "Easy run") < 30
+    far = (today + timedelta(days=120)).isoformat()
+    healthy = PlanBuilder().propose(
+        profile(
+            minutes=40,
+            experience="beginner",
+            sport="running",
+            injuries="none",
+            event={"name": "half marathon", "date": far},
+        ),
+        check_in,
+    )
+    ankle = PlanBuilder().propose(
+        profile(
+            minutes=40,
+            experience="beginner",
+            sport="running",
+            injuries="ankle",
+            injury_old=True,
+            event={"name": "half marathon", "date": far},
+        ),
+        check_in,
+    )
+    assert healthy["ok"] is True and ankle["ok"] is True
+    assert _run_minutes(ankle, "Long run") < _run_minutes(healthy, "Long run")
+    assert _run_minutes(ankle, "Easy run") < _run_minutes(healthy, "Easy run")
+    for area in ("knee", "hip"):
+        fresh = PlanBuilder().propose(
+            profile(
+                minutes=40,
+                sport="running",
+                injuries=area,
+                event={"name": "half marathon", "date": near},
+            ),
+            check_in,
+        )
+        assert fresh["ok"] is True, area
+        for row in fresh["sessions"]:
+            assert "run" not in row["name"].lower(), area
+            for item in row["exercises"]:
+                assert "run" not in item["name"].lower(), area
+
+
+def test_running_without_an_event_date_still_schedules_short_runs():
+    from datetime import date, timedelta
+
+    check_in = passing_check_in()
+    days = ["2026-11-02", "2026-11-03", "2026-11-04", "2026-11-07"]
+    built = PlanBuilder().propose(
+        profile(
+            minutes=45,
+            equipment="dumbbells",
+            experience="beginner",
+            sport="running",
+            injuries="none",
+            days=days,
+        ),
+        check_in,
+    )
+    assert built["ok"] is True
+    names = [row["name"] for row in built["sessions"]]
+    assert "Easy run" in names
+    assert "Long run" in names
+    assert _run_minutes(built, "Easy run") <= 25
+    assert _run_minutes(built, "Long run") <= 30
+    by_date = {row["date"]: row["name"] for row in built["sessions"]}
+    saturday = "2026-11-07"
+    assert date.fromisoformat(saturday).weekday() == 5
+    assert by_date[saturday] == "Long run"
+    assert "Lower" not in by_date[saturday]
+    for row in built["sessions"]:
+        if row["name"] != "Lower":
+            continue
+        nxt = (date.fromisoformat(row["date"]) + timedelta(days=1)).isoformat()
+        assert by_date.get(nxt) not in {"Easy run", "Long run"}
+    fresh = PlanBuilder().propose(
+        profile(minutes=40, sport="running", injuries="ankle", days=days),
+        check_in,
+    )
+    assert fresh["ok"] is True
+    for row in fresh["sessions"]:
+        assert "run" not in row["name"].lower()

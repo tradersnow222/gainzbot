@@ -195,6 +195,13 @@ def _split_scored_no(reply):
 _BARE_YES = frozenset({"yes", "yep", "yeah", "yup", "ok", "okay"})
 
 
+def _leading_symptom_no(reply):
+    """An explicit no or nope at the start of the symptom answer."""
+    if not isinstance(reply, str):
+        return False
+    return re.match(r"\s*(?:no|nope)\b", reply, flags=re.IGNORECASE) is not None
+
+
 def _remark_allowed(note):
     """True when the leftover is only an allowlisted plan, time, food, or greeting.
 
@@ -425,7 +432,7 @@ class DailyLoop:
     still come from the minutes and goal arguments.
     """
 
-    def __init__(self, load=80, minutes=45, calories=None, confirmed_at=None, goal="hold", signals=None, outreach=None, history=None, profile=None, week_path=None):
+    def __init__(self, load=80, minutes=45, calories=None, confirmed_at=None, goal="hold", signals=None, outreach=None, history=None, profile=None, week_path=None, log_path=None):
         self.load = load
         self.minutes = minutes
         self.calories = calories
@@ -435,6 +442,7 @@ class DailyLoop:
         self.outreach = outreach
         self.profile = profile
         self.week_path = week_path
+        self.log_path = log_path
         self.history = list(history) if history else []
         self.phase = {}
         self.notes = {}
@@ -710,8 +718,13 @@ class DailyLoop:
             self._remember_old_injury(day, reply)
             return self._after_symptom(day, reply)
         if action == "note" and isinstance(reply, str):
-            self.notes.setdefault(day, {})["note"] = reply
+            self.notes.setdefault(day, {})["note"] = reply.strip()
+        if action in {"note", "pass"} and _leading_symptom_no(reply):
+            self.notes.setdefault(day, {})["symptom_cleared"] = True
+            return self._after_symptom(day, "no")
         self.phase[day] = "symptom"
+        if action in {"note", "pass"}:
+            return "Still need a clear no or yes on the symptom line."
         return _SYMPTOM
 
     def _labeled_note(self, day, prefix, note, labels):
@@ -838,8 +851,13 @@ class DailyLoop:
         pending = self.pending.get(day)
         if pending is None:
             self.notes.setdefault(day, {}).update(parse_morning(reply))
+            notes = self.notes.setdefault(day, {})
             if self._needs_more(day):
-                if _fold(reply) in {"no", "nope"} or self._rest_day(day):
+                if (
+                    _fold(reply) in {"no", "nope"}
+                    or self._rest_day(day)
+                    or notes.get("symptom_cleared")
+                ):
                     self._fill_defaults(day, as_of)
                 else:
                     self.phase[day] = "morning2"
@@ -913,6 +931,11 @@ class DailyLoop:
             "stress": notes.get("stress", 2),
         }
 
+    def _all_no_check(self, reply):
+        checker = RedFlagChecker()
+        answers = {aliases[0]: "no" for _flag, aliases in checker.CHECKLIST_GROUPS}
+        return checker.scan_check_in({"symptom_checklist": answers, "notes": reply})
+
     def _checklist(self, reply):
         """Fill all-no here. scan_check_in does not treat a bare no as the list.
 
@@ -920,15 +943,17 @@ class DailyLoop:
         still counts only after the full list was shown, except when this
         caller already decided the short line was clear.
         """
-        checker = RedFlagChecker()
         if clear_safety_no(reply) or symptom_is_clear(reply) or _split_scored_no(reply):
-            answers = {aliases[0]: "no" for _flag, aliases in checker.CHECKLIST_GROUPS}
-            return checker.scan_check_in({"symptom_checklist": answers, "notes": reply})
-        return checker.scan_check_in({"notes": reply})
+            return self._all_no_check(reply)
+        return RedFlagChecker().scan_check_in({"notes": reply})
 
     def _before_training(self, day):
-        reply = self.notes.get(day, {}).get("reply") or ""
-        result = self._checklist(reply)
+        notes = self.notes.get(day, {})
+        reply = notes.get("reply") or ""
+        if notes.get("symptom_cleared"):
+            result = self._all_no_check(reply)
+        else:
+            result = self._checklist(reply)
         if not is_passing_check_in(result):
             text = _pause_text(result)
             from seal_secret import DATA_FILE_MESSAGE
@@ -998,10 +1023,13 @@ class DailyLoop:
             return blocked
         scores = self._scores(day)
         as_of = f"{day}T12:00:00Z"
+        note = self.notes.get(day, {}).get("note")
         checked = MorningCheckIn().check_in(
             scores,
             confirmed_changes=self.history,
             as_of=as_of,
+            log_path=self.log_path,
+            note=note if isinstance(note, str) and note.strip() else None,
         )
         day_name = checked.get("day") or "normal"
         changes = (checked.get("proposal") or {}).get("changes") or {}
