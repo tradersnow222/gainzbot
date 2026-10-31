@@ -123,6 +123,14 @@ class TestSuggestion:
 
 
 class TestConfirmation:
+    def test_a_bare_true_does_not_apply(self):
+        log = SetLogger()
+        log.log_set("squat", 100, 8, "2026-10-30")
+        proposal = log.suggest_next("squat", history(100), AS_OF)["proposal"]
+        applied = log.apply(proposal, True)
+        assert applied["applied"] is False
+        assert "record_confirmation" in applied["message"]
+
     def test_apply_without_confirmation_does_not_move_the_baseline(self):
         log = SetLogger()
         prior = history(100)
