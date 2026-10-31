@@ -44,6 +44,31 @@ def test_age_caps_stall_and_privacy_are_stated():
     assert "what to do today" in text
 
 
+def test_the_daily_check_in_is_two_messages():
+    from pathlib import Path
+
+    from red_flag_check import RedFlagChecker
+
+    text = RULES.lower()
+    assert "two messages" in text
+    assert 'accept "none"' in text
+    assert "4 scores" in text
+    assert "second message asks for the yes" in text
+    assert "don't train through pain" in text
+    today = RULES.lower().split("## today", 1)[1].split("## ", 1)[0]
+    assert today.index("red_flag_check.scan_check_in") < today.index("before readiness")
+    guide = Path("template/daily-checkin.md").read_text(encoding="utf-8")
+    for label in RedFlagChecker.ITEM_LABELS.values():
+        assert label in guide
+    lowered = guide.lower()
+    assert "accept \"none\"" in lowered
+    assert "message 2" in lowered
+    assert "4 scores" in lowered
+    assert lowered.index("scan_check_in") < lowered.index("readiness_screen")
+    assert "\u2014" not in RULES
+    assert "\u2014" not in guide
+
+
 def test_checks_catch_mistakes_and_name_the_public_limits():
     assert "catch mistakes" in RULES.lower()
     assert "signing key is in the public repo" in RULES
