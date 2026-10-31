@@ -2,10 +2,10 @@
 """
 Log each set and suggest the next one.
 
-A suggestion can raise the weight by at most 10 percent over the baseline.
-The baseline is the last confirmed working weight, or the first set of the
-latest day when nothing is confirmed yet. A jump is not applied until
-record_confirmation covers that proposal.
+The baseline is the last confirmed load from the shared history reader.
+Nothing moves up when that load is missing or younger than 7 times 24 hours
+in UTC. A rise is at most 10 percent of that confirmed load, and apply does
+nothing until record_confirmation covers that exact proposal.
 """
 
 from datetime import date, datetime
@@ -14,6 +14,7 @@ import os
 import sys
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+from confirmed_change import confirmed_baseline
 from guardrails.validate import InputValidator, ValidationError
 from plan_check import PlanValidator
 from record_confirmation import ConfirmationRecorder
@@ -76,37 +77,41 @@ class SetLogger:
             "entry": stored,
         }
 
-    def suggest_next(self, exercise) -> Dict:
+    def suggest_next(self, exercise, confirmed_changes=None, as_of=None) -> Dict:
         name = self._name(exercise)
         if not name:
             return self._no("Name the exercise.")
         done = [item for item in self.sets if item["exercise"] == name]
         if not done and name not in self.working:
             return self._no("Log a set first.")
-        baseline_weight, baseline_reps = self._baseline(name, done)
-        cap = baseline_weight * (1 + PlanValidator.MAX_TRAINING_LOAD_INCREASE_PERCENT / 100)
-        last = done[-1] if done else {"weight": baseline_weight, "reps": baseline_reps}
-        if last["reps"] >= 8 and last["weight"] < cap:
-            weight = min(last["weight"] * 1.10, cap)
+        last_weight, last_reps = self._last(name, done)
+        baseline = confirmed_baseline(confirmed_changes, "load", as_of)
+        if baseline is None:
+            weight = last_weight
         else:
-            weight = min(last["weight"], cap)
+            cap = baseline * (1 + PlanValidator.MAX_TRAINING_LOAD_INCREASE_PERCENT / 100)
+            if last_reps >= 8 and last_weight < cap:
+                weight = min(last_weight * 1.10, cap)
+            else:
+                weight = min(last_weight, cap)
         suggestion = {
             "exercise": name,
             "weight": _whole(weight),
-            "reps": _whole(baseline_reps),
+            "reps": _whole(last_reps),
         }
-        check = PlanValidator().validate_training_load_increase(baseline_weight, suggestion["weight"])
-        if not check.valid:
-            suggestion["weight"] = _whole(cap)
         proposal = None
         message = "Next set stays at this weight."
-        if suggestion["weight"] > baseline_weight:
-            proposal = {
-                "summary": f"Next {name} set is {suggestion['weight']} for {suggestion['reps']} reps.",
-                "changes": dict(suggestion),
-                "needs_confirmation": True,
-            }
-            message = "The next set stays within 10 percent. Nothing is applied until it is confirmed."
+        if baseline is not None and suggestion["weight"] > baseline:
+            check = PlanValidator().validate_training_load_increase(baseline, suggestion["weight"])
+            if not check.valid:
+                suggestion["weight"] = _whole(baseline)
+            else:
+                proposal = {
+                    "summary": f"Next {name} set is {suggestion['weight']} for {suggestion['reps']} reps.",
+                    "changes": dict(suggestion),
+                    "needs_confirmation": True,
+                }
+                message = "The next set stays within 10 percent. Nothing is applied until it is confirmed."
         return {
             "ok": True,
             "applied": False,
@@ -152,14 +157,12 @@ class SetLogger:
             "message": "Confirmed. This working weight can be applied.",
         }
 
-    def _baseline(self, name, done):
-        if name in self.working:
-            working = self.working[name]
-            return working["weight"], working["reps"]
-        latest = max(item["date"] for item in done)
-        session = [item for item in done if item["date"] == latest]
-        first = session[0]
-        return first["weight"], first["reps"]
+    def _last(self, name, done):
+        if done:
+            last = done[-1]
+            return last["weight"], last["reps"]
+        working = self.working[name]
+        return working["weight"], working["reps"]
 
     def _name(self, exercise) -> Optional[str]:
         if not isinstance(exercise, str):

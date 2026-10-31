@@ -1,10 +1,14 @@
 #!/usr/bin/env python3
 """Tests for set_logger.py."""
 
+from datetime import datetime, timedelta, timezone
+
 from plan_check import PlanValidator
 from record_confirmation import ConfirmationRecorder
 from red_flag_check import RedFlagChecker, is_passing_check_in
 from set_logger import SetLogger
+
+AS_OF = "2026-10-29T00:00:00Z"
 
 
 def passing_check_in():
@@ -20,6 +24,18 @@ def passing_check_in():
 
 def confirm(proposal):
     return ConfirmationRecorder().record(proposal, "yes", "user", passing_check_in())
+
+
+def history(load, as_of=AS_OF, hours_ago=7 * 24, confirmed=True):
+    when = datetime(2026, 10, 29, tzinfo=timezone.utc) - timedelta(hours=hours_ago)
+    if as_of != AS_OF:
+        parsed = datetime.fromisoformat(as_of.replace("Z", "+00:00"))
+        when = parsed - timedelta(hours=hours_ago)
+    return [{
+        "date": when.strftime("%Y-%m-%dT%H:%M:%SZ"),
+        "confirmed": confirmed,
+        "changes": {"load": load},
+    }]
 
 
 class TestLogging:
@@ -45,7 +61,7 @@ class TestSuggestion:
     def test_the_next_set_rises_by_at_most_10_percent(self):
         log = SetLogger()
         log.log_set("squat", 100, 8, "2026-10-30")
-        result = log.suggest_next("squat")
+        result = log.suggest_next("squat", history(100), AS_OF)
         assert result["applied"] is False
         assert result["suggestion"]["weight"] == 110
         assert result["suggestion"]["reps"] == 8
@@ -54,18 +70,40 @@ class TestSuggestion:
 
     def test_two_sets_cannot_stack_from_100_to_121(self):
         log = SetLogger()
+        prior = history(100)
         log.log_set("squat", 100, 8, "2026-10-30")
-        first = log.suggest_next("squat")
+        first = log.suggest_next("squat", prior, AS_OF)
         assert first["suggestion"]["weight"] == 110
         log.log_set("squat", 110, 8, "2026-10-30")
-        second = log.suggest_next("squat")
+        second = log.suggest_next("squat", prior, AS_OF)
         assert second["suggestion"]["weight"] == 110
         assert second["suggestion"]["weight"] != 121
+        assert second["suggestion"]["weight"] != 133.1
+
+    def test_logging_100_then_110_with_nothing_confirmed_does_not_suggest_121_or_133_1(self):
+        log = SetLogger()
+        log.log_set("squat", 100, 8, "2026-10-30")
+        log.log_set("squat", 110, 8, "2026-10-30")
+        result = log.suggest_next("squat", as_of=AS_OF)
+        assert result["suggestion"]["weight"] == 110
+        assert result["suggestion"]["weight"] != 121
+        assert result["suggestion"]["weight"] != 133.1
+        assert result["proposal"] is None
+
+    def test_a_confirmed_load_under_7_days_does_not_move_up(self):
+        log = SetLogger()
+        log.log_set("squat", 110, 8, "2026-10-28")
+        young = history(110, hours_ago=(6 * 24) + 22.5)
+        early = "2026-10-29T00:30:00Z"
+        result = log.suggest_next("squat", young, early)
+        assert result["suggestion"]["weight"] == 110
+        assert result["suggestion"]["weight"] != 121
+        assert result["proposal"] is None
 
     def test_a_short_set_does_not_jump_the_weight(self):
         log = SetLogger()
         log.log_set("bench", 100, 5, "2026-10-30")
-        result = log.suggest_next("bench")
+        result = log.suggest_next("bench", history(100), AS_OF)
         assert result["suggestion"]["weight"] == 100
         assert result["proposal"] is None
 
@@ -78,36 +116,46 @@ class TestSuggestion:
         log = SetLogger()
         log.log_set("squat", 100, 8, "2026-10-30")
         log.log_set("bench", 60, 8, "2026-10-30")
-        assert log.suggest_next("bench")["suggestion"]["weight"] == 66
+        bench = log.suggest_next("bench", history(60), AS_OF)
+        squat = log.suggest_next("squat", history(100), AS_OF)
+        assert bench["suggestion"]["weight"] == 66
+        assert squat["suggestion"]["weight"] == 110
 
 
 class TestConfirmation:
     def test_apply_without_confirmation_does_not_move_the_baseline(self):
         log = SetLogger()
+        prior = history(100)
         log.log_set("squat", 100, 8, "2026-10-30")
-        proposal = log.suggest_next("squat")["proposal"]
+        proposal = log.suggest_next("squat", prior, AS_OF)["proposal"]
         applied = log.apply(proposal, None)
         assert applied["applied"] is False
         assert "record_confirmation" in applied["message"]
         log.log_set("squat", 110, 8, "2026-10-30")
-        assert log.suggest_next("squat")["suggestion"]["weight"] == 110
+        held = log.suggest_next("squat", prior, AS_OF)
+        assert held["suggestion"]["weight"] == 110
+        assert held["suggestion"]["weight"] != 121
 
     def test_a_confirmed_jump_becomes_the_new_baseline(self):
         log = SetLogger()
         log.log_set("squat", 100, 8, "2026-10-30")
-        proposal = log.suggest_next("squat")["proposal"]
+        proposal = log.suggest_next("squat", history(100), AS_OF)["proposal"]
         applied = log.apply(proposal, confirm(proposal))
         assert applied["applied"] is True
         assert applied["changes"]["weight"] == 110
         log.log_set("squat", 110, 8, "2026-10-31")
-        nxt = log.suggest_next("squat")
+        too_soon = log.suggest_next("squat", history(110, hours_ago=24), AS_OF)
+        assert too_soon["suggestion"]["weight"] == 110
+        assert too_soon["suggestion"]["weight"] != 121
+        nxt = log.suggest_next("squat", history(110), AS_OF)
         assert nxt["suggestion"]["weight"] == 121
+        assert nxt["suggestion"]["weight"] != 133.1
         assert PlanValidator().validate_training_load_increase(110, 121).valid
 
     def test_an_edited_proposal_does_not_apply(self):
         log = SetLogger()
         log.log_set("squat", 100, 8, "2026-10-30")
-        proposal = log.suggest_next("squat")["proposal"]
+        proposal = log.suggest_next("squat", history(100), AS_OF)["proposal"]
         record = confirm(proposal)
         edited = {
             "summary": proposal["summary"],
