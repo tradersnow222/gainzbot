@@ -343,7 +343,7 @@ def test_a_clear_no_with_sleep_and_soreness_sends_the_session_in_one_turn():
     assert loop.notes[day]["sleep"] == 7
     assert loop.notes[day]["soreness"] == 2
     checked = RedFlagChecker().scan_check_in({"notes": "no, 7, 2"})
-    assert is_passing_check_in(checked)
+    assert not is_passing_check_in(checked)
     longer = DailyLoop(load=80, minutes=45, calories=2200, profile=adult_profile())
     longer.open_morning(day)
     longer_text = longer.hear(day, "no, 7, 2, 4, 2")
@@ -353,7 +353,14 @@ def test_a_clear_no_with_sleep_and_soreness_sends_the_session_in_one_turn():
     assert longer.notes[day]["energy"] == 4
     assert longer.notes[day]["stress"] == 2
     assert longer_text.startswith("Today is a push day.")
-    assert is_passing_check_in(RedFlagChecker().scan_check_in({"notes": "no, 7, 2, 4, 2"}))
+    assert not is_passing_check_in(RedFlagChecker().scan_check_in({"notes": "no, 7, 2, 4, 2"}))
+    nope = DailyLoop(load=80, minutes=45, calories=2200, profile=adult_profile())
+    nope.open_morning(day)
+    nope_text = nope.hear(day, "nope, 7, 2")
+    assert nope.phase[day] == "workout"
+    assert nope_text.startswith("Today is a normal day.")
+    assert nope.notes[day]["sleep"] == 7
+    assert nope.notes[day]["soreness"] == 2
 
 
 def test_no_but_palpitations_does_not_send_the_session():

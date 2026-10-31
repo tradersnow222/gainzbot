@@ -3,7 +3,9 @@
 
 from pathlib import Path
 
-from onboarding import GROUPS, HAPPY_PATH, PAR_Q, messages, question_one, run_chat
+import pytest
+
+from onboarding import GROUPS, HAPPY_PATH, PAR_Q, _profile, messages, question_one, run_chat
 from readiness_screen import ReadinessScreen
 
 
@@ -167,6 +169,77 @@ def test_an_age_correction_under_18_at_confirm_refuses_the_plan():
     assert later["record"] is None or later["record"].confirmed is False
     assert "training" in later_bots[-1].lower()
     assert "calorie" in later_bots[-1].lower()
+
+
+_AGE_25 = (
+    "hello",
+    "hold, male, age 25, 80 kg, 180 cm",
+    "ok",
+    "all no",
+)
+
+
+@pytest.mark.parametrize("reply, age", [
+    ("actually 16", "16"),
+    ("im 17 not 25", "17"),
+    ("yes, im 15", "15"),
+    ("yes but im 15", "15"),
+    ("I'm 15", "15"),
+    ("i am 15", "15"),
+    ("im 15", "15"),
+    ("15", "15"),
+    ("my age is 15", "15"),
+    ("I lied, im 15", "15"),
+    ("wait, 17", "17"),
+    ("yes, morning 6:30, im 15", "15"),
+])
+def test_a_different_age_at_confirm_never_confirms(reply, age):
+    state, bots = run_chat(list(_AGE_25) + [reply])
+    assert state["answers"]["age"] == age, reply
+    assert state["confirmed"] is False, reply
+    assert state["record"] is None, reply
+    text = bots[-1].lower()
+    assert "under 18" in text, reply
+    assert "training" in text, reply
+    assert "calorie" in text, reply
+    assert "protein" in text, reply
+    assert "one yes confirms the plan" not in text, reply
+    later, later_bots = run_chat(list(_AGE_25) + [reply, "yes"])
+    assert later["confirmed"] is False, reply
+    assert later["answers"]["age"] == age, reply
+    assert later["record"] is None or later["record"].confirmed is False, reply
+    assert "calorie" in later_bots[-1].lower(), reply
+    assert "protein" in later_bots[-1].lower(), reply
+
+
+def test_a_schedule_clock_is_not_read_as_an_age():
+    morning, _bots = run_chat(list(_AGE_25) + ["yes, morning 6:30"])
+    assert morning["confirmed"] is True
+    assert morning["answers"]["age"] == "25"
+    assert morning["times"]["daily_checkin"] == "06:30"
+    at_seven, _bots = run_chat(list(_AGE_25) + ["at 7"])
+    assert at_seven["confirmed"] is False
+    assert at_seven["answers"]["age"] == "25"
+    evening, _bots = run_chat(list(_AGE_25) + ["yes, evening 9pm"])
+    assert evening["confirmed"] is True
+    assert evening["answers"]["age"] == "25"
+    assert evening["times"]["evening_followup"] == "21:00"
+    review, _bots = run_chat(list(_AGE_25) + ["yes, review sunday 7pm"])
+    assert review["confirmed"] is True
+    assert review["answers"]["age"] == "25"
+    assert "19:00" in review["times"]["weekly_review"]
+
+
+def test_a_weight_correction_at_confirm_reproposes():
+    state, bots = run_chat(list(_AGE_25) + ["wait my weight is 60 kg"])
+    assert state["confirmed"] is False
+    assert state["answers"]["weight"] == "60 kg"
+    assert state["answers"]["age"] == "25"
+    assert "60" in bots[-1] or "one yes confirms the plan" in bots[-1].lower()
+    assert "one yes confirms the plan" in bots[-1].lower()
+    done, _bots = run_chat(list(_AGE_25) + ["wait my weight is 60 kg", "yes"])
+    assert done["confirmed"] is True
+    assert _profile(done)["weight_kg"] == 60
 
 
 def test_make_it_4_days_at_confirm_updates_the_profile_and_reproposes():

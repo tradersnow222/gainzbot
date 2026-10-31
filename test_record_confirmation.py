@@ -297,11 +297,23 @@ class TestClearYes:
             "plan": {"user": {"age": 30}},
             "sessions": [{"date": "2026-11-02", "name": "Upper"}],
         }
-        scheduled = ConfirmationRecorder().record(
+        shaped = ConfirmationRecorder().record(
             first, "yes, morning 6:30", "user", passing_check_in()
+        )
+        assert shaped.confirmed is False
+        assert "clear yes" in shaped.message.lower()
+        marked = dict(first)
+        marked["first_plan"] = True
+        scheduled = ConfirmationRecorder().record(
+            marked, "yes, morning 6:30", "user", passing_check_in()
         )
         assert scheduled.confirmed is True
         assert scheduled.quoted_words == "yes, morning 6:30"
+        flagged = {"changes": {"load": 110}, "first_plan": True}
+        not_a_week = ConfirmationRecorder().record(
+            flagged, "yes, morning 6:30", "user", passing_check_in()
+        )
+        assert not_a_week.confirmed is False
 
     def test_a_schedule_yes_with_a_symptom_stays_a_red_flag(self):
         reply = "yes, morning 6:30, but my chest hurts"

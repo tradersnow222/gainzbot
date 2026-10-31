@@ -424,11 +424,9 @@ def _parse_explicit(state, reply):
         if re.search(rf"\b{goal}\b", folded):
             answers["goal"] = goal
             break
-    age = re.search(r"\bage\s+(\d{1,3})\b", folded)
-    if not age:
-        age = re.search(r"\b(?:im|i am)\s+actually\s+(\d{1,3})\b", folded)
-    if age:
-        answers["age"] = age.group(1)
+    age = _intake_age(folded)
+    if age is not None:
+        answers["age"] = str(age)
     height = re.search(r"\b(\d{2,3})\s*cm\b", folded)
     if height:
         answers["height"] = height.group(1) + " cm"
@@ -488,10 +486,78 @@ def _remember_skip(state):
             state["par_q"].pop(key, None)
 
 
+_CLOCK = re.compile(
+    r"\b\d{1,2}:\d{2}(?:\s*(?:am|pm))?\b"
+    r"|\b\d{1,2}\s*(?:am|pm)\b"
+    r"|\bat\s+(?:[1-9]|1[0-2])\b",
+    re.IGNORECASE,
+)
+
+
+def _mask_clocks(reply):
+    """A clock is not an age. 6:30, 9pm, and at 7 drop out before the age read."""
+    if not isinstance(reply, str):
+        return ""
+    return _CLOCK.sub(lambda match: re.sub(r"\d", " ", match.group(0)), reply)
+
+
+def _age_candidates(reply):
+    """Bare ages left after clocks and units are removed. 1 through 120 only."""
+    text = _mask_clocks(reply)
+    text = re.sub(r"\b\d+(?:\.\d+)?\s*kg\b", " ", text, flags=re.IGNORECASE)
+    text = re.sub(r"\b\d+(?:\.\d+)?\s*cm\b", " ", text, flags=re.IGNORECASE)
+    text = re.sub(r"\b\d+\s+min(?:ute)?s?\b", " ", text, flags=re.IGNORECASE)
+    text = re.sub(r"\b\d+\s+days?\b", " ", text, flags=re.IGNORECASE)
+    found = []
+    for token in re.findall(r"\b\d{1,3}\b", _fold(text)):
+        value = int(token)
+        if 1 <= value <= 120:
+            found.append(value)
+    return found
+
+
+def _intake_age(folded):
+    age = re.search(r"\bage\s+(\d{1,3})\b", folded)
+    if not age:
+        age = re.search(r"\b(?:im|i am)\s+actually\s+(\d{1,3})\b", folded)
+    if not age:
+        return None
+    value = int(age.group(1))
+    if 1 <= value <= 120:
+        return value
+    return None
+
+
+def _changed_age(reply, stored_text):
+    """An age in this reply that is not the stored age, or None."""
+    stored = _number(stored_text)
+    candidates = _age_candidates(reply)
+    if stored is None:
+        differing = candidates
+    else:
+        differing = [age for age in candidates if age != int(stored)]
+    if not differing:
+        return None
+    return differing[-1]
+
+
+def _changed_weight(reply, stored_text):
+    """An explicit weight correction, such as 'my weight is 60 kg'."""
+    folded = _fold(reply)
+    match = re.search(r"\bweight\s+is\s+(\d+(?:\.\d+)?)\s*kg\b", folded)
+    if not match:
+        match = re.search(r"\bweight\s+(\d+(?:\.\d+)?)\s*kg\b", folded)
+    if not match:
+        return None
+    stated = match.group(1) + " kg"
+    if _number(stated) == _number(stored_text):
+        return None
+    return stated
+
+
 def apply_reply(state, reply):
     folded = _fold(reply)
-    if state["phase"] == "confirm" and _is_plan_yes(reply):
-        _confirm(state, reply)
+    if state["phase"] == "confirm" and _handle_confirm(state, reply):
         return
     if folded == "skip":
         _remember_skip(state)
@@ -502,6 +568,58 @@ def apply_reply(state, reply):
     _parse_explicit(state, reply)
     if state["phase"] == "confirm":
         _review_confirm_edit(state, reply)
+
+
+def _handle_confirm(state, reply):
+    """Confirm only when this reply does not correct age or weight.
+
+    A different age updates the profile and never confirms on this turn.
+    Under 18, readiness refuses the plan. A pause wins the message.
+    A weight correction re-proposes, the same way a day-count edit does.
+    """
+    from record_confirmation import reply_pause
+
+    paused = reply_pause(reply)
+    age = _changed_age(reply, state["answers"].get("age"))
+    weight = _changed_weight(reply, state["answers"].get("weight"))
+    if age is not None:
+        state["answers"]["age"] = str(age)
+    if weight is not None:
+        state["answers"]["weight"] = weight
+    if paused is not None:
+        state["confirmed"] = False
+        state["record"] = None
+        state["error"] = paused.message
+        return True
+    if age is not None:
+        _apply_age_readiness(state)
+        return True
+    if weight is not None:
+        state["confirmed"] = False
+        state["record"] = None
+        state["error"] = None
+        return True
+    if _is_plan_yes(reply):
+        _confirm(state, reply)
+        return True
+    return False
+
+
+def _apply_age_readiness(state):
+    from readiness_screen import ReadinessScreen, passing_readiness
+
+    screen = ReadinessScreen().screen_intake(_readiness_intake(state))
+    state["readiness"] = screen
+    state["confirmed"] = False
+    state["record"] = None
+    age = _number(state["answers"].get("age"))
+    if age is not None and age < 18:
+        state["error"] = _under_18_message(screen)
+        return
+    if not passing_readiness(screen):
+        state["error"] = " ".join(screen.reasons) or "Readiness has to pass before a plan is built."
+        return
+    state["error"] = None
 
 
 def _review_confirm_edit(state, reply):
@@ -645,7 +763,9 @@ def _confirm(state, reply):
     if not built.get("ok"):
         state["error"] = built.get("message", "The week did not pass.")
         return
-    record = ConfirmationRecorder().record(built["confirm"], reply, "user", check_in)
+    confirm = dict(built["confirm"])
+    confirm["first_plan"] = True
+    record = ConfirmationRecorder().record(confirm, reply, "user", check_in)
     if not record.confirmed:
         state["error"] = record.message
         return

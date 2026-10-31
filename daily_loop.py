@@ -7,7 +7,7 @@ import os
 import re
 
 from morning_checkin import MorningCheckIn
-from red_flag_check import RedFlagChecker, is_passing_check_in
+from red_flag_check import RedFlagChecker, clear_safety_no, is_passing_check_in
 from readiness_screen import ReadinessScreen, passing_readiness
 from signals import read_gap_reply
 
@@ -402,8 +402,14 @@ class DailyLoop:
         }
 
     def _checklist(self, reply):
+        """Fill all-no here. scan_check_in does not treat a bare no as the list.
+
+        A bare no or nope, plus scores, is the short morning line. 'none'
+        still counts only after the full list was shown, except when this
+        caller already decided the short line was clear.
+        """
         checker = RedFlagChecker()
-        if symptom_is_clear(reply):
+        if clear_safety_no(reply) or symptom_is_clear(reply):
             answers = {aliases[0]: "no" for _flag, aliases in checker.CHECKLIST_GROUPS}
             return checker.scan_check_in({"symptom_checklist": answers, "notes": reply})
         return checker.scan_check_in({"notes": reply})

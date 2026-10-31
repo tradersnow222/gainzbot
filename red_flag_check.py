@@ -902,7 +902,6 @@ class RedFlagChecker:
         aliases = self._alias_map()
         unknown_fields = []
         text_parts = []
-        notes_text = ""
         for key, value in check_in.items():
             norm = self._normalize_key(key)
             known = (
@@ -917,22 +916,13 @@ class RedFlagChecker:
             )
             if checklist_value or norm in aliases:
                 continue
-            if norm == "notes" and isinstance(value, str):
-                notes_text = value
             text_parts.append(self._flatten(value))
 
         scanned = self.scan_text(" ".join(text_parts)) if any(part.strip() for part in text_parts) else self._clear()
         answers, find_error = self._find_checklist(check_in)
         questions = []
         checklist_flags = set()
-        if find_error == "missing" and clear_safety_no(notes_text):
-            answers = {
-                group_aliases[0]: "no" for _flag, group_aliases in self.CHECKLIST_GROUPS
-            }
-            checklist_flags, score_error = self._score_checklist(answers)
-            if score_error:
-                questions.append(score_error)
-        elif find_error == "missing":
+        if find_error == "missing":
             questions.append(
                 "The symptom checklist is missing. Please answer yes or no for each symptom."
             )

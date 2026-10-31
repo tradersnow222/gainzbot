@@ -134,12 +134,12 @@ def is_plan_yes(reply, proposal_hash) -> bool:
 
 
 def _first_plan_confirm(plan) -> bool:
-    """True for the first week object: a plan plus its sessions.
+    """True only when onboarding marked this object as the first plan.
 
-    A load or calorie proposal is a changes object. A schedule sentence
-    does not confirm that.
+    The week shape is not enough. A load or calorie proposal still needs
+    a bare yes, even if someone copies the sessions list onto it.
     """
-    if not isinstance(plan, dict):
+    if not isinstance(plan, dict) or plan.get("first_plan") is not True:
         return False
     if not isinstance(plan.get("plan"), dict):
         return False
