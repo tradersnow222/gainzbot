@@ -97,6 +97,15 @@ class Dashboard:
             "message": " ".join(notes) if notes else "Dashboard ready.",
         }
 
+    def build_saved(self, path, user=None, window_days=28, as_of=None, targets=None) -> Dict:
+        """Read the on-disk log. A bad file does not become chart data."""
+        from log_store import LogStore
+
+        store = LogStore(path)
+        if store.error or store.as_dashboard() is None:
+            return self._empty(store.error or "The log could not be read.", window_days if window_days in WINDOWS else None)
+        return self.build(store.as_dashboard(), user, window_days, as_of, targets)
+
     def _empty(self, message: str, window_days) -> Dict:
         charts = []
         for chart in DASHBOARD_SPEC["charts"]:

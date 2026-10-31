@@ -9,6 +9,9 @@ one meal. The check is the record id, and those ids are saved to a
 required path, so a copy or a restart cannot log that same yes again.
 If that file is missing after the first log, nothing else is stored.
 A new yes can log the meal when the file is still there.
+When log_path is set, the meal and that confirmation id are also appended
+to the on-disk user log. If that append fails, the meal is not kept and
+the confirmation is not used.
 A single item over 3000 kcal or over 300 g protein is rejected for a
 re-check, and a day stops at 10000 kcal. Missing age and under 18 set no
 protein target. usual breakfast needs a confirmation. Logging a meal does
@@ -93,7 +96,7 @@ class FoodLog:
             "meal": parsed["meal"],
         }
 
-    def log_line(self, line, day, confirmation=None) -> Dict:
+    def log_line(self, line, day, confirmation=None, log_path=None) -> Dict:
         """Log one remembered meal from a line such as 'usual breakfast'."""
         name = self._line_usual(line)
         if not name:
@@ -116,13 +119,12 @@ class FoodLog:
             return self._no("This usual meal needs record_confirmation before it is logged.")
         stored = self._store(meal, day, "usual")
         if stored.get("stored"):
-            saved = self._remember(confirmation)
-            if not saved["ok"]:
-                self.entries.pop()
-                return saved
+            kept = self._keep(stored, confirmation, log_path)
+            if not kept["ok"]:
+                return kept
         return stored
 
-    def store_estimate(self, estimate, day, confirmation=None) -> Dict:
+    def store_estimate(self, estimate, day, confirmation=None, log_path=None) -> Dict:
         if not isinstance(estimate, dict):
             return self._no("The photo estimate has to be an object.")
         parsed = self._meal(
@@ -141,10 +143,9 @@ class FoodLog:
             return self._no("This estimate needs record_confirmation before it is logged.")
         stored = self._store(parsed["meal"], day, "photo")
         if stored.get("stored"):
-            saved = self._remember(confirmation)
-            if not saved["ok"]:
-                self.entries.pop()
-                return saved
+            kept = self._keep(stored, confirmation, log_path)
+            if not kept["ok"]:
+                return kept
         return stored
 
     def left_today(self, day, user=None, targets=None) -> Dict:
@@ -314,6 +315,64 @@ class FoodLog:
             self._used_error = "The used confirmation list is missing."
             return self._used_error
         return None
+
+    def _keep(self, stored, confirmation, log_path) -> Dict:
+        """Remember the yes, and append the meal when a log path is set."""
+        if log_path is not None:
+            logged = self._append_log(log_path, stored["entry"], confirmation)
+            if not logged["ok"]:
+                self.entries.pop()
+                return self._no(logged["message"])
+        saved = self._remember(confirmation)
+        if not saved["ok"]:
+            self.entries.pop()
+            if log_path is not None:
+                self._drop_log(log_path)
+            return saved
+        return stored
+
+    def _append_log(self, log_path, entry, confirmation) -> Dict:
+        from log_store import LogStore
+
+        store = LogStore(log_path)
+        meal = {
+            "date": entry["date"],
+            "items": list(entry["items"]),
+            "calories": entry["calories"],
+            "protein_g": entry["protein_g"],
+            "source": entry.get("source"),
+        }
+        saved = store.append("meals", meal)
+        if not saved["ok"]:
+            return saved
+        record_id = self._record_id(confirmation)
+        if record_id is None:
+            store.drop_last("meals")
+            return self._no("That confirmation has no record id.")
+        used = store.append("used_records", {"record_id": record_id})
+        if not used["ok"]:
+            store.drop_last("meals")
+            return used
+        noted = store.append("confirmations", {
+            "record_id": record_id,
+            "kind": "meal",
+            "date": entry["date"],
+        })
+        if not noted["ok"]:
+            store.drop_last("used_records")
+            store.drop_last("meals")
+            return noted
+        return {"ok": True}
+
+    def _drop_log(self, log_path) -> None:
+        from log_store import LogStore
+
+        store = LogStore(log_path)
+        if store.error:
+            return
+        store.drop_last("confirmations")
+        store.drop_last("used_records")
+        store.drop_last("meals")
 
     def _remember(self, confirmation) -> Dict:
         record_id = self._record_id(confirmation)

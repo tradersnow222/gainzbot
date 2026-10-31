@@ -12,6 +12,8 @@ stays at that same cap, so a planned 100 is not raised to 110. A lighter
 deload is not raised. A missed date after the user's local day is
 rejected. 11:30 PM Pacific is still that evening, not the next UTC day.
 Nothing is applied until record_confirmation covers that proposal.
+Sleep hours are 0 to 24. A calendar day cannot hold more than 24 hours
+of sleep, which is the same cap the wearable import already uses.
 """
 
 from datetime import date, datetime, timezone
@@ -92,7 +94,7 @@ def _whole(value: float):
 class MorningCheckIn:
     """Sets the day and proposes a load that stays inside the cap."""
 
-    def check_in(self, entry, planned_load=None, baseline_load=None, confirmed_changes=None, as_of=None) -> Dict:
+    def check_in(self, entry, planned_load=None, baseline_load=None, confirmed_changes=None, as_of=None, log_path=None) -> Dict:
         """planned_load and baseline_load are ignored. The confirmed history is the baseline."""
         del planned_load, baseline_load
         parsed = self._entry(entry)
@@ -108,6 +110,10 @@ class MorningCheckIn:
             "changes": changes,
             "needs_confirmation": True,
         }
+        if log_path is not None:
+            saved = self._save_check_in(log_path, entry, as_of, parsed, day_name, load)
+            if not saved["ok"]:
+                return self._bad(saved["message"])
         return {
             "ok": True,
             "day": day_name,
@@ -115,6 +121,28 @@ class MorningCheckIn:
             "proposal": proposal,
             "message": f"Today is a {day_name} day. Nothing is applied until it is confirmed.",
         }
+
+    def _save_check_in(self, log_path, entry, as_of, parsed, day_name, load) -> Dict:
+        when = None
+        if isinstance(entry, dict) and entry.get("date") is not None:
+            when = _parse_day(entry.get("date"))
+        if when is None and as_of is not None:
+            when = _local_day(as_of)
+        if when is None:
+            return {"ok": False, "message": "The check-in needs a date before it can be saved."}
+        from log_store import LogStore
+
+        row = {
+            "date": when.isoformat(),
+            "sleep": parsed["sleep"],
+            "soreness": parsed["soreness"],
+            "energy": parsed["energy"],
+            "stress": parsed["stress"],
+            "day": day_name,
+        }
+        if load is not None:
+            row["load"] = load
+        return LogStore(log_path).append("checkins", row)
 
     def _scaled_load(self, day_name, confirmed_changes, as_of):
         if parse_utc(as_of) is None:
@@ -239,8 +267,8 @@ class MorningCheckIn:
             if isinstance(exc, KeyError):
                 return self._bad("The check-in has to include sleep, soreness, energy, and stress.")
             return self._bad(str(exc))
-        if sleep > 14:
-            return self._bad("Sleep hours have to be between 0 and 14.")
+        if sleep > 24:
+            return self._bad("Sleep hours have to be between 0 and 24.")
         for name, value in (("soreness", soreness), ("energy", energy), ("stress", stress)):
             if value < 1 or value > 5:
                 return self._bad(f"{name.capitalize()} has to be from 1 to 5.")

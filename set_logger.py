@@ -48,7 +48,7 @@ class SetLogger:
         self.sets: List[Dict] = []
         self.working: Dict[str, Dict] = {}
 
-    def log_set(self, exercise, weight, reps, day) -> Dict:
+    def log_set(self, exercise, weight, reps, day, log_path=None) -> Dict:
         name = self._name(exercise)
         if not name:
             return self._no("Name the exercise.")
@@ -71,6 +71,13 @@ class SetLogger:
         stored["date"] = when.isoformat()
         stored["weight"] = _whole(lifted)
         stored["reps"] = _whole(count)
+        if log_path is not None:
+            from log_store import LogStore
+
+            saved = LogStore(log_path).append("sets", stored)
+            if not saved["ok"]:
+                self.sets.pop()
+                return self._no(saved["message"])
         return {
             "ok": True,
             "stored": True,
