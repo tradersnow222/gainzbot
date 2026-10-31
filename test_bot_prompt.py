@@ -184,7 +184,9 @@ def test_first_run_clones_the_repo_and_uses_that_path():
         assert "release_check.py" in text
         assert "equals `release_tag`" in lowered or "equal `release_tag`" in lowered
     assert "every file path in `template/template.json` is relative to the repo root" in QUICKSTART.lower()
-    assert TEMPLATE["release_tag"] == "v0.1.0"
+    from release_check import expected_release_tag
+
+    assert TEMPLATE["release_tag"] == expected_release_tag()
     assert "the second message runs readiness_screen, then check_in, then plan_check, then shows the proposal, then asks for the yes" in PROMPT.lower()
     assert "/workspace/gainzbot/data/used_confirmations.json" in PROMPT
     assert "/workspace/gainzbot/data/log.json" in PROMPT

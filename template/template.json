@@ -5,7 +5,7 @@
   "getting_started": "template/getting-started.md",
   "memory": "template/profile.md",
   "repo_url": "https://github.com/tradersnow222/gainzbot",
-  "release_tag": "v0.1.0",
+  "release_tag": "v0.1.1",
   "repo_path": "/workspace/gainzbot",
   "used_list_path": "/workspace/gainzbot/data/used_confirmations.json",
   "log_path": "/workspace/gainzbot/data/log.json",
