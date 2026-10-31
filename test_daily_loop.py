@@ -179,6 +179,42 @@ def test_a_symptom_in_the_morning_pauses_before_the_workout():
     assert "did_it" not in evening.notes[day]
 
 
+def test_evening_food_does_not_invent_a_miss():
+    from daily_loop import adult_profile, parse_evening
+
+    unknown = parse_evening("yes, no idea what I ate")
+    assert unknown["did_it"] is True
+    assert unknown["ate"] is None
+    bare = parse_evening("ate salad")
+    assert bare["ate"] == "salad"
+    assert bare["did_it"] is None
+    day = "2026-10-26"
+    loop = DailyLoop(load=80, minutes=45, profile=adult_profile())
+    loop.open_morning(day)
+    loop.hear(day, "no 8 fine 45")
+    loop.open_evening(day)
+    logged = loop.hear(day, "yes, no idea what I ate")
+    assert loop.notes[day]["did_it"] is True
+    assert loop.notes[day]["ate"] is None
+    assert logged.startswith("Logged.")
+    assert not logged.startswith("Logged the miss")
+    food = DailyLoop(load=80, minutes=45, profile=adult_profile())
+    food.open_morning(day)
+    food.hear(day, "no 8 fine 45")
+    food.open_evening(day)
+    asked = food.hear(day, "ate salad")
+    assert food.notes[day]["ate"] == "salad"
+    assert food.notes[day]["did_it"] is None
+    assert asked == "Did you do the workout?"
+    assert "\n" not in asked
+    assert food.phase[day] == "evening"
+    done = food.hear(day, "yes")
+    assert done.startswith("Logged.")
+    assert food.notes[day]["did_it"] is True
+    assert food.notes[day]["ate"] == "salad"
+    assert food.phase[day] == "done"
+
+
 def test_a_no_with_anything_else_asks_the_symptom_line_again():
     from daily_loop import _SYMPTOM, adult_profile
 

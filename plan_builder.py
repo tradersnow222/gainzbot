@@ -610,6 +610,16 @@ def _reconcile_backup(log_path):
         return
 
 
+def _drop_backup(backup_path):
+    """A finished save leaves no log.json.bak behind from an earlier crash."""
+    if not backup_path or not os.path.exists(backup_path):
+        return
+    try:
+        os.remove(backup_path)
+    except OSError:
+        return
+
+
 def _read_log(path):
     """The user log beside the week file. A bad file is refused, not rebuilt."""
     _reconcile_backup(path)
@@ -841,6 +851,7 @@ class PlanBuilder:
         if on_at and stamp < on_at:
             return self._saved_no("An older yes does not replace the saved week.")
         if already and os.path.exists(target) and (on_id == confirmation.record_id or not on_id):
+            _drop_backup(log_path + ".bak")
             return {
                 "ok": True,
                 "saved": True,
@@ -872,6 +883,7 @@ class PlanBuilder:
                 _write_json(target, existing)
             except OSError:
                 return self._saved_no("The week could not be saved.")
+            _drop_backup(log_path + ".bak")
             return {
                 "ok": True,
                 "saved": True,
@@ -945,11 +957,7 @@ class PlanBuilder:
                 except OSError:
                     pass
             return self._saved_no("The week could not be saved.")
-        if os.path.exists(backup_path):
-            try:
-                os.remove(backup_path)
-            except OSError:
-                pass
+        _drop_backup(backup_path)
         return {
             "ok": True,
             "saved": True,
