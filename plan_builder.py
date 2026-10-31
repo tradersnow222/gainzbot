@@ -52,11 +52,58 @@ _LOG_KINDS = (
     "used_records",
     "sessions",
 )
-_DOSE = {
-    "beginner": (3, "8-12", "90 sec", "Leave 3 reps in reserve"),
+# Main lifts, accessories, and timed holds. Not one dose for every exercise.
+_MAIN = {
+    "beginner": (2, "8-12", "90 sec", "Leave 3 reps in reserve"),
+    "novice": (3, "8-12", "90 sec", "Leave 2 reps in reserve"),
     "intermediate": (4, "6-10", "2 min", "Leave 2 reps in reserve"),
-    "advanced": (5, "4-8", "3 min", "Leave 1 rep in reserve"),
+    "advanced": (4, "4-8", "2 min", "Leave 1 rep in reserve"),
 }
+_ACCESSORY = {
+    "beginner": (2, "12-15", "45 sec", "Leave 3 reps in reserve"),
+    "novice": (2, "10-15", "45 sec", "Leave 2 reps in reserve"),
+    "intermediate": (3, "10-15", "60 sec", "Leave 2 reps in reserve"),
+    "advanced": (3, "8-12", "60 sec", "Leave 1 rep in reserve"),
+}
+_HOLD = {
+    "beginner": (2, "20-30 sec", "45 sec", "Stop before your form breaks"),
+    "novice": (2, "20-40 sec", "45 sec", "Stop before your form breaks"),
+    "intermediate": (3, "30-45 sec", "45 sec", "Stop before your form breaks"),
+    "advanced": (3, "40-60 sec", "45 sec", "Stop before your form breaks"),
+}
+_PROGRESS = {
+    "beginner": "Add a rep when every set is easy. Add weight only after the top of the range is easy.",
+    "novice": "Add a rep, then a little weight, when the top of the range is easy.",
+    "intermediate": "Add a little weight when you hit the top of the range with 2 reps left.",
+    "advanced": "Add a little weight when the top of the range is solid, and keep 1 rep in reserve.",
+}
+_ACCESSORY_WORDS = (
+    "curl", "raise", "face pull", "fly", "kickback", "calf",
+    "pull-apart", "arm circle", "farmer", "carry",
+)
+_HOLD_WORDS = ("plank", "dead bug", "bird dog")
+_BEGINNER_GYM = {
+    "Back squat": "Goblet squat",
+    "Front squat": "Goblet squat",
+    "Bench press": "Dumbbell bench",
+    "Incline bench": "Dumbbell bench",
+    "Overhead press": "Dumbbell shoulder press",
+    "Barbell row": "Dumbbell row",
+    "Romanian deadlift": "Hip hinge",
+    "Pull-up": "Inverted row",
+    "Lat pulldown": "Dumbbell row",
+}
+_ALTERNATES = (
+    ("easy run", "Brisk walk"),
+    ("long run", "Long walk"),
+    ("run", "Brisk walk"),
+    ("squat", "Leg press"),
+    ("lunge", "Glute bridge"),
+    ("burpee", "Squat"),
+    ("jump", "Step-up"),
+    ("plank", "Dead bug"),
+    ("bench", "Push-up"),
+)
 _MAX_EXERCISES = 8
 _MAX_SETS = 6
 _MAX_REPS = 20
@@ -66,6 +113,7 @@ _WARMUP_MINUTES = 5
 # A normal lifter stays inside these. An absurd load still refuses.
 _LOAD_MULTIPLE = {
     "beginner": 2.5,
+    "novice": 3.0,
     "intermediate": 3.5,
     "advanced": 5.0,
 }
@@ -415,6 +463,20 @@ def _load_cap(user):
     return min(cap, _ABSOLUTE_LOAD_CAP)
 
 
+def _seconds_high(reps):
+    """The high end of a hold such as 20-30 sec. Not a rep count."""
+    if not isinstance(reps, str):
+        return None
+    match = re.fullmatch(r"(\d+)(?:-(\d+))?\s*sec", reps.strip().lower())
+    if match is None:
+        return None
+    low = int(match.group(1))
+    high = int(match.group(2) or low)
+    if low < 1 or high < low or high > 180:
+        return None
+    return high
+
+
 def _block_minutes(exercise):
     sets = _whole_number(exercise.get("sets"))
     if sets is None:
@@ -422,18 +484,32 @@ def _block_minutes(exercise):
     duration = _duration_minutes(exercise.get("reps"))
     if duration is not None:
         return duration if sets == 1 else None
+    held = _seconds_high(exercise.get("reps"))
     rest = _rest_minutes(exercise.get("rest"))
     if rest is None or sets < 1:
         return None
+    if held is not None:
+        return sets * ((held / 60.0) + rest)
     # sets x (about 40s of work + the rest after the set)
     return sets * ((_SET_WORK_SECONDS / 60.0) + rest)
 
 
+def _has_dynamic_warm(exercises):
+    for row in exercises:
+        name = row.get("name") if isinstance(row, dict) else None
+        if isinstance(name, str) and name.strip().lower().startswith("dynamic warm"):
+            return True
+    return False
+
+
 def session_volume(exercises):
-    """Warmup plus each set's work and rest, including a cardio add-on."""
+    """Warmup plus each set's work and rest, including a cardio add-on.
+
+    A Dynamic warm-up row is the warmup. It is not counted a second time.
+    """
     if not exercises:
         return 0.0
-    total = _WARMUP_MINUTES
+    total = 0.0 if _has_dynamic_warm(exercises) else _WARMUP_MINUTES
     for exercise in exercises:
         block = _block_minutes(exercise)
         if block is None:
@@ -450,7 +526,7 @@ def _fit_minutes(chosen, minutes):
             chosen.pop(add_on)
             continue
         shrunk = False
-        for row in chosen:
+        for row in reversed(chosen):
             if not _is_duration(row) and row["sets"] > 1:
                 row["sets"] -= 1
                 shrunk = True
@@ -490,7 +566,7 @@ def _exercise_problem(sessions, user=None):
                 return "Sets have to be a whole number."
             if sets < 1 or sets > _MAX_SETS:
                 return "That many sets is outside the bounds."
-            if _duration_minutes(exercise.get("reps")) is None:
+            if _duration_minutes(exercise.get("reps")) is None and _seconds_high(exercise.get("reps")) is None:
                 reps = _high_reps(exercise.get("reps"))
                 if reps is None:
                     return "Reps have to be a whole number."
@@ -583,7 +659,7 @@ def _run_lengths(experience, minutes, weeks, returning=False):
     even when the event is close. An old running injury starts shorter and
     uses that same 10% build on the way back.
     """
-    room = int(minutes) - _WARMUP_MINUTES
+    room = int(minutes) - (_WARMUP_MINUTES * 2)
     if room < 1:
         room = max(1, int(minutes))
     beginner = experience not in {"intermediate", "advanced"}
@@ -706,9 +782,152 @@ def running_week(profile, today=None):
     return {"roles": _run_roles(parsed), "easy": easy, "long": long}
 
 
+def alternate_for(name, dislikes=None):
+    """A different move that trains the same pattern. The name when nothing fits."""
+    text = name.lower() if isinstance(name, str) else ""
+    hated = [item.lower() for item in (dislikes or []) if isinstance(item, str) and item.strip()]
+
+    def hated_name(candidate):
+        folded = candidate.lower()
+        return any(token in folded for token in hated)
+
+    for token, alt in _ALTERNATES:
+        if token not in text:
+            continue
+        if not hated_name(alt):
+            return alt
+        for fallback in ("Dead bug", "Glute bridge"):
+            if not hated_name(fallback) and not _blocks_exercise(fallback, ""):
+                return fallback
+        return alt
+    return name
+
+
+def _dose_for(name, experience, focus):
+    folded = name.lower()
+    if any(word in folded for word in _HOLD_WORDS):
+        return _HOLD[experience]
+    if any(word in folded for word in _ACCESSORY_WORDS):
+        return _ACCESSORY[experience]
+    sets, reps, rest, effort = _MAIN[experience]
+    if focus == "strength" and experience in {"intermediate", "advanced"}:
+        reps = "4-6" if experience == "intermediate" else "3-5"
+    elif focus == "fat":
+        reps = "10-15" if experience in {"beginner", "novice"} else "8-12"
+    return sets, reps, rest, effort
+
+
+def _prefer_likes(names, likes):
+    tokens = [item.lower() for item in (likes or []) if isinstance(item, str) and item.strip()]
+    if not tokens:
+        return list(names)
+    liked = []
+    rest = []
+    for name in names:
+        if any(token in name.lower() for token in tokens):
+            liked.append(name)
+        else:
+            rest.append(name)
+    return liked + rest
+
+
+def _apply_dislikes(names, dislikes, injuries):
+    hated = [item.lower() for item in (dislikes or []) if isinstance(item, str) and item.strip()]
+    if not hated:
+        return list(names)
+    swapped = []
+    for name in names:
+        if any(token in name.lower() for token in hated):
+            alt = alternate_for(name, dislikes)
+            if _blocks_exercise(alt, injuries):
+                alt = name
+            name = alt
+        if name not in swapped and not _blocks_exercise(name, injuries):
+            swapped.append(name)
+    return swapped or list(names)
+
+
+def _muscle_line(label):
+    folded = label.lower() if isinstance(label, str) else ""
+    if folded in {"easy run", "long run"} or "run" in folded:
+        return "legs"
+    if folded == "upper":
+        return "chest, back, and shoulders"
+    if folded in {"lower", "legs"}:
+        return "hips and legs"
+    return "the muscles this session trained"
+
+
+def _bookend(exercises, label):
+    """About 5 min to warm up and 5 min to stretch what that session trained."""
+    if _has_dynamic_warm(exercises):
+        return list(exercises)
+    warm = {
+        "name": "Dynamic warm-up",
+        "sets": 1,
+        "reps": "5 min",
+        "rest": "0 sec",
+        "effort": "Easy",
+    }
+    cool = {
+        "name": "Cooldown stretch",
+        "sets": 1,
+        "reps": "5 min",
+        "rest": "0 sec",
+        "effort": _muscle_line(label),
+    }
+    return [warm, *list(exercises), cool]
+
+
+def _mobility_exercises(minutes, yoga):
+    room = max(0, int(minutes) - 10)
+    if room >= 30:
+        flow = 25
+    elif room >= 20:
+        flow = 20
+    else:
+        flow = max(1, room)
+    flow = min(flow, max(1, int(minutes) - 10))
+    name = "Yoga flow" if yoga else "Mobility flow"
+    return _bookend(
+        [{
+            "name": name,
+            "sets": 1,
+            "reps": f"{int(flow)} min",
+            "rest": "0 sec",
+            "effort": "Easy",
+        }],
+        "Mobility",
+    )
+
+
+def _assign_mobility(sessions, need, yoga):
+    """Replace a spare strength day. Easy, long, and upper stay put.
+
+    A running week only converts a spare strength day. Any other week keeps
+    the first strength day and converts the last spare days. Nothing is added
+    on top of the days they already have.
+    """
+    if need < 1 or not sessions:
+        return sessions
+    protected = {"easy run", "long run", "upper"}
+    running = any(row.get("name", "").lower() in {"easy run", "long run"} for row in sessions)
+    convertible = [
+        index for index, row in enumerate(sessions)
+        if row.get("name", "").lower() not in protected
+    ]
+    if not running:
+        convertible = convertible[1:]
+    for index in convertible[-need:]:
+        row = sessions[index]
+        row["name"] = "Yoga" if yoga else "Mobility"
+        row["exercises"] = _mobility_exercises(row.get("minutes") or 30, yoga)
+    return sessions
+
+
 def _exercises(
     equipment, experience, minutes, sport, injuries, index, day_count,
-    include_sport=True, forced_label=None,
+    include_sport=True, forced_label=None, likes=None, dislikes=None, focus="",
 ):
     """Deterministic sets, reps, rest, and an effort cue for one session."""
     label = forced_label or _split_name(day_count, index)
@@ -720,6 +939,8 @@ def _exercises(
         names = [_bodyweight_name(name) for name in source]
     else:
         names = list(source)
+        if experience == "beginner":
+            names = [_BEGINNER_GYM.get(name, name) for name in names]
     # A swap belongs on the session that lost an exercise. An ankle does not
     # put a glute bridge on an upper day that never loaded it.
     replacements = []
@@ -741,9 +962,10 @@ def _exercises(
         count = 5
     else:
         count = 6
-    sets, reps, rest, effort = _DOSE[experience]
+    kept = _apply_dislikes(_prefer_likes(kept, likes), dislikes, injuries)
     chosen = []
     for name in kept[:count]:
+        sets, reps, rest, effort = _dose_for(name, experience, focus)
         chosen.append({
             "name": name,
             "sets": sets,
@@ -756,7 +978,11 @@ def _exercises(
         sport_row = None
     if sport_row is not None:
         chosen.append(sport_row)
-    chosen = _fit_minutes(chosen, minutes)
+    # Leave room for the 5 min warmup and 5 min cooldown added after this.
+    room = max(1, int(minutes) - 10)
+    chosen = _fit_minutes(chosen, room)
+    if len(chosen) > 6:
+        chosen = chosen[:6]
     return label, chosen
 
 
@@ -1010,15 +1236,20 @@ class PlanBuilder:
         structured = len(days) * minutes / 60.0
         if structured + sport_hours > PlanValidator.MAX_WEEKLY_TRAINING_HOURS:
             return self._no("That week is over the 20 hour training cap.")
-        load = 80 if experience == "beginner" else 100
+        load = 80 if experience in {"beginner", "novice"} else 100
         if load is None or load <= 0:
             return self._no("A baseline load is required.")
         goal = self._goal(profile.get("goal"))
         if isinstance(goal, dict):
             return goal
-        note = None
-        if injuries.strip().lower() not in _NO_INJURY:
-            note = "Do not add load."
+        note = _PROGRESS.get(experience, _PROGRESS["beginner"])
+        likes = profile.get("likes") if isinstance(profile.get("likes"), list) else []
+        dislikes = profile.get("dislikes") if isinstance(profile.get("dislikes"), list) else []
+        focus = profile.get("focus") if isinstance(profile.get("focus"), str) else ""
+        extra_mobility = profile.get("extra_mobility") is True or focus == "pain"
+        yoga = focus == "pain" or any(
+            isinstance(item, str) and "yoga" in item.lower() for item in likes
+        )
         shown_minutes = minutes if minutes != int(minutes) else int(minutes)
         week = running_week({
             "sport": sport,
@@ -1032,6 +1263,11 @@ class PlanBuilder:
         sessions = []
         for index, day in enumerate(days):
             role = week["roles"][index] if week else None
+            dose = {
+                "likes": likes,
+                "dislikes": dislikes,
+                "focus": focus,
+            }
             if role == "easy":
                 label, exercises = "Easy run", _run_block("Easy run", week["easy"])
             elif role == "long":
@@ -1039,17 +1275,19 @@ class PlanBuilder:
             elif role == "upper":
                 label, exercises = _exercises(
                     equipment, experience, minutes, sport, injuries, index, len(days),
-                    include_sport=False, forced_label="Upper",
+                    include_sport=False, forced_label="Upper", **dose,
                 )
             elif role == "strength":
                 label, exercises = _exercises(
                     equipment, experience, minutes, sport, injuries, index, len(days),
-                    include_sport=False,
+                    include_sport=False, **dose,
                 )
             else:
                 label, exercises = _exercises(
                     equipment, experience, minutes, sport, injuries, index, len(days),
+                    **dose,
                 )
+            exercises = _bookend(exercises, label)
             row = {
                 "date": day.isoformat(),
                 "name": label,
@@ -1062,9 +1300,9 @@ class PlanBuilder:
             }
             if not exercises:
                 return self._no("The exercises do not fit in the session minutes.")
-            if note:
-                row["note"] = note
+            row["note"] = note
             sessions.append(row)
+        _assign_mobility(sessions, 2 if extra_mobility else 1, yoga)
         problem = _exercise_problem(sessions, user if isinstance(user, dict) else None)
         if problem:
             return self._no(problem)
@@ -1397,10 +1635,10 @@ class PlanBuilder:
 
     def _experience(self, value):
         if not isinstance(value, str):
-            return self._no("Experience has to be beginner, intermediate, or advanced.")
+            return self._no("Experience has to be beginner, novice, intermediate, or advanced.")
         key = value.strip().lower()
-        if key not in ("beginner", "intermediate", "advanced"):
-            return self._no("Experience has to be beginner, intermediate, or advanced.")
+        if key not in ("beginner", "novice", "intermediate", "advanced"):
+            return self._no("Experience has to be beginner, novice, intermediate, or advanced.")
         return key
 
     def _restore_log(self, log_path, original_bytes, log_existed, backup_path):

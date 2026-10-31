@@ -16,7 +16,7 @@ from signals import read_gap_reply
 _SYMPTOM = "Morning. Any chest pain, trouble breathing, dizziness or new pain? no / yes"
 _MORNING = "Hours of sleep, and soreness from 1 to 5?"
 _SECOND = "One more: soreness or sleep, in a word or a number."
-_EVENING = "Did you do it? easy, right, or hard. What did you eat?"
+_EVENING = "Did you do it? easy, right, or hard. What did you eat? Enjoyment 1-5."
 _NUDGE = "Missed today. I'll pick it up in the morning."
 
 
@@ -404,7 +404,65 @@ def parse_evening(reply):
             felt = word
             break
     ate = None if unknown_food else _ate_text(food if food is not None else text)
-    return {"did_it": did_it, "felt": felt, "ate": ate}
+    enjoyment = None
+    score = re.search(r"\b([1-5])\b", workout)
+    if score is not None:
+        enjoyment = int(score.group(1))
+    return {"did_it": did_it, "felt": felt, "ate": ate, "enjoyment": enjoyment}
+
+
+def _apply_enjoyment(loop, text):
+    """Swap a move rated 2 or below twice. Keep one rated 4 or above, with no extra line."""
+    low = {}
+    high = set()
+    for row in loop.enjoyment:
+        if not isinstance(row, dict):
+            continue
+        name = row.get("name")
+        score = row.get("score")
+        if not isinstance(name, str) or not name:
+            continue
+        if score in {1, 2}:
+            low[name] = low.get(name, 0) + 1
+        elif score in {4, 5}:
+            high.add(name)
+    profile = loop.profile if isinstance(loop.profile, dict) else None
+    swaps = []
+    for name, count in low.items():
+        if count < 2:
+            continue
+        from plan_builder import alternate_for
+
+        hated = profile.get("dislikes") if profile is not None else None
+        alt = alternate_for(name, hated)
+        if not isinstance(alt, str) or alt == name:
+            continue
+        swaps.append(f"Swapped {name} for {alt}.")
+        if profile is None:
+            continue
+        dislikes = profile.get("dislikes")
+        if not isinstance(dislikes, list):
+            dislikes = []
+            profile["dislikes"] = dislikes
+        if name not in dislikes:
+            dislikes.append(name)
+        likes = profile.get("likes")
+        if not isinstance(likes, list):
+            likes = []
+            profile["likes"] = likes
+        if alt not in likes:
+            likes.append(alt)
+    if profile is not None and high:
+        likes = profile.get("likes")
+        if not isinstance(likes, list):
+            likes = []
+            profile["likes"] = likes
+        for name in high:
+            if name not in likes:
+                likes.append(name)
+    if swaps:
+        return text + " " + " ".join(swaps)
+    return text
 
 
 # Plan fields on the profile from onboarding._profile. Readiness does not screen them.
@@ -417,6 +475,13 @@ _PLAN_PROFILE_KEYS = {
     "sport_day",
     "injuries",
     "goal",
+    "likes",
+    "dislikes",
+    "focus",
+    "extra_mobility",
+    "history",
+    "benchmarks",
+    "stiffness",
 }
 
 
@@ -457,6 +522,7 @@ class DailyLoop:
         self.nudges = {}
         self.felt_easy = 0
         self.workouts = {}
+        self.enjoyment = []
         self.questions = {}
         self.pending = {}
         self.hold_text = {}
@@ -1350,6 +1416,11 @@ class DailyLoop:
         if parsed.get("ate") == "" and notes.get("ate"):
             parsed = {key: value for key, value in parsed.items() if key != "ate"}
         notes.update(parsed)
+        score = parsed.get("enjoyment")
+        if score in {1, 2, 3, 4, 5} and parsed.get("did_it"):
+            workout = self.workouts.get(day) if isinstance(self.workouts.get(day), dict) else {}
+            name = workout.get("name") if isinstance(workout.get("name"), str) and workout.get("name") else "Session"
+            self.enjoyment.append({"day": str(day), "name": name, "score": score})
         if parsed.get("did_it") is None:
             self.phase[day] = "evening"
             return "Did you do the workout?"
@@ -1371,7 +1442,7 @@ class DailyLoop:
                 "load": self.load,
                 "changed": False,
                 "food": food,
-                "text": f"Load stays {self.load}. Food: {food}.",
+                "text": _apply_enjoyment(self, f"Load stays {self.load}. Food: {food}."),
             }
         checked = MorningCheckIn().check_in(
             {"sleep": 8, "soreness": 1, "energy": 5, "stress": 1},
@@ -1388,6 +1459,7 @@ class DailyLoop:
             )
         else:
             text = f"Load stays {self.load} until the confirmed load is 7 times 24 hours old. Food: {food}."
+        text = _apply_enjoyment(self, text)
         return {
             "load": proposed,
             "changed": changed,

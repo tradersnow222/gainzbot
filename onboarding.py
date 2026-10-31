@@ -69,18 +69,145 @@ HAPPY_PATH = (
 )
 
 
-def _par_q_text():
-    lines = [
-        "PAR-Q, yes or no. Everyone gets these 7. One word: all no.",
-    ]
-    for key, question in PAR_Q:
-        lines.append(f"- {key}: {question}")
-    lines.append(
-        "A skipped or unclear PAR-Q answer runs readiness_screen, the same as a yes. "
-        "There is no training until readiness_screen passes. "
-        "The PAR-Q still comes before any plan is built."
+def _step(step_id, prompt, options=None, multi=False, custom=False, typed=False):
+    step = {"id": step_id, "prompt": prompt}
+    if typed:
+        step["input"] = "text"
+    else:
+        step["options"] = list(options)
+    if multi:
+        step["multiSelect"] = True
+    if custom:
+        step["allowCustom"] = True
+    return step
+
+
+_GOAL_PROMPT = (
+    "Goal, weight, target, height, and age? "
+    "Where do you want to go? "
+    "One word ok uses hold. It does not fill age, sex, weight, or height. "
+    "You can skip one. I will not guess a skipped age, sex, or weight. "
+    "If you skip the goal, the goal is hold. Name is optional."
+)
+_TRAINING_PROMPT = (
+    "Where you are now. "
+    "One word ok uses general training, 3 days, 45 min, bodyweight, beginner. "
+    "It does not fill injuries. Any sport is fine. "
+    "Ask once what do you track with. "
+    "Sport and the schedule come before the PAR-Q."
+)
+_SAFETY_PROMPT = (
+    "PAR-Q, one question. Everyone gets this one. One word: all no. "
+    "Has a doctor told you to limit exercise, or do you get chest pain, "
+    "dizziness or fainting with activity? "
+    "A skipped or unclear PAR-Q answer runs readiness_screen, the same as a yes. "
+    "There is no training until readiness_screen passes. "
+    "The PAR-Q still comes before any plan is built."
+)
+_GOAL_STEPS = (
+    _step(
+        "goal",
+        "Goal",
+        ["Lose fat", "Build muscle", "Get stronger", "Train for a sport or event", "Move without pain"],
+        custom=True,
+    ),
+    _step("weight", "Weight", typed=True),
+    _step("height", "Height", typed=True),
+    _step("age", "Age", typed=True),
+    _step("sex", "Sex", ["female", "male", "skip"]),
+    _step(
+        "history",
+        "Training history",
+        ["never", "on and off", "consistent under 2 years", "consistent 2 years or more"],
+    ),
+    _step("days_per_week", "Days per week", ["2", "3", "4", "5+"]),
+    _step("minutes", "Session length", ["20", "30", "45", "60+"]),
+)
+_TRAINING_STEPS = (
+    _step("stairs", "Carry groceries up two flights", ["easily", "with a break", "hard"]),
+    _step("play", "Play with kids or a dog for 20 min", ["easily", "with breaks", "hard"]),
+    _step("floor", "Get up off the floor", ["easily", "one hand", "both hands"]),
+    _step("toes", "Touch your toes", ["easily", "almost", "no"]),
+    _step(
+        "likes",
+        "Activities you like",
+        ["lifting", "running", "hiking", "yoga", "swimming"],
+        multi=True,
+        custom=True,
+    ),
+    _step(
+        "dislikes",
+        "Activities you hate",
+        ["running", "jumping", "burpees", "long cardio", "early mornings"],
+        multi=True,
+        custom=True,
+    ),
+    _step(
+        "equipment",
+        "Equipment",
+        ["bodyweight", "dumbbells", "barbell", "full gym", "none"],
+        multi=True,
+        custom=True,
+    ),
+    _step(
+        "injuries",
+        "Injuries",
+        ["none", "old and healed", "knee", "back", "shoulder"],
+        custom=True,
+    ),
+)
+_SAFETY_STEPS = (
+    _step("hike", "Hike a few miles", ["easily", "with breaks", "hard"]),
+    _step("suitcase", "Carry a heavy suitcase", ["easily", "with a break", "hard"]),
+    _step("jog", "Easy jog", ["under 5 min", "5-15 min", "15-30 min", "30 min or more"]),
+    _step("pushups", "Push-ups, if you train", ["skip", "0-5", "6-15", "16-30", "31+"]),
+    _step(
+        "lifts",
+        "Lifts you know, if you train",
+        ["none", "light dumbbells", "a barbell I know", "heavy for me"],
+        custom=True,
+    ),
+    _step("tracker", "Tracker", ["watch", "scale", "food app", "none"]),
+    _step("stiffness", "Stiffness or a desk job", ["no", "some stiffness", "desk job", "both"]),
+    _step("safety", "Safety", ["yes", "no"]),
+)
+_SAFETY_ASK = (
+    "Has a doctor told you to limit exercise, or do you get chest pain, "
+    "dizziness or fainting with activity? Yes or no."
+)
+_SAFETY_YES = (
+    "chest_pain_during_activity",
+    "loss_of_balance_dizziness",
+    "loss_of_consciousness",
+    "doctor_advised_supervised_only",
+)
+
+
+def _card_text(prompt, steps):
+    payload = {"widget": "question_card", "steps": [dict(step) for step in steps]}
+    return prompt + "\n" + json.dumps(payload)
+
+
+def intake_cards():
+    """The three intake messages, each one widget with at most 8 steps."""
+    cards = (
+        ("goal", _GOAL_PROMPT, _GOAL_STEPS),
+        ("training", _TRAINING_PROMPT, _TRAINING_STEPS),
+        ("par_q", _SAFETY_PROMPT, _SAFETY_STEPS),
     )
-    return "\n".join(lines)
+    built = []
+    for card_id, prompt, steps in cards:
+        built.append({
+            "id": card_id,
+            "widget": "question_card",
+            "prompt": prompt,
+            "steps": [dict(step) for step in steps],
+        })
+    return built
+
+
+def _par_q_text():
+    return _card_text(_SAFETY_PROMPT, _SAFETY_STEPS)
 
 
 def _injury_and_par_q(state):
@@ -105,23 +232,12 @@ GROUPS = (
     {
         "id": "goal",
         "asks": ("goal", "weight", "target", "height", "age", "sex", "name", "food_style"),
-        "text": (
-            "Goal, weight, target, height, and age? "
-            "One word ok uses hold. It does not fill age, sex, weight, or height. "
-            "You can skip one. I will not guess a skipped age, sex, or weight. "
-            "If you skip the goal, the goal is hold."
-        ),
+        "text": _card_text(_GOAL_PROMPT, _GOAL_STEPS),
     },
     {
         "id": "training",
         "asks": ("sport", "training_days", "minutes", "equipment", "experience", "injuries", "sources"),
-        "text": (
-            "Sport, schedule, and equipment? "
-            "One word ok uses general training, 3 days, 45 min, bodyweight, beginner. "
-            "It does not fill injuries. "
-            "Any sport is fine. What do you track with? A watch, a scale, a food app, or none. "
-            "I will not assume a connection. Sport and the schedule come before the PAR-Q."
-        ),
+        "text": _card_text(_TRAINING_PROMPT, _TRAINING_STEPS),
     },
     {
         "id": "par_q",
@@ -673,7 +789,7 @@ def _missing_keys(state, group):
         return ["par_q"]
     missing = []
     for key in group["asks"]:
-        if key in _OPTIONAL:
+        if key in _OPTIONAL or key == "experience":
             continue
         if state.get("from_profile_payload") and key == "sport":
             continue
@@ -971,6 +1087,48 @@ def _store_par_q(state, parsed, unclear):
         state["par_q"][key] = value
 
 
+def _read_goal(state, folded):
+    """A concrete goal wins. A vague phrase asks them to pick."""
+    answers = state["answers"]
+    concrete = False
+    if re.search(r"\b(?:lose\s+fat|lose\s+weight|fat\s+loss|get\s+leaner|leaner|cut)\b", folded):
+        answers["goal"] = "cut"
+        answers["focus"] = "fat"
+        concrete = True
+    elif re.search(r"\blose\b", folded):
+        answers["goal"] = "lose"
+        answers["focus"] = "fat"
+        concrete = True
+    elif re.search(r"\b(?:build\s+muscle|gain)\b", folded):
+        answers["goal"] = "gain"
+        answers["focus"] = "muscle"
+        concrete = True
+    elif re.search(r"\bhold\b", folded):
+        answers["goal"] = "hold"
+        concrete = True
+    if re.search(r"\b(?:get\s+stronger|stronger)\b", folded):
+        if answers.get("goal") not in {"cut", "lose"} and answers.get("focus") != "fat":
+            answers["goal"] = "hold"
+            answers["focus"] = "strength"
+        concrete = True
+    if re.search(r"\bmove\s+without\s+pain\b", folded):
+        answers["goal"] = "hold"
+        answers["focus"] = "pain"
+        answers["extra_mobility"] = True
+        concrete = True
+    elif re.search(r"\btrain\s+for\s+a\s+sport\b", folded) and answers.get("focus") != "fat":
+        answers["goal"] = answers.get("goal") or "hold"
+        answers["focus"] = "sport"
+        concrete = True
+    if concrete:
+        state.pop("goal_vague", None)
+        return
+    for phrase in ("get in shape", "feel better", "not sure"):
+        if phrase in folded and "goal" not in answers:
+            state["goal_vague"] = phrase
+            return
+
+
 def _parse_profile_fields(state, reply):
     """Weight, height, days, and the other profile facts. Not PAR-Q and not injury.
 
@@ -979,13 +1137,7 @@ def _parse_profile_fields(state, reply):
     answers = state["answers"]
     folded = _fold(reply)
     skip_body = state.get("skip_body_from_text") is True
-    if re.search(r"\b(?:lose\s+fat|lose\s+weight|fat\s+loss|cut)\b", folded):
-        answers["goal"] = "cut"
-    else:
-        for goal in ("cut", "lose", "gain", "hold"):
-            if re.search(rf"\b{goal}\b", folded):
-                answers["goal"] = goal
-                break
+    _read_goal(state, folded)
     height = re.search(r"\b(\d{2,3})\s*cm\b", folded)
     if height and not skip_body:
         answers["height"] = height.group(1) + " cm"
@@ -2569,6 +2721,14 @@ def _count_only(reply):
 _INJURY_NONE_TAP = {"none", "no", "nope", "no injuries", "injuries none"}
 
 
+def _injury_none_tap(reply):
+    """The None button. A question mark or other mark is not the button."""
+    if not isinstance(reply, str):
+        return False
+    raw = " ".join(reply.strip().lower().split())
+    return raw in _INJURY_NONE_TAP
+
+
 def _exact_area(reply):
     """The whole reply is one area tap. A sentence is not an area."""
     folded = _fold(reply) if isinstance(reply, str) else ""
@@ -2597,6 +2757,16 @@ def _exact_token(state, reply):
         return True
     if state.get("asked") == "par_q" and _par_q_all_no_button(reply):
         return True
+    safety_open = (
+        state.get("asked") == "par_q"
+        and "injuries" in (state.get("answers") or {})
+        and not state.get("par_q_skipped")
+        and not state.get("par_q_unclear")
+        and not state.get("par_q")
+        and not state.get("safety_followup")
+    )
+    if safety_open and folded in {"no", "nope", "nah", "yes", "yep", "yeah", "yup"}:
+        return True
     if folded in _ACCEPT and not (state.get("phase") == "confirm" and state.get("safety_followup")):
         return True
     if state.get("awaiting") in {"target", "weight"}:
@@ -2609,7 +2779,7 @@ def _exact_token(state, reply):
     if (
         state.get("asked") in {"training", "par_q"}
         and "injuries" not in answers
-        and (folded in _INJURY_NONE_TAP or _injury_button(reply))
+        and (_injury_none_tap(reply) or _injury_button(reply))
     ):
         return True
     if folded in {"cut", "lose", "gain", "hold"}:
@@ -2822,11 +2992,32 @@ def _take_exact(state, reply):
     if state.get("asked") == "par_q" and _par_q_all_no_button(reply):
         submit_par_q(state, "all_no")
         return
+    safety_open = (
+        state.get("asked") == "par_q"
+        and state.get("phase") != "confirm"
+        and "injuries" in state.get("answers", {})
+        and not state.get("par_q_skipped")
+        and not state.get("par_q_unclear")
+        and not state.get("par_q")
+        and not state.get("safety_followup")
+    )
+    if safety_open and folded in {"no", "nope", "nah"}:
+        submit_par_q(state, "all_no")
+        state["par_q_reply"] = "no"
+        return
+    if safety_open and folded in {"yes", "yep", "yeah", "yup"}:
+        choice = {key: False for key, _question in PAR_Q}
+        for key in _SAFETY_YES:
+            choice[key] = True
+        submit_par_q(state, choice)
+        if "cleared" in folded:
+            state["answers"]["medical_clearance"] = reply.strip()
+        return
     if folded == "skip":
         _remember_skip(state)
         return
     if (
-        folded in _INJURY_NONE_TAP
+        _injury_none_tap(reply)
         and "injuries" not in state["answers"]
         and state.get("asked") in {"training", "par_q"}
     ):
@@ -2946,10 +3137,9 @@ _GAP_WORDS = {
     "height": "your height in cm",
     "age": "your age as a number",
     "sex": "sex",
-    "days": "which days you train",
+    "days": "how many days a week",
     "minutes": "session minutes",
     "equipment": "equipment",
-    "experience": "your level (beginner, intermediate, or advanced)",
 }
 
 
@@ -2962,7 +3152,7 @@ def _payload_gaps(state):
             missing.append(key)
     if not answers.get("days"):
         missing.append("days")
-    for key in ("minutes", "equipment", "experience"):
+    for key in ("minutes", "equipment"):
         if answers.get(key) in (None, ""):
             missing.append(key)
     return missing
@@ -3024,12 +3214,38 @@ def _merge_profile_payload(state, payload):
     state["from_profile_payload"] = True
     state["profile_rejected"] = list(rejected)
     day_indexes = fields.pop("day_indexes", None)
+    days_per_week = fields.pop("days_per_week", None)
+    safety = fields.pop("safety", None)
+    goal_vague = fields.pop("goal_vague", None)
+    benchmarks = fields.pop("benchmarks", None)
     for key, value in fields.items():
         state["answers"][key] = value
+    if isinstance(benchmarks, dict):
+        stored = state["answers"].get("benchmarks")
+        if not isinstance(stored, dict):
+            stored = {}
+        stored.update(benchmarks)
+        state["answers"]["benchmarks"] = stored
+    if goal_vague and "goal" not in fields:
+        state["goal_vague"] = goal_vague
+    elif "goal" in fields:
+        state.pop("goal_vague", None)
     if day_indexes:
         state["answers"]["training_days"] = str(len(day_indexes))
         state["answers"]["days"] = _dates(len(day_indexes), day_indexes)
         state["answers"]["days_named"] = True
+    elif days_per_week and not state["answers"].get("days_named"):
+        state["answers"]["training_days"] = days_per_week
+        state["answers"]["days"] = _dates(days_per_week)
+        state["answers"]["days_named"] = False
+    if safety == "no":
+        submit_par_q(state, "all_no")
+        state["par_q_reply"] = "no"
+    elif safety == "yes":
+        choice = {key: False for key, _question in PAR_Q}
+        for key in _SAFETY_YES:
+            choice[key] = True
+        submit_par_q(state, choice)
     if state["answers"].get("age") not in (None, ""):
         state["need_age"] = False
     _release_age_phase_if_filled(state)
@@ -3837,6 +4053,127 @@ def _number(text):
     return int(value) if value == int(value) else value
 
 
+def _level_from_answers(answers):
+    """A level from history and the real-life answers. None when they gave none."""
+    score = 0
+    used = False
+    history = answers.get("history")
+    history_score = {
+        "never": 0,
+        "on and off": 1,
+        "consistent under 2 years": 2,
+        "consistent 2 years or more": 4,
+    }
+    if isinstance(history, str) and history.strip().lower() in history_score:
+        score += history_score[history.strip().lower()]
+        used = True
+    marks = answers.get("benchmarks") if isinstance(answers.get("benchmarks"), dict) else {}
+    easy = {"easily", "easy"}
+    middle = {"with a break", "with breaks", "one hand", "almost"}
+    for key in ("stairs", "play", "floor", "toes", "hike", "suitcase"):
+        value = marks.get(key)
+        if not isinstance(value, str) or not value.strip():
+            continue
+        used = True
+        folded = value.strip().lower()
+        if folded in easy:
+            score += 2
+        elif folded in middle:
+            score += 1
+    jog_score = {
+        "under 5 min": 0,
+        "5-15 min": 1,
+        "15-30 min": 2,
+        "30 min or more": 3,
+    }
+    jog = marks.get("jog")
+    if isinstance(jog, str) and jog.strip().lower() in jog_score:
+        score += jog_score[jog.strip().lower()]
+        used = True
+    push_score = {"0-5": 0, "6-15": 1, "16-30": 2, "31+": 3}
+    push = marks.get("pushups")
+    if isinstance(push, str) and push.strip().lower() not in {"", "skip"} and push.strip().lower() in push_score:
+        score += push_score[push.strip().lower()]
+        used = True
+    lift_score = {
+        "none": 0,
+        "light dumbbells": 1,
+        "a barbell i know": 2,
+        "heavy for me": 3,
+    }
+    lifts = marks.get("lifts")
+    if isinstance(lifts, str) and lifts.strip().lower() in lift_score:
+        score += lift_score[lifts.strip().lower()]
+        used = True
+    if not used:
+        return None
+    if score <= 4:
+        return "beginner"
+    if score <= 8:
+        return "novice"
+    if score <= 14:
+        return "intermediate"
+    return "advanced"
+
+
+def _ensure_schedule(state):
+    """The bot picks the days. A named weekday list is an edit, so it stays."""
+    answers = state.get("answers") if isinstance(state.get("answers"), dict) else {}
+    if answers.get("training_days") and not answers.get("days"):
+        answers["days"] = _dates(answers.get("training_days"))
+        answers["days_named"] = False
+    if (
+        answers.get("training_days")
+        and answers.get("minutes")
+        and not answers.get("sport")
+    ):
+        answers["sport"] = "general training"
+
+
+def _ensure_level(state):
+    """Derive the level. Do not ask them to pick one."""
+    answers = state.get("answers") if isinstance(state.get("answers"), dict) else {}
+    derived = _level_from_answers(answers)
+    if derived:
+        answers["experience"] = derived
+        return
+    if answers.get("experience"):
+        return
+    ready = ("training_days", "minutes", "equipment", "injuries")
+    if all(answers.get(key) not in (None, "") for key in ready):
+        answers["experience"] = "beginner"
+
+
+def _vague_card(phrase):
+    folded = _fold(phrase)
+    if "feel better" in folded or "pain" in folded:
+        options = ["Move without pain", "Get stronger", "Lose fat"]
+    elif "not sure" in folded:
+        options = ["Lose fat", "Build muscle", "Train for a sport or event"]
+    else:
+        options = ["Lose fat", "Build muscle", "Get stronger"]
+    return _card_text(
+        "Which of these is closest?",
+        (_step("goal", "Which of these is closest?", options, custom=True),),
+    )
+
+
+def _safety_block(state):
+    """A safety yes does not show a plan unless readiness passes."""
+    par_q = state.get("par_q") if isinstance(state.get("par_q"), dict) else {}
+    if not any(par_q.get(key) is True for key, _question in PAR_Q):
+        return None
+    if not all(isinstance(par_q.get(key), bool) for key, _question in PAR_Q):
+        return None
+    from readiness_screen import ReadinessScreen, passing_readiness
+
+    screen = ReadinessScreen().screen_intake(_readiness_intake(state))
+    state["readiness"] = screen
+    if passing_readiness(screen):
+        return None
+    return " ".join(screen.reasons) or "Readiness has to pass before a plan is built."
+
+
 def _profile(state):
     answers = state["answers"]
     profile = {
@@ -3862,6 +4199,17 @@ def _profile(state):
         profile["height_cm"] = height
     if answers.get("injury_old") is True:
         profile["injury_old"] = True
+    for key in ("likes", "dislikes"):
+        value = answers.get(key)
+        if isinstance(value, list) and value:
+            profile[key] = [item for item in value if isinstance(item, str) and item.strip()]
+    if isinstance(answers.get("focus"), str) and answers.get("focus").strip():
+        profile["focus"] = answers["focus"].strip()
+    stiffness = answers.get("stiffness")
+    if answers.get("extra_mobility") is True or answers.get("focus") == "pain" or stiffness in {
+        "some stiffness", "desk job", "both",
+    }:
+        profile["extra_mobility"] = True
     event = answers.get("event")
     if isinstance(event, dict):
         profile["event"] = {
@@ -3888,6 +4236,9 @@ def _readiness_intake(state):
     height = _number(answers.get("height"))
     if height is not None:
         intake["height_cm"] = height
+    clearance = answers.get("medical_clearance")
+    if clearance not in (None, "", False):
+        intake["medical_clearance"] = clearance
     return intake
 
 
@@ -4265,9 +4616,14 @@ def _session_line(row):
         label = "Day"
     name = row.get("name") if isinstance(row.get("name"), str) and row.get("name").strip() else "Session"
     exercises = row.get("exercises") if isinstance(row.get("exercises"), list) else []
-    if name in {"Easy run", "Long run"} and exercises and isinstance(exercises[0], dict):
-        reps = exercises[0].get("reps") or ""
-        detail = str(reps).strip()
+    if name in {"Easy run", "Long run"}:
+        detail = ""
+        for item in exercises:
+            if isinstance(item, dict) and item.get("name") == name:
+                detail = str(item.get("reps") or "").strip()
+                break
+        if not detail and exercises and isinstance(exercises[0], dict):
+            detail = str(exercises[0].get("reps") or "").strip()
         return f"{label} {name}: {detail}." if detail else f"{label} {name}."
     names = []
     for item in exercises:
@@ -4361,12 +4717,7 @@ def _unclear_par_q(state):
 
     known = {key: value for key, value in state["par_q"].items() if isinstance(value, bool)}
     state["readiness"] = ReadinessScreen().check_par_q(known)
-    missing = [
-        key.replace("_", " ")
-        for key, _question in PAR_Q
-        if not isinstance(state["par_q"].get(key), bool)
-    ]
-    return "Still need a yes or no: " + ", ".join(missing) + "."
+    return _SAFETY_ASK
 
 
 def pending_profile_path():
@@ -4450,6 +4801,15 @@ def speak(state):
             return state["error"]
         state["error"] = _AGE_ASK
         return _AGE_ASK
+    if not state.get("confirmed") and state.get("phase") not in {"symptom", "blocked", "confirm"}:
+        _ensure_schedule(state)
+        _ensure_level(state)
+    blocked = _safety_block(state)
+    if blocked and not state.get("confirmed"):
+        state["phase"] = "intake"
+        state["asked"] = "par_q"
+        state["error"] = blocked
+        return blocked
     if state.get("from_profile_payload"):
         gaps = _payload_gaps(state)
         if gaps:
@@ -4462,6 +4822,13 @@ def speak(state):
             state["phase"] = "intake"
             goal_keys = {"goal", "weight", "height", "age", "sex"}
             state["asked"] = "goal" if any(key in goal_keys for key in gaps) else "training"
+            if (
+                state.get("goal_vague")
+                and state["answers"].get("goal") in (None, "")
+                and "goal" in gaps
+                and "age" not in gaps
+            ):
+                return _vague_card(state.get("goal_vague"))
             return _combined_profile_ask(gaps)
     missing = _first_missing(state)
     if missing is None and state.get("checks_again"):
@@ -4481,6 +4848,15 @@ def speak(state):
         state["checks_again"] = False
     missing = _first_missing(state)
     if missing is not None:
+        if (
+            missing["id"] == "goal"
+            and state.get("goal_vague")
+            and state["answers"].get("goal") in (None, "")
+            and _missing_keys(state, missing) != ["age"]
+        ):
+            state["phase"] = "intake"
+            state["asked"] = "goal"
+            return _vague_card(state.get("goal_vague"))
         if missing["id"] == "goal" and _missing_keys(state, missing) == ["age"]:
             state["phase"] = "age"
             state["need_age"] = True
