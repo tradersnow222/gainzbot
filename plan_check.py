@@ -15,7 +15,7 @@ import os
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from guardrails.validate import InputValidator, ValidationError
-from readiness_screen import ScreeningResult
+from readiness_screen import passing_readiness
 from red_flag_check import is_passing_check_in
 
 
@@ -66,17 +66,8 @@ class PlanValidator:
             return (10 * weight_kg) + (6.25 * height_cm) - (5 * age) - 161
 
     def _readiness_passes(self, readiness_result) -> bool:
-        """True only for a real readiness result that cleared or cautioned."""
-        if not isinstance(readiness_result, ScreeningResult):
-            return False
-        if readiness_result.blocked is not False:
-            return False
-        clearance = readiness_result.clearance
-        if hasattr(clearance, "value"):
-            clearance = clearance.value
-        if not isinstance(clearance, str):
-            return False
-        return clearance.strip().lower() in {"clear", "caution"}
+        """True only for a readiness result issued by readiness_screen."""
+        return passing_readiness(readiness_result)
 
     def _plan_gate_errors(self, plan: Dict, check_in_result) -> List[str]:
         """A plan is valid only with a real check-in and a real plan section."""
@@ -427,6 +418,10 @@ class PlanValidator:
             else:
                 known_flags = set(ReadinessScreen.PAR_Q_RED_FLAGS)
                 for key, value in raw.items():
+                    if key == "source":
+                        if not isinstance(value, str) or not value.strip():
+                            errors.append("PAR-Q source must be the person's subject hash.")
+                        continue
                     if key not in known_flags:
                         errors.append(f"Unknown PAR-Q key: '{key}'")
                         continue

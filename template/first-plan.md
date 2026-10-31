@@ -12,6 +12,6 @@ Do not set a calorie target in this first week.
 
 `propose` runs `plan_check`. If it does not pass, do not save the week and do not change anything. It needs an age, or a passing readiness screen, before it builds the week. A missing baseline does not get a plan. `propose` checks the PAR-Q answers in code. A yes blocks the week unless readiness_screen passes, for example after a doctor's clearance. A skipped or partial PAR-Q runs readiness_screen before propose().
 
-The plan carries `par_q`. `plan_check` allows that key. `save` reads it. A missing or partial PAR-Q on the plan needs the same passing readiness result.
+The plan carries `par_q`. `plan_check` allows that key. `save` reads it. A missing or partial PAR-Q on the plan needs the same passing readiness result. `par_q` records `source` as that person's subject_hash. `save` refuses a `par_q` whose source does not match the user. A user with no body details cannot be tied to a readiness screen, so that week is refused. A readiness result built in code does not pass. `readiness_screen` sets the marker.
 
 Then call `record_confirmation` on the plan and the sessions together (`week_to_confirm`). Save with `PlanBuilder.save` only when that record covers both. `save` requires `plan['user']` with an age, or a passing readiness result, the same as `propose`. A load of 0 is refused. `save` runs `plan_check` again. The hours cap is computed from the sessions themselves, so a longer week swapped in after the yes is refused. A vague yes does not save it. If the week file cannot be read, do not overwrite it.

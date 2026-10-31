@@ -605,6 +605,12 @@ class TestK06aProbes:
         refused = PlanValidator().validate_plan(bad, check_in_result=passing_check_in())
         assert not refused.valid
         assert any("not_a_question" in err for err in refused.errors)
+        sourced = dict(plan, par_q={**flags, "source": "abc123"})
+        assert PlanValidator().validate_plan(sourced, check_in_result=passing_check_in()).valid
+        empty_source = dict(plan, par_q={**flags, "source": "  "})
+        blank = PlanValidator().validate_plan(empty_source, check_in_result=passing_check_in())
+        assert not blank.valid
+        assert any("source" in err.lower() for err in blank.errors)
 
     def test_unknown_key_sport_hrs_rejected(self):
         """Unknown key 'sport_hrs' instead of 'sport_hours' is rejected."""
