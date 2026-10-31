@@ -703,7 +703,7 @@ class DailyLoop:
             return "How old are you? Please type the number."
         if action == "follow_up":
             self._set_unclear(day, self._unclear_count(day) + 1)
-            self._write_pending(day, "follow_up")
+            self._open_follow_up(day, reply, labels)
             self.phase[day] = "symptom"
             return _SYMPTOM
         if action == "swap":
@@ -725,7 +725,7 @@ class DailyLoop:
             return "How old are you? Please type the number."
         if action == "follow_up":
             self._set_unclear(day, self._unclear_count(day) + 1)
-            self._write_pending(day, "follow_up")
+            self._open_follow_up(day, note, labels)
             self.phase[day] = "symptom"
             return _SYMPTOM
         words = re.findall(r"[a-z]+", _fold(note))
@@ -1108,6 +1108,18 @@ class DailyLoop:
         if isinstance(text, str) and text.strip():
             self.notes.setdefault(day, {})["old_injury"] = text
 
+    def _open_follow_up(self, day, reply, labels):
+        """Missing or invalid labels are not cleared by an Old/Recent tap."""
+        from onboarding import _follow_up_cause
+
+        text = reply if isinstance(reply, str) else ""
+        self._write_pending(day, "follow_up", cause=_follow_up_cause(labels), text=text)
+
+    def _bare_number(self, reply, labels):
+        from safety_pending import typed_age
+
+        return labels is None and typed_age(reply) is not None
+
     def _pending_open(self, day, pending):
         """Opening the morning does not prescribe over a pending record."""
         kind = pending.get("kind")
@@ -1152,10 +1164,16 @@ class DailyLoop:
                 from onboarding import _injury_button
 
                 button = _injury_button(reply)
-            if resolves_follow_up(labels, button=button):
+            injury_unclear = pending.get("cause") == "injury_unclear"
+            if self._bare_number(reply, labels):
+                return self._phase_prompt(self.phase.get(day))
+            if resolves_follow_up(
+                labels, button=button, injury_unclear=injury_unclear
+            ):
+                saved = pending.get("text") if isinstance(pending.get("text"), str) else ""
                 self._clear_pending()
                 self._set_unclear(day, 0)
-                return self._resolve_follow_up(day, reply, labels, button)
+                return self._resolve_follow_up(day, reply, labels, button, saved)
             return self._remember_pause(
                 day, "Rest today. Come back tomorrow, or after you see a doctor."
             )
@@ -1163,14 +1181,15 @@ class DailyLoop:
             day, "Rest today. Come back tomorrow, or after you see a doctor."
         )
 
-    def _resolve_follow_up(self, day, reply, labels, button):
+    def _resolve_follow_up(self, day, reply, labels, button, saved=""):
         """Store the structured answer. This turn does not prescribe or log."""
+        area = saved if isinstance(saved, str) and saved.strip() else reply
         if button == "current":
             return self._remember_pause(
                 day, "Rest today. Come back tomorrow, or after you see a doctor."
             )
         if button == "old":
-            self._remember_old_injury(day, reply)
+            self._remember_old_injury(day, area)
             return self._phase_prompt(self.phase.get(day))
         action = label_action(labels, 0)
         if action == "clear_age":
@@ -1179,7 +1198,7 @@ class DailyLoop:
         if action == "hold":
             return self._remember_pause(day, _label_hold_text(reply, labels))
         if action == "swap":
-            self._remember_old_injury(day, reply)
+            self._remember_old_injury(day, area or reply)
             return self._phase_prompt(self.phase.get(day))
         return self._phase_prompt(self.phase.get(day))
 
@@ -1226,16 +1245,22 @@ class DailyLoop:
                         day, "Rest today. Come back tomorrow, or after you see a doctor."
                     )
                 self._set_unclear(day, count + 1)
-                self._write_pending(day, "follow_up")
+                self._open_follow_up(day, reply, labels)
                 return self._phase_prompt(phase)
-        elif phase in {"morning2", "signals"} and not _score_exact(reply):
+        elif self._bare_number(reply, labels) and phase not in {"morning2", "signals"}:
+            return self._phase_prompt(phase)
+        elif (
+            phase in {"morning2", "signals"}
+            and not _score_exact(reply)
+            and not self._bare_number(reply, labels)
+        ):
             count = self._unclear_count(day)
             if count >= 1:
                 return self._remember_pause(
                     day, "Rest today. Come back tomorrow, or after you see a doctor."
                 )
             self._set_unclear(day, count + 1)
-            self._write_pending(day, "follow_up")
+            self._open_follow_up(day, reply, None)
             return self._phase_prompt(phase)
         elif phase == "evening" and not _evening_exact(reply):
             count = self._unclear_count(day)
@@ -1244,7 +1269,7 @@ class DailyLoop:
                     day, "Rest today. Come back tomorrow, or after you see a doctor."
                 )
             self._set_unclear(day, count + 1)
-            self._write_pending(day, "follow_up")
+            self._open_follow_up(day, reply, None)
             self.phase[day] = "evening"
             return _EVENING
         elif phase == "symptom" and labels is None and not symptom_is_clear(reply) and not _split_scored_no(reply):
@@ -1254,7 +1279,7 @@ class DailyLoop:
                     day, "Rest today. Come back tomorrow, or after you see a doctor."
                 )
             self._set_unclear(day, count + 1)
-            self._write_pending(day, "follow_up")
+            self._open_follow_up(day, reply, None)
             self.phase[day] = "symptom"
             return _SYMPTOM
         return None
@@ -1278,7 +1303,7 @@ class DailyLoop:
                 self._remember_old_injury(day, reply)
             if action not in {"note", "pass", "swap"}:
                 self._set_unclear(day, self._unclear_count(day) + 1)
-                self._write_pending(day, "follow_up")
+                self._open_follow_up(day, reply, labels)
                 self.phase[day] = "evening"
                 return _EVENING
         elif not _evening_exact(reply):

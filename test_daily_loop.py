@@ -200,6 +200,9 @@ def test_a_symptom_in_the_morning_pauses_before_the_workout():
     assert "easy day" not in paused.lower()
     assert pause_day not in loop.workouts
     assert loop.phase[pause_day] == "paused"
+    from safety_pending import clear_pending
+
+    clear_pending(loop._safety_directory(), "daily")
     clear = DailyLoop(load=80, minutes=45, profile=adult_profile())
     clear.open_morning(day)
     follow = clear.hear(day, "no")
@@ -1024,3 +1027,61 @@ def test_an_old_injury_swaps_the_lift_that_day(tmp_path):
     assert "Back squat" not in text
     assert "Box squat to a high box" in text
     assert loop.phase[day] == "workout"
+
+
+def test_an_old_follow_up_keeps_the_pending_injury_text(tmp_path):
+    day = "2026-11-04"
+    loop = _live_loop(tmp_path)
+    loop.open_morning(day)
+    labels = {
+        "minor_signal": False,
+        "red_flag": "none",
+        "injury": "unclear",
+        "note_ok": False,
+    }
+    first = loop.hear(day, "knee is wrecked", labels)
+    assert "Full body" not in first
+    second = loop.hear(day, "old")
+    assert "Full body" not in second
+    assert loop.notes[day]["old_injury"] == "knee is wrecked"
+    assert loop.phase[day] != "paused"
+    third = loop.hear(day, "no, 7, 2")
+    assert "Front squat" not in third
+    assert "Box squat to a high box" in third
+    assert loop.phase[day] == "workout"
+
+
+def test_a_stray_number_on_day_two_does_not_hold_unless_labels_say_so(tmp_path):
+    day = "2026-11-04"
+    loop = _live_loop(tmp_path)
+    loop.open_morning(day)
+    text = loop.hear(day, "25")
+    assert loop.phase[day] != "paused"
+    assert "Full body" not in text
+    clear = loop.hear(day, "no, 7, 2")
+    assert "Full body B" in clear
+    assert loop.phase[day] == "workout"
+    _clear_day_files(tmp_path)
+    held = _live_loop(tmp_path)
+    held.open_morning(day)
+    paused = held.hear(day, "25", {
+        "minor_signal": False,
+        "red_flag": "chest_pain",
+        "injury": "none",
+        "note_ok": False,
+    })
+    assert held.phase[day] == "paused"
+    assert "Full body" not in paused
+
+
+def test_a_future_dated_pending_file_holds_the_earlier_day(tmp_path):
+    from safety_pending import write_pending
+
+    day = "2026-11-02"
+    assert write_pending(str(tmp_path), "follow_up", "2026-11-06", "daily") is True
+    loop = _live_loop(tmp_path)
+    loop.open_morning(day)
+    text = loop.hear(day, "no, 7, 2")
+    assert "Full body A" not in text
+    assert loop.phase[day] == "paused"
+    assert day not in loop.workouts

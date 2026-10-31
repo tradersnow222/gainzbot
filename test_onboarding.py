@@ -293,7 +293,8 @@ def test_a_schedule_clock_is_not_read_as_an_age():
     typed, typed_bots = run_chat(list(_AGE_25) + ["at 7", "25"])
     assert typed["confirmed"] is False
     assert typed["answers"]["age"] == "25"
-    assert typed["phase"] == "symptom"
+    assert typed["phase"] != "symptom"
+    assert "one check on that message" in typed_bots[-1].lower()
     assert "one yes confirms the plan" not in typed_bots[-1].lower()
     _drop_hold()
     evening, evening_bots = run_chat(list(_AGE_25) + ["yes, evening 9pm"])
@@ -883,7 +884,9 @@ def test_clear_age_keeps_the_profile_facts_from_the_same_message():
     assert state["answers"].get("injuries") in (None, "")
 
 
-def test_happy_path_confirms_in_six_bot_turns_or_fewer():
+def test_happy_path_confirms_in_five_bot_turns_or_fewer():
+    from onboarding import happy_path_turns
+
     state, bots = run_chat(HAPPY_PATH)
     assert state["confirmed"] is True
     assert state["record"].confirmed is True
@@ -892,12 +895,118 @@ def test_happy_path_confirms_in_six_bot_turns_or_fewer():
     assert state["times"]["evening_followup"] == "20:00"
     assert state["times"]["weekly_review"] == "Sun 18:00"
     assert state["turns"] == len(bots)
-    assert len(bots) <= 6
+    assert state["turns"] <= 5
+    assert happy_path_turns() == state["turns"]
+    assert len(bots) <= 5
     assert bots[0] == question_one()
     assert sum("one yes confirms the plan" in turn.lower() for turn in bots) == 1
     assert "each is opt-in" in bots[-2].lower()
     assert "?" not in bots[-1]
     assert "confirm" in bots[-1].lower()
+
+
+def test_a_sentence_at_the_age_step_is_not_dropped():
+    """A non-int at age with no labels stays a follow-up. The next int does not confirm."""
+    profile = (
+        "hold, male, 80 kg, 180 cm, general training, 3 days 45 min, bodyweight, beginner"
+    )
+    phrases = (
+        "25 but heart racing",
+        "25, fever since yesterday",
+        "25, knee is wrecked",
+        "im 15 tbh, put 25",
+    )
+    for phrase in phrases:
+        _drop_hold()
+        state, bots = run_chat([
+            "hello",
+            (profile, _labels()),
+            phrase,
+            "25",
+            "none",
+            "all_no",
+            "yes",
+        ])
+        assert state["confirmed"] is False, phrase
+        assert state["phase"] == "symptom", phrase
+        assert "one yes confirms the plan" not in bots[-1].lower(), phrase
+
+
+def test_an_old_tap_does_not_clear_an_invalid_label_follow_up():
+    invalid = {
+        "minor_signal": False,
+        "red_flag": "none",
+        "injury": "maybe",
+        "note_ok": False,
+    }
+    profile = (
+        "hold, male, 80 kg, 180 cm, general training, 3 days 45 min, "
+        "bodyweight, beginner, no injuries"
+    )
+    prefix = ["hello", (profile, _labels()), "30", "all_no"]
+    asked, asked_bots = run_chat(prefix + [("yes, heart racing lately", invalid)])
+    assert asked["confirmed"] is False
+    assert asked["phase"] != "symptom"
+    assert "one check on that message" in asked_bots[-1].lower()
+    _drop_hold()
+    state, bots = run_chat(prefix + [("yes, heart racing lately", invalid), "old", "yes"])
+    assert state["confirmed"] is False
+    assert state["phase"] == "symptom"
+    assert "one yes confirms the plan" not in bots[-1].lower()
+
+
+def test_an_old_tap_keeps_the_injury_area_from_the_pending_text():
+    state, _bots = run_chat([
+        _marked("hold, male, 80 kg, 180 cm, knee is wrecked", injury="unclear"),
+        "old",
+    ])
+    assert state["confirmed"] is False
+    assert state["answers"].get("injuries") == "knee"
+    assert state["answers"].get("injuries") != "old"
+
+
+def test_no_injuries_words_do_not_count_without_the_label():
+    bare, _bots = run_chat([
+        "hello",
+        "hold, male, 80 kg, 180 cm, general training, 3 days 45 min, bodyweight, beginner, no injuries",
+        "30",
+    ])
+    assert bare["answers"].get("injuries") in (None, "")
+    labeled, later = run_chat([
+        _marked(
+            "hold, male, 80 kg, 180 cm, general training, 3 days 45 min, bodyweight, beginner"
+        ),
+        "30",
+    ])
+    assert labeled["answers"].get("injuries") in (None, "")
+    assert "Sport, schedule, and equipment?" not in later[-1]
+
+
+def test_ok_does_not_ask_the_training_question_again():
+    training = next(group["text"] for group in GROUPS if group["id"] == "training")
+    state, bots = run_chat([
+        "hello",
+        _marked("hold, male, 80 kg, 180 cm"),
+        "30",
+        "ok",
+    ])
+    assert state["confirmed"] is False
+    assert bots[-1] != training
+    assert "Injuries:" in bots[-1]
+    assert training not in bots[-1]
+
+
+def test_a_future_dated_pending_file_fails_closed(tmp_path):
+    from datetime import date
+
+    from safety_pending import read_pending, write_pending
+
+    assert write_pending(str(tmp_path), "follow_up", "2099-01-01", "onboarding") is True
+    loaded = read_pending(str(tmp_path), date(2026, 10, 31), "onboarding")
+    assert loaded["kind"] == "hold"
+    assert loaded.get("future") is True
+    assert write_pending(str(tmp_path), "follow_up", "2026-10-01", "onboarding") is True
+    assert read_pending(str(tmp_path), date(2026, 10, 31), "onboarding") is None
 
 
 def test_answers_in_any_order_are_kept_and_only_the_gap_is_asked():
@@ -1378,7 +1487,12 @@ def test_free_text_never_stores_an_age_and_the_bot_asks():
     assert _AGE_ASK not in typed_bots[-1]
     years, years_bots = run_chat(["hold, female, 165 cm, 70 kg", "41 years old"])
     assert years["answers"].get("age") in (None, "")
-    assert years_bots[-1] == _AGE_ASK
+    assert "one check on that message" in years_bots[-1].lower()
+    _drop_hold()
+    again, again_bots = run_chat(["hold, female, 165 cm, 70 kg", "41 years old", "41"])
+    assert again["confirmed"] is False
+    assert again["answers"].get("age") in (None, "")
+    assert "one yes confirms the plan" not in "\n".join(again_bots).lower()
 
 
 def test_a_lower_age_clears_the_stored_adult_and_refuses():

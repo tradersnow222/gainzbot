@@ -36,7 +36,8 @@ def read_pending(directory, today, slot):
     """The active record, or None when it is missing or already a past date.
 
     An unreadable file, a future date, or a record that is not one of the
-    three kinds stays active as a hold.
+    three kinds stays active as a hold. A date before the caller's today
+    has expired.
     """
     path = pending_path(directory, slot)
     try:
@@ -60,10 +61,10 @@ def read_pending(directory, today, slot):
         stored_day = date.fromisoformat(stored)
     except ValueError:
         return {"kind": "hold", "date": today_day.isoformat(), "unreadable": True}
-    # Only the caller's own day blocks. A past day has expired. A later day
-    # belongs to that later day, not to this one.
-    if stored_day != today_day:
+    if stored_day < today_day:
         return None
+    if stored_day > today_day:
+        return {"kind": "hold", "date": today_day.isoformat(), "future": True}
     return loaded
 
 
@@ -104,12 +105,13 @@ def clear_pending(directory, slot):
     return True
 
 
-def resolves_follow_up(labels, button=None):
-    """True for an Old/Recent tap or a valid red_flag, minor, or old/current injury.
+def resolves_follow_up(labels, button=None, injury_unclear=False):
+    """True for a valid red_flag, minor, or old/current injury label.
 
-    A pass, a note, a missing label, or an unclear injury does not resolve it.
+    An Old/Recent tap resolves only an injury=unclear follow-up. A pass, a
+    note, a missing label, or an invalid label does not resolve it.
     """
-    if labels is None and button in {"old", "current"}:
+    if labels is None and injury_unclear and button in {"old", "current"}:
         return True
     if labels is None:
         return False

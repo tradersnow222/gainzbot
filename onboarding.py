@@ -54,8 +54,8 @@ _PASS_LABELS = {
     "note_ok": False,
 }
 
-# The profile line carries host labels. "all_no" is the PAR-Q button, not typed text.
-# Injuries are a tap. The profile sentence does not fill them.
+# The profile line carries host labels. injury=none on that line is the
+# structured None tap. "all_no" is the PAR-Q button, not typed text.
 HAPPY_PATH = (
     "hello",
     (
@@ -63,7 +63,6 @@ HAPPY_PATH = (
         _PASS_LABELS,
     ),
     "30",
-    "none",
     "all_no",
     "yes",
 )
@@ -81,6 +80,20 @@ def _par_q_text():
         "The PAR-Q still comes before any plan is built."
     )
     return "\n".join(lines)
+
+
+def _injury_and_par_q(state):
+    """The injury tap sits on the PAR-Q step. Ok does not ask training again."""
+    parts = []
+    answers = state.get("answers") if isinstance(state.get("answers"), dict) else {}
+    if "injuries" not in answers:
+        parts.append(_INJURY_TAP_LINE)
+    par_q = _group("par_q")
+    if par_q and _missing_keys(state, par_q):
+        parts.append(par_q["text"])
+    if parts:
+        return "\n".join(parts)
+    return _INJURY_TAP_LINE
 
 
 GROUPS = (
@@ -1042,6 +1055,9 @@ def _drop_target_ask_for_goal(state):
     state["asked"] = "goal"
     goal = _group("goal")
     state["error"] = goal["text"] if goal else _TARGET_ASK
+
+
+_INJURY_TAP_LINE = "Injuries: tap None, Old & healed, or Recent or still painful."
 _INJURY_WHEN = (
     "Is that an old injury that's healed, or something recent "
     "(last few weeks) or still painful?"
@@ -1427,6 +1443,14 @@ def _clear_safety():
     from safety_pending import clear_pending
 
     return clear_pending(_safety_directory(), "onboarding")
+
+
+def _follow_up_cause(labels):
+    """injury_unclear is the only follow-up an Old/Recent tap can clear."""
+    parsed, reason = validate_labels(labels) if labels is not None else (None, "missing")
+    if reason is None and parsed.get("injury") == "unclear":
+        return "injury_unclear"
+    return "labels"
 
 
 def _follow_up_open(state=None):
@@ -2326,6 +2350,17 @@ def _emergency_pause(reply):
     return SimpleNamespace(message=message, recommendations=recommendations)
 
 
+def _explicit_no_injuries(folded):
+    """The profile line is the explicit no-injuries statement.
+
+    The host label injury=none is the decision. These words only say which
+    line that label belongs to. The words alone never fill injuries.
+    """
+    if not folded:
+        return False
+    return re.search(r"\bno injuries\b", folded) is not None
+
+
 def _profile_line(folded):
     """Goal, body, or training facts. An injury sentence is not one of these by itself."""
     if not folded:
@@ -2438,7 +2473,12 @@ def _exact_token(state, reply):
         return True
     if _explicit_edit(reply) is not None:
         return True
-    if state.get("asked") == "training" and folded in _INJURY_NONE_TAP:
+    answers = state.get("answers") if isinstance(state.get("answers"), dict) else {}
+    if (
+        state.get("asked") in {"training", "par_q"}
+        and "injuries" not in answers
+        and (folded in _INJURY_NONE_TAP or _injury_button(reply))
+    ):
         return True
     if folded in {"cut", "lose", "gain", "hold"}:
         return True
@@ -2453,6 +2493,18 @@ def _exact_token(state, reply):
         ):
             return True
     return False
+
+
+def _remember_injury_text(state, reply):
+    """Keep the area named in the follow-up, so an Old tap can store it."""
+    folded = _fold(reply) if isinstance(reply, str) else ""
+    label = _pending_injury_label(reply) or ""
+    if not label:
+        stated = _stated_injury(folded)
+        if stated and stated != "none":
+            label = stated
+    if label and not state.get("pending_injury"):
+        state["pending_injury"] = label
 
 
 def _store_old_from_text(state, reply):
@@ -2482,12 +2534,15 @@ def _ask_label_followup(state, reply, labels):
         return
     state["label_unclear"] = count + 1
     state["safety_followup"] = True
-    _write_safety("follow_up")
+    cause = _follow_up_cause(labels)
+    text = reply if isinstance(reply, str) else ""
+    state["follow_up_text"] = text
+    _write_safety("follow_up", cause=cause, text=text)
     _clear_proposal(state)
     parsed, reason = validate_labels(labels) if labels is not None else (None, "missing")
     if reason is None:
         _parse_profile_fields(state, reply)
-    if reason is None and parsed.get("injury") == "unclear":
+    if cause == "injury_unclear":
         _ask_injury_when(state, reply)
         return
     state["error"] = _LABEL_FOLLOWUP
@@ -2529,7 +2584,10 @@ def _apply_label_decision(state, reply, labels):
         return True
     if action == "swap":
         _parse_profile_fields(state, reply)
-        _store_old_from_text(state, reply)
+        saved = state.get("follow_up_text") if isinstance(state.get("follow_up_text"), str) else ""
+        if saved and not state.get("pending_injury"):
+            _remember_injury_text(state, saved)
+        _store_old_from_text(state, saved or reply)
         state["safety_followup"] = False
         _clear_safety()
         state["error"] = None
@@ -2550,8 +2608,20 @@ def _apply_label_decision(state, reply, labels):
 
 
 def _accept_labeled_profile(state, reply, labels):
-    """Profile facts after a pass or a note. Injuries stay a separate tap."""
+    """Profile facts after a pass or a note.
+
+    injury=none on that labeled profile line is the structured None answer.
+    The words in the line are not matched.
+    """
     _parse_profile_fields(state, reply)
+    parsed, reason = validate_labels(labels) if labels is not None else (None, "missing")
+    if reason is not None or parsed.get("injury") != "none":
+        return
+    folded = _fold(reply) if isinstance(reply, str) else ""
+    if not _profile_line(folded) or not _explicit_no_injuries(folded):
+        return
+    if "injuries" not in state["answers"]:
+        state["answers"]["injuries"] = "none"
 
 
 def _take_injury_choice(state, reply, labels):
@@ -2618,8 +2688,23 @@ def _take_exact(state, reply):
     if folded == "skip":
         _remember_skip(state)
         return
-    if folded in _INJURY_NONE_TAP and state.get("asked") == "training":
+    if (
+        folded in _INJURY_NONE_TAP
+        and "injuries" not in state["answers"]
+        and state.get("asked") in {"training", "par_q"}
+    ):
         state["answers"]["injuries"] = "none"
+        return
+    button = _injury_button(reply)
+    if (
+        button
+        and "injuries" not in state["answers"]
+        and state.get("asked") in {"training", "par_q"}
+    ):
+        if button == "current":
+            _hold_symptom(state, reply, _plain_pause())
+            return
+        _ask_which_area(state)
         return
     if folded in {"cut", "lose", "gain", "hold"}:
         state["answers"]["goal"] = folded
@@ -2683,8 +2768,28 @@ def _consume_pending(state, reply, labels):
         submit_age(state, number)
         state["confirmed"] = False
         return True
+    cause = pending.get("cause") if isinstance(pending, dict) else None
+    if state.get("awaiting") == "injury_when":
+        cause = "injury_unclear"
+    # A bare number outside the age step is not a safety answer.
+    if (
+        kind == "follow_up"
+        and labels is None
+        and typed_age(reply) is not None
+        and state.get("phase") not in {"age", "blocked"}
+    ):
+        state["error"] = _INJURY_WHEN if cause == "injury_unclear" else _LABEL_FOLLOWUP
+        return True
     button = _injury_button(reply) if labels is None else None
-    if resolves_follow_up(labels, button=button):
+    if resolves_follow_up(labels, button=button, injury_unclear=cause == "injury_unclear"):
+        saved = ""
+        if isinstance(pending, dict) and isinstance(pending.get("text"), str):
+            saved = pending["text"]
+        elif isinstance(state.get("follow_up_text"), str):
+            saved = state["follow_up_text"]
+        if saved:
+            state["follow_up_text"] = saved
+            _remember_injury_text(state, saved)
         _clear_safety()
         state["safety_followup"] = False
         state["cleared_follow_up"] = True
@@ -2751,6 +2856,10 @@ def apply_reply(state, reply, labels=None):
     if _profile_facts_only(text) and not state.get("safety_followup"):
         _parse_profile_fields(state, text)
         state["label_unclear"] = 0
+        return
+    from safety_pending import typed_age
+
+    if labels is None and typed_age(text) is not None and phase not in {"age", "blocked"}:
         return
     _ask_label_followup(state, text, None)
 
@@ -3126,9 +3235,19 @@ def _handle_symptom(state, reply):
 
 
 def _handle_age(state, reply, labels=None):
-    """The host passes an int to submit_age. A string here is not an age."""
+    """The host passes an int to submit_age. A sentence here is a follow-up."""
+    from safety_pending import typed_age
+
     _clear_proposal(state)
     if labels is not None and _apply_label_decision(state, reply, labels):
+        return True
+    if (
+        labels is None
+        and isinstance(reply, str)
+        and reply.strip()
+        and typed_age(reply) is None
+    ):
+        _ask_label_followup(state, reply, None)
         return True
     state["phase"] = "age"
     state["awaiting"] = None
@@ -3552,6 +3671,10 @@ def speak(state):
             return _AGE_ASK
         state["phase"] = "intake"
         state["asked"] = missing["id"]
+        if missing["id"] == "training" and _missing_keys(state, missing) == ["injuries"]:
+            if _missing_keys(state, _group("par_q")):
+                state["asked"] = "par_q"
+            return _injury_and_par_q(state)
         if missing["id"] == "par_q" and (
             state["par_q"] or state.get("par_q_skipped") or state.get("par_q_unclear")
         ):
@@ -3646,7 +3769,16 @@ def run_chat(replies):
                 and re.fullmatch(r"[0-9]{1,3}", text.strip())
             ):
                 host_age = int(text.strip())
-            if host_age is not None and state.get("phase") in {"age", "blocked"} and labels is None:
+            pending = _read_safety()
+            follow_up = state.get("safety_followup") or (
+                isinstance(pending, dict) and pending.get("kind") == "follow_up"
+            )
+            if (
+                host_age is not None
+                and state.get("phase") in {"age", "blocked"}
+                and labels is None
+                and not follow_up
+            ):
                 submit_age(state, host_age)
             elif (
                 state.get("asked") == "par_q"
