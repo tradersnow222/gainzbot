@@ -52,8 +52,29 @@ def _first_plan_body(plan):
     }
 
 
+def _carries_load_or_calories(plan_body, sessions):
+    """True when this week has a load or a calorie target to put in changes."""
+    training = plan_body.get("training") if isinstance(plan_body.get("training"), dict) else None
+    if training is not None:
+        if training.get("current_load") not in (None, "") or training.get("previous_load") not in (None, ""):
+            return True
+    nutrition = plan_body.get("nutrition")
+    if isinstance(nutrition, dict) and nutrition.get("calories") not in (None, ""):
+        return True
+    for row in sessions:
+        if isinstance(row, dict) and row.get("load") not in (None, ""):
+            return True
+    return False
+
+
 def _is_later_week(plan):
-    """A raised load or a calorie change is not the one first plan."""
+    """A raised load or a calorie change is not the one first plan.
+
+    A week with no changes field is still a later week when it carries a
+    load or calories. The sealed first plan that has a load also stores
+    that load in changes. A plan and sessions with neither a load nor a
+    changes field can still be the first plan.
+    """
     if not isinstance(plan, dict):
         return True
     body = _first_plan_body(plan)
@@ -68,8 +89,13 @@ def _is_later_week(plan):
     current = training.get("current_load") if training else None
     if previous not in (None, "") and current not in (None, "") and previous != current:
         return True
-    changes = body.get("changes")
-    if isinstance(changes, dict):
+    if "changes" not in body or not isinstance(body.get("changes"), dict):
+        if "changes" in body:
+            return True
+        if _carries_load_or_calories(plan_body, sessions):
+            return True
+    else:
+        changes = body["changes"]
         if "load" in changes:
             if training is None or changes.get("load") != current or current != previous:
                 return True

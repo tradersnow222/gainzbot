@@ -775,6 +775,10 @@ class PlanBuilder:
         }
 
     def save(self, plan, confirmation, path, sessions=None, check_in_result=None, readiness_result=None):
+        from onboarding import hold_is_active
+
+        if hold_is_active():
+            return self._saved_no("Onboarding is held for today. This week is not saved.")
         if path is None or (isinstance(path, str) and not path.strip()):
             return self._saved_no("A path is required.")
         if not isinstance(plan, dict) or not isinstance(plan.get("training"), dict):

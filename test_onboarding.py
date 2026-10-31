@@ -419,39 +419,189 @@ def test_a_minor_age_during_a_symptom_hold_blocks_and_does_not_resume():
     assert "one yes confirms the plan" not in bots[-2].lower()
 
 
-def test_the_next_day_starts_at_the_red_flag_check(monkeypatch):
-    import onboarding
-    from datetime import timedelta
+def test_a_new_conversation_the_same_day_cannot_confirm_over_a_hold():
+    import os
 
-    fixed = onboarding._today()
-    monkeypatch.setattr(onboarding, "_today", lambda: fixed)
+    import onboarding
+
+    first, first_bots = run_chat(list(_AGE_25) + ["my chest hurts"])
+    assert first["confirmed"] is False
+    assert "medical emergency" in first_bots[-1].lower()
+    path = onboarding.onboarding_state_path()
+    assert os.path.isfile(path)
+    second, second_bots = run_chat(list(_AGE_25) + ["yes"])
+    assert second["confirmed"] is False
+    assert second["phase"] == "symptom"
+    assert second["record"] is None or second["record"].confirmed is False
+    assert "one yes confirms the plan" not in " ".join(second_bots).lower()
+    third, third_bots = run_chat(HAPPY_PATH)
+    assert third["confirmed"] is False
+    assert third["phase"] == "symptom"
+    assert "one yes confirms the plan" not in " ".join(third_bots).lower()
+    assert os.path.isfile(path)
+
+
+def test_the_next_day_starts_at_the_red_flag_check(monkeypatch):
+    import os
+    from datetime import datetime, timedelta, timezone
+
+    import onboarding
+
+    start = datetime(2026, 10, 31, 16, 0, tzinfo=timezone.utc)
+    clock = {"now": start}
+    monkeypatch.setattr(onboarding, "_now", lambda: clock["now"])
+    monkeypatch.setattr(onboarding, "_default_timezone_name", lambda: "America/Los_Angeles")
     state, bots = run_chat(list(_AGE_25) + ["my chest hurts"])
     assert state["confirmed"] is False
     assert "tomorrow" in bots[-1].lower()
     assert "medical emergency" in bots[-1].lower()
-    same, line = onboarding.open_chat()
+    same, same_bots = run_chat(["yes"])
     assert same["confirmed"] is False
     assert same["phase"] == "symptom"
-    assert "tomorrow" in line.lower()
-    assert "one yes confirms the plan" not in line.lower()
-    monkeypatch.setattr(onboarding, "_today", lambda: fixed + timedelta(days=1))
-    nxt, opening = onboarding.open_chat()
-    assert nxt["confirmed"] is False
-    assert nxt["phase"] != "confirm"
-    assert nxt["par_q"] == {}
-    assert nxt.get("readiness") is None
-    assert "PAR-Q" in opening
-    assert "all no" in opening.lower()
-    assert "one yes confirms the plan" not in opening.lower()
-    assert "tomorrow" not in opening.lower()
-    onboarding.apply_reply(nxt, "all no")
-    shown = onboarding.speak(nxt)
-    assert nxt["confirmed"] is False
-    assert nxt["readiness"] is not None
-    assert "one yes confirms the plan" in shown.lower()
-    onboarding.apply_reply(nxt, "yes")
-    onboarding.speak(nxt)
-    assert nxt["confirmed"] is True
+    assert "tomorrow" in same_bots[-1].lower()
+    assert "one yes confirms the plan" not in same_bots[-1].lower()
+    clock["now"] = start + timedelta(days=1)
+    opened, opened_bots = run_chat(["hello"])
+    assert opened["confirmed"] is False
+    assert opened["phase"] != "confirm"
+    assert opened["par_q"] == {}
+    assert opened.get("readiness") is None
+    assert "PAR-Q" in opened_bots[0]
+    assert "all no" in opened_bots[0].lower()
+    assert "one yes confirms the plan" not in opened_bots[0].lower()
+    assert "tomorrow" not in opened_bots[0].lower()
+    done, done_bots = run_chat(["all no", "yes"])
+    assert done["readiness"] is not None
+    assert "one yes confirms the plan" in done_bots[0].lower()
+    assert done["confirmed"] is True
+    assert os.path.isfile(onboarding.onboarding_state_path())
+
+
+@pytest.mark.parametrize("raw", [
+    "{",
+    "[]",
+    "null",
+    "garbage",
+    '{"hold": "nope"}',
+    '{"nope": true}',
+    '{"timezone": "America/Los_Angeles", "answers": {"timezone": "America/Los_Angeles", "age": "30"}, "checks_again": true, "hold": {"date": "2099-01-01", "message": "later"}}',
+])
+def test_a_corrupt_or_future_dated_hold_blocks(raw):
+    import os
+
+    import onboarding
+
+    path = onboarding.onboarding_state_path()
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    with open(path, "w", encoding="utf-8") as handle:
+        handle.write(raw)
+    state, bots = run_chat(HAPPY_PATH)
+    assert state["confirmed"] is False
+    assert state["phase"] == "symptom"
+    assert "one yes confirms the plan" not in " ".join(bots).lower()
+    assert os.path.isfile(path)
+
+
+def test_an_unreadable_hold_blocks(monkeypatch):
+    import os
+
+    import onboarding
+
+    path = onboarding.onboarding_state_path()
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    with open(path, "w", encoding="utf-8") as handle:
+        handle.write('{"hold": {"date": "2026-10-31", "message": "rest"}}\n')
+    real_open = open
+
+    def guarded(file, *args, **kwargs):
+        target = file if isinstance(file, (str, bytes)) else getattr(file, "name", None)
+        mode = args[0] if args else kwargs.get("mode", "r")
+        if (
+            target is not None
+            and os.path.abspath(str(target)) == os.path.abspath(path)
+            and "r" in str(mode)
+            and "w" not in str(mode)
+            and "+" not in str(mode)
+        ):
+            raise OSError("blocked")
+        return real_open(file, *args, **kwargs)
+
+    monkeypatch.setattr("builtins.open", guarded)
+    state, bots = run_chat(HAPPY_PATH)
+    assert state["confirmed"] is False
+    assert "one yes confirms the plan" not in " ".join(bots).lower()
+
+
+def test_a_failed_hold_write_returns_an_error_and_does_not_continue(monkeypatch):
+    import os
+
+    import onboarding
+
+    real_replace = os.replace
+
+    def blocked(src, dst):
+        if str(dst).endswith("onboarding_state.json"):
+            raise OSError("blocked")
+        return real_replace(src, dst)
+
+    monkeypatch.setattr(os, "replace", blocked)
+    state, bots = run_chat(list(_AGE_25) + ["my chest hurts", "yes"])
+    assert state["confirmed"] is False
+    assert state["phase"] == "symptom"
+    assert state["record"] is None or state["record"].confirmed is False
+    assert "could not be saved" in bots[-2].lower()
+    assert "stop" in bots[-2].lower()
+    assert "one yes confirms the plan" not in bots[-2].lower()
+    assert "one yes confirms the plan" not in bots[-1].lower()
+    assert "onboarding does not continue" in bots[-1].lower()
+
+
+def test_four_fifty_nine_pm_pdt_to_five_pm_stays_held(monkeypatch):
+    import json
+    import os
+    from datetime import datetime, timezone
+    from zoneinfo import ZoneInfo
+
+    import onboarding
+
+    # 4:59 PM PDT is still 31 Oct UTC. 5:00 PM PDT is 1 Nov UTC.
+    early = datetime(2026, 10, 31, 23, 59, tzinfo=timezone.utc)
+    late = datetime(2026, 11, 1, 0, 0, tzinfo=timezone.utc)
+    pacific = ZoneInfo("America/Los_Angeles")
+    assert early.astimezone(pacific).hour == 16
+    assert early.astimezone(pacific).minute == 59
+    assert late.astimezone(pacific).hour == 17
+    assert late.astimezone(pacific).date().isoformat() == "2026-10-31"
+    assert late.date().isoformat() == "2026-11-01"
+    clock = {"now": early}
+    monkeypatch.setattr(onboarding, "_now", lambda: clock["now"])
+    monkeypatch.setattr(onboarding, "_default_timezone_name", lambda: "America/Los_Angeles")
+    state, bots = run_chat(list(_AGE_25) + ["my chest hurts"])
+    assert state["confirmed"] is False
+    assert "tomorrow" in bots[-1].lower()
+    path = onboarding.onboarding_state_path()
+    saved = json.loads(open(path, encoding="utf-8").read())
+    assert saved["hold"]["date"] == "2026-10-31"
+    assert saved["timezone"] == "America/Los_Angeles"
+    assert saved["answers"]["timezone"] == "America/Los_Angeles"
+    clock["now"] = late
+    later, later_bots = run_chat(HAPPY_PATH)
+    assert later["confirmed"] is False
+    assert later["phase"] == "symptom"
+    assert "one yes confirms the plan" not in " ".join(later_bots).lower()
+    assert os.path.isfile(path)
+    kept = json.loads(open(path, encoding="utf-8").read())
+    assert kept["hold"]["date"] == "2026-10-31"
+
+
+def test_save_refuses_while_a_hold_dated_today_exists(tmp_path):
+    from plan_builder import PlanBuilder
+
+    run_chat(list(_AGE_25) + ["my chest hurts"])
+    saved = PlanBuilder().save({}, None, tmp_path / "week.json", [])
+    assert saved["saved"] is False
+    assert "held" in saved["message"].lower()
+    assert "not saved" in saved["message"].lower()
 
 
 def test_an_unknown_confirm_reply_asks_for_age_and_does_not_confirm():
@@ -724,13 +874,23 @@ def test_a_confirmed_plan_deletes_the_pending_profile_draft(tmp_path, monkeypatc
     draft = tmp_path / "pending_profile.json"
     draft.write_text('{"goal": "hold"}\n', encoding="utf-8")
     monkeypatch.setattr("onboarding.pending_profile_path", lambda: str(draft))
+    done, _turns = run_chat(HAPPY_PATH)
+    assert done["confirmed"] is True
+    assert not draft.exists()
+
+
+def test_a_symptom_leaves_the_pending_profile_draft(tmp_path, monkeypatch):
+    draft = tmp_path / "pending_profile.json"
+    draft.write_text('{"goal": "hold"}\n', encoding="utf-8")
+    monkeypatch.setattr("onboarding.pending_profile_path", lambda: str(draft))
     refused, bots = run_chat(list(HAPPY_PATH[:-1]) + ["yes, morning 6:30, but my chest hurts"])
     assert refused["confirmed"] is False
     assert draft.is_file()
     assert "medical emergency" in bots[-1].lower()
-    done, _turns = run_chat(HAPPY_PATH)
-    assert done["confirmed"] is True
-    assert not draft.exists()
+    later, later_bots = run_chat(HAPPY_PATH)
+    assert later["confirmed"] is False
+    assert "one yes confirms the plan" not in " ".join(later_bots).lower()
+    assert draft.is_file()
 
 
 def test_an_unreadable_seal_key_stops_without_a_crash(monkeypatch, tmp_path):

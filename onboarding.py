@@ -1,7 +1,8 @@
 #!/usr/bin/env python3
 """Grouped onboarding. A few short messages, then one yes."""
 
-from datetime import datetime, timedelta, timezone
+from datetime import date, datetime, timedelta, timezone
+from zoneinfo import ZoneInfo
 import json
 import os
 import re
@@ -97,7 +98,14 @@ def messages():
 
 
 def question_one():
-    """The first thing the bot says. No setup in front of it."""
+    """The first thing the bot says. No setup in front of it.
+
+    A symptom hold dated today replaces that question. The bot still
+    starts through run_chat, which is the only onboarding entry.
+    """
+    if hold_is_active():
+        state = _state_for_attempt()
+        return state.get("error") or state.get("hold_message") or _HOLD_CLOSED
     return GROUPS[0]["text"]
 
 
@@ -111,8 +119,55 @@ def _fold(reply):
     return " ".join("".join(cleaned).split())
 
 
+def _now():
+    """Aware local time. Tests replace this to pin the clock."""
+    return datetime.now().astimezone()
+
+
+def _default_timezone_name():
+    """The computer's local timezone, used when the profile has none."""
+    key = getattr(_now().tzinfo, "key", None)
+    if isinstance(key, str) and key.strip():
+        return key.strip()
+    return "UTC"
+
+
+def _zone(name):
+    if not isinstance(name, str) or not name.strip():
+        return None
+    try:
+        return ZoneInfo(name.strip())
+    except (KeyError, ValueError, OSError):
+        return None
+
+
+def _timezone_name(answers=None, saved=None):
+    """IANA name on the profile, then the one stored with the hold, then the box."""
+    sources = []
+    if isinstance(answers, dict):
+        sources.append(answers.get("timezone"))
+    if isinstance(saved, dict):
+        sources.append(saved.get("timezone"))
+        nested = saved.get("answers")
+        if isinstance(nested, dict):
+            sources.append(nested.get("timezone"))
+    for name in sources:
+        if _zone(name) is not None:
+            return name.strip()
+    return _default_timezone_name()
+
+
+def _local_today(name=None):
+    """The user's local calendar date. Not UTC."""
+    zone = _zone(name) or _zone(_default_timezone_name()) or timezone.utc
+    now = _now()
+    if now.tzinfo is None:
+        now = now.replace(tzinfo=timezone.utc)
+    return now.astimezone(zone).date()
+
+
 def _today():
-    return datetime.now(timezone.utc).date()
+    return _local_today()
 
 
 def _dates(count):
@@ -513,6 +568,13 @@ def _mask_clocks(reply):
 _AGE_ASK = "How old are you? Please type the number."
 _WEIGHT_ASK = "That weight looks off. What's your weight in kg?"
 _REST_LINE = "Rest today. Come back tomorrow, or after you see a doctor."
+_HOLD_CLOSED = (
+    "Onboarding is held. The hold file is not usable. "
+    "Rest today. Come back tomorrow, or after you see a doctor."
+)
+_HOLD_WRITE_FAILED = (
+    "Stop. The onboarding hold could not be saved. Onboarding does not continue."
+)
 _AGE_EMOJI = "\U0001F9D2\U0001F476\U0001F466\U0001F467"
 _NUMBER_WORDS = frozenset({
     "zero", "one", "two", "three", "four", "five", "six", "seven", "eight", "nine",
@@ -702,6 +764,10 @@ def _intake_age(folded):
 
 def apply_reply(state, reply):
     state["error"] = None
+    if hold_is_active():
+        _adopt_hold(state)
+        _handle_symptom(state, reply)
+        return
     phase = state.get("phase")
     if phase == "symptom":
         _handle_symptom(state, reply)
@@ -738,12 +804,25 @@ def onboarding_state_path():
     return os.path.join(os.path.dirname(os.path.abspath(__file__)), "data", "onboarding_state.json")
 
 
+def _remember_timezone(state):
+    """Keep the profile timezone. The box zone fills in when none was saved."""
+    answers = state.get("answers")
+    if not isinstance(answers, dict):
+        answers = {}
+        state["answers"] = answers
+    if _zone(answers.get("timezone")) is None:
+        answers["timezone"] = _default_timezone_name()
+    return answers["timezone"].strip()
+
+
 def _write_onboarding_state(state):
+    zone_name = _remember_timezone(state)
     payload = {
         "answers": state.get("answers") if isinstance(state.get("answers"), dict) else {},
         "checks_again": True,
+        "timezone": zone_name,
         "hold": {
-            "date": _today().isoformat(),
+            "date": _local_today(zone_name).isoformat(),
             "message": state.get("hold_message") or _REST_LINE,
         },
     }
@@ -760,33 +839,122 @@ def _write_onboarding_state(state):
     return True
 
 
-def _load_onboarding_state():
+def _persist_hold(state):
+    """Write the hold. A failed write is the reply, and onboarding stops."""
+    if _write_onboarding_state(state):
+        return True
+    state["phase"] = "symptom"
+    state["confirmed"] = False
+    state["record"] = None
+    state["error"] = _HOLD_WRITE_FAILED
+    return False
+
+
+def _can_refresh_hold():
+    """A bad or future-dated file stays as it is. A missing or today's hold can be written."""
+    kind, saved = _read_hold_file()
+    if kind == "missing" or kind == "expired":
+        return True
+    return _hold_is_today(saved)
+
+
+def _read_hold_file():
+    """('missing', None), ('active', payload or None), or ('expired', payload).
+
+    A missing file is not a hold. A date strictly before the user's local
+    today has stopped counting, and the file stays. Unreadable, garbage,
+    corrupt, and future-dated files are an active hold.
+    """
+    path = onboarding_state_path()
+    if not os.path.lexists(path):
+        return "missing", None
     try:
-        with open(onboarding_state_path(), encoding="utf-8") as handle:
-            loaded = json.load(handle)
-    except (OSError, json.JSONDecodeError):
-        return None
-    return loaded if isinstance(loaded, dict) else None
+        with open(path, encoding="utf-8") as handle:
+            raw = handle.read()
+    except OSError:
+        return "active", None
+    try:
+        loaded = json.loads(raw)
+    except json.JSONDecodeError:
+        return "active", None
+    if not isinstance(loaded, dict):
+        return "active", None
+    hold = loaded.get("hold")
+    if not isinstance(hold, dict):
+        return "active", None
+    text = hold.get("date")
+    if not isinstance(text, str):
+        return "active", None
+    try:
+        hold_day = date.fromisoformat(text)
+    except ValueError:
+        return "active", None
+    today = _local_today(_timezone_name(saved=loaded))
+    if hold_day < today:
+        return "expired", loaded
+    return "active", loaded
+
+
+def hold_is_active():
+    """True while a symptom hold blocks onboarding, including a bad hold file."""
+    kind, _saved = _read_hold_file()
+    return kind == "active"
+
+
+def _hold_is_today(saved):
+    if not isinstance(saved, dict):
+        return False
+    hold = saved.get("hold")
+    if not isinstance(hold, dict) or not isinstance(hold.get("date"), str):
+        return False
+    try:
+        hold_day = date.fromisoformat(hold["date"])
+    except ValueError:
+        return False
+    return hold_day == _local_today(_timezone_name(saved=saved))
+
+
+def _adopt_hold(state):
+    """Force the in-memory attempt onto the hold. It does not clear the file."""
+    _kind, saved = _read_hold_file()
+    state["phase"] = "symptom"
+    state["confirmed"] = False
+    state["record"] = None
+    state["checks_again"] = True
+    state["awaiting"] = None
+    state["need_age"] = False
+    if isinstance(saved, dict) and isinstance(saved.get("answers"), dict):
+        state["answers"] = saved["answers"]
+    if _hold_is_today(saved):
+        hold = saved.get("hold") if isinstance(saved.get("hold"), dict) else {}
+        message = hold.get("message") if isinstance(hold.get("message"), str) else ""
+        state["hold_message"] = message.strip() or _REST_LINE
+    else:
+        state["hold_message"] = _HOLD_CLOSED
+    state["error"] = state["hold_message"]
 
 
 def _clear_onboarding_state():
-    path = onboarding_state_path()
-    if os.path.isfile(path):
-        os.remove(path)
-        return True
+    """A symptom hold is not deleted. It stops counting on a later local date."""
     return False
 
 
 def _end_onboarding_for_today(state, paused):
-    """A symptom happening now ends onboarding until the next calendar day."""
+    """A symptom happening now ends onboarding until the next local date."""
     _clear_proposal(state)
     state["phase"] = "symptom"
     state["awaiting"] = None
     state["need_age"] = False
     state["checks_again"] = True
+    state["confirmed"] = False
+    state["record"] = None
     state["hold_message"] = _symptom_hold_message(paused)
+    if not _can_refresh_hold():
+        state["error"] = _HOLD_CLOSED
+        return True
+    if not _persist_hold(state):
+        return True
     state["error"] = state["hold_message"]
-    _write_onboarding_state(state)
     return True
 
 
@@ -814,24 +982,24 @@ def _handle_symptom(state, reply):
     paused = reply_pause(reply)
     if paused is not None:
         return _end_onboarding_for_today(state, paused)
+    state["confirmed"] = False
+    state["record"] = None
     number = _typed_int(reply)
     if number is not None and 1 <= number <= 120:
         state["answers"]["age"] = str(number)
     age = _number(state["answers"].get("age"))
-    if number is not None and age is not None and age < 18:
-        _apply_age_readiness(state)
-        state["phase"] = "symptom"
-        _clear_proposal(state)
-        _write_onboarding_state(state)
-        return True
     if age is not None and age < 18:
         _apply_age_readiness(state)
         state["phase"] = "symptom"
         _clear_proposal(state)
-        _write_onboarding_state(state)
+        state["confirmed"] = False
+        state["record"] = None
+        if _can_refresh_hold():
+            _persist_hold(state)
         return True
     state["error"] = state.get("hold_message") or _REST_LINE
-    _write_onboarding_state(state)
+    if _can_refresh_hold():
+        _persist_hold(state)
     return True
 
 
@@ -1025,6 +1193,11 @@ def _confirm(state, reply):
     from record_confirmation import ConfirmationRecorder, _mark_first_plan, _store_onboarding_record
     from red_flag_check import is_passing_check_in
 
+    if hold_is_active():
+        _adopt_hold(state)
+        state["confirmed"] = False
+        state["record"] = None
+        return
     if _first_missing(state) is not None:
         return
     screen = ReadinessScreen().screen_intake(_readiness_intake(state))
@@ -1068,7 +1241,6 @@ def _confirm(state, reply):
     if days:
         state["first_checkin"] = first_checkin_day(min(days))
     clear_pending_profile()
-    _clear_onboarding_state()
 
 
 def _proposal(state):
@@ -1133,6 +1305,8 @@ def speak(state):
     """The next bot reply. The first one is question 1 when nothing is known."""
     from seal_secret import DATA_FILE_MESSAGE
 
+    if hold_is_active() and state.get("phase") != "symptom":
+        _adopt_hold(state)
     error = state.get("error")
     if isinstance(error, str) and DATA_FILE_MESSAGE in error:
         return DATA_FILE_MESSAGE
@@ -1187,25 +1361,22 @@ def speak(state):
     return _proposal(state)
 
 
-def _resume_attempt():
-    """A same-day symptom hold stays closed. The next day reopens on the red-flag check."""
-    saved = _load_onboarding_state()
-    if not isinstance(saved, dict):
-        return _blank()
-    answers = saved.get("answers") if isinstance(saved.get("answers"), dict) else {}
-    hold = saved.get("hold") if isinstance(saved.get("hold"), dict) else None
-    today = _today().isoformat()
-    if hold and hold.get("date") == today:
+def _state_for_attempt():
+    """The attempt a new conversation starts from.
+
+    An active hold, including a bad hold file, stays closed. A hold whose
+    date is already a previous local day reopens on the red-flag check.
+    The file is not removed.
+    """
+    kind, saved = _read_hold_file()
+    if kind == "active":
         state = _blank()
-        state["answers"] = answers
-        state["phase"] = "symptom"
-        state["hold_message"] = hold.get("message") or _REST_LINE
-        state["error"] = state["hold_message"]
-        state["checks_again"] = True
-        state["confirmed"] = False
-        state["record"] = None
+        _adopt_hold(state)
         return state
-    if saved.get("checks_again") and answers:
+    answers = {}
+    if isinstance(saved, dict) and isinstance(saved.get("answers"), dict):
+        answers = saved["answers"]
+    if kind == "expired" and saved.get("checks_again") and answers:
         state = _blank()
         state["answers"] = answers
         state["par_q"] = {}
@@ -1221,14 +1392,14 @@ def _resume_attempt():
 
 
 def open_chat():
-    """Start the next attempt from the dated hold, if one was saved."""
-    state = _resume_attempt()
+    """Same start as run_chat, before any reply. The bot calls run_chat."""
+    state = _state_for_attempt()
     return state, speak(state)
 
 
 def run_chat(replies):
-    """Bot replies for these user messages, through the confirmed plan."""
-    state = _blank()
+    """The onboarding entry. A hold dated today is checked before any reply."""
+    state = _state_for_attempt()
     bots = []
     for reply in replies:
         apply_reply(state, reply)

@@ -363,6 +363,31 @@ class TestClearYes:
         assert ConfirmationRecorder().record(
             sealed, "yes, morning 6:30", "user", passing_check_in()
         ).confirmed is False
+        from record_confirmation import _is_later_week
+
+        bare = {
+            "plan": {"user": {"age": 30}},
+            "sessions": [{"date": "2026-11-02", "name": "Upper"}],
+        }
+        assert "changes" not in bare
+        assert _is_later_week(bare) is False
+        assert first_plan_seal(bare)
+        omitted = {
+            "plan": {"training": {"current_load": 100, "previous_load": 100}},
+            "sessions": [{"date": "2026-11-09", "name": "Upper", "load": 100}],
+        }
+        assert "changes" not in omitted
+        assert _is_later_week(omitted) is True
+        assert first_plan_seal(omitted) == ""
+        unmarked = _mark_first_plan(omitted)
+        assert not unmarked.get("first_plan_seal")
+        calories = {
+            "plan": {"nutrition": {"calories": 2200}, "user": {"age": 30}},
+            "sessions": [{"date": "2026-11-02", "name": "Upper"}],
+        }
+        assert "changes" not in calories
+        assert _is_later_week(calories) is True
+        assert first_plan_seal(calories) == ""
 
     def test_a_schedule_yes_with_a_symptom_stays_a_red_flag(self):
         reply = "yes, morning 6:30, but my chest hurts"
