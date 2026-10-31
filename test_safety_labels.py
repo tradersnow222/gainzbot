@@ -524,6 +524,8 @@ def test_every_label_runs_through_onboarding_and_the_day(tmp_path):
         _quiet_hold()
 
         ready = _ready_confirm()
+        ready["plan_inputs_before"] = onboarding._plan_input_snapshot(ready)
+        onboarding._remember_shown_plan(ready)
         token = _CONFIRM_PHASE.set(True)
         try:
             apply_reply(ready, "yes", labels)

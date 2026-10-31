@@ -85,7 +85,7 @@ The host extracts a profile with `prompts/profile_extract.md` and passes that ob
 
 When a sport or an event is on that profile, the week includes those sessions next to strength. For running that is an easy run and a long run, scaled to level and to how far away the event is. The session before the long run is upper body, not heavy legs. A fresh ankle, calf, achilles, or shin does not add runs. An old one does, and the proposal says the load comes back gradually.
 
-When they accept the plan, the host can pass confirm true, routine_times, and question. confirm true confirms and sets those times in that same turn. The answer comes from the week that was just built. The question text is not matched. A hard stop or a pending safety state still blocks.
+When they accept the plan that was just shown, the host can pass confirm true, routine_times, and question. confirm true confirms that shown plan and sets those times in that same turn. A pure question with that yes still confirms. An edit in the same turn never does. The new proposal is shown, and the next yes confirms it. The answer comes from the week that was just built. The question text is not matched. A hard stop or a pending safety state still blocks.
 
 ## Daily loop
 

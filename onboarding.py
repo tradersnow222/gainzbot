@@ -2996,7 +2996,7 @@ def _structured_confirm_allowed(state):
 
 
 def _apply_structured_confirm(state, confirm, token):
-    """confirm true accepts the plan. A question is answered from the week."""
+    """confirm true accepts the shown plan. A question is answered from the week."""
     if not isinstance(confirm, dict) or confirm.get("confirm") is not True:
         return token
     if not _structured_confirm_allowed(state):
@@ -3004,7 +3004,8 @@ def _apply_structured_confirm(state, confirm, token):
     if token is None:
         token = _CONFIRM_PHASE.set(True)
     state["phase"] = "confirm"
-    _confirm(state, "yes")
+    if not state.get("confirmed"):
+        _confirm(state, "yes")
     if not state.get("confirmed"):
         return token
     _overlay_routine_times(state, confirm.get("routine_times"))
@@ -3068,15 +3069,16 @@ def apply_reply(state, reply, labels=None, profile=None):
             if state.get("phase") != "age":
                 _finish_profile(state, profile)
             return
+        # Merge before a yes. A same-turn edit has to be visible to confirm.
+        _finish_profile(state, profile)
         if _exact_token(state, text):
             _take_exact(state, text)
         elif state.get("phase") == "confirm":
             _review_confirm_edit(state, text)
-        _finish_profile(state, profile)
         return
     if _exact_token(state, text):
-        _take_exact(state, text)
         _finish_profile(state, profile)
+        _take_exact(state, text)
         return
     if _profile_facts_only(text) and not state.get("safety_followup"):
         _parse_profile_fields(state, text)
@@ -3690,10 +3692,132 @@ def _check_in(state):
     return checker.scan_check_in({"notes": reply})
 
 
+_PLAN_INPUT_KEYS = (
+    "goal",
+    "weight",
+    "target",
+    "height",
+    "age",
+    "sex",
+    "days",
+    "training_days",
+    "minutes",
+    "equipment",
+    "experience",
+    "sport",
+    "injuries",
+    "injury_old",
+    "event",
+)
+
+
+def _freeze_input(value):
+    if isinstance(value, dict):
+        return tuple(sorted((key, _freeze_input(item)) for key, item in value.items()))
+    if isinstance(value, (list, tuple)):
+        return tuple(_freeze_input(item) for item in value)
+    if isinstance(value, date):
+        return value.isoformat()
+    return value
+
+
+def _plan_input_snapshot(state):
+    """Plan inputs at the start of a reply. Name, food, and sources are not inputs."""
+    answers = state.get("answers") if isinstance(state.get("answers"), dict) else {}
+    snap = {key: _freeze_input(answers.get(key)) for key in _PLAN_INPUT_KEYS}
+    par_q = state.get("par_q") if isinstance(state.get("par_q"), dict) else {}
+    snap["par_q"] = tuple(
+        (key, par_q.get(key) if isinstance(par_q.get(key), bool) else None)
+        for key, _question in PAR_Q
+    )
+    return snap
+
+
+def _plan_inputs_changed(state):
+    """True when this reply edited the plan. Filling an open PAR-Q with all no is not an edit."""
+    before = state.get("plan_inputs_before")
+    if not isinstance(before, dict):
+        return True
+    after = _plan_input_snapshot(state)
+    for key in _PLAN_INPUT_KEYS:
+        if before.get(key) != after.get(key):
+            return True
+    if before.get("par_q") == after.get("par_q"):
+        return False
+    before_q = dict(before.get("par_q") or ())
+    after_q = dict(after.get("par_q") or ())
+    if any(value is True for value in before_q.values()):
+        return True
+    if any(value is not False for value in after_q.values()):
+        return True
+    return False
+
+
+def _assumed_all_no(state):
+    """A copy whose PAR-Q is all no. None when a yes is already stored."""
+    par_q = state.get("par_q") if isinstance(state.get("par_q"), dict) else {}
+    if any(par_q.get(key) is True for key, _question in PAR_Q):
+        return None
+    preview = dict(state)
+    preview["par_q"] = {key: False for key, _question in PAR_Q}
+    preview["par_q_reply"] = "all no"
+    preview["par_q_unclear"] = False
+    return preview
+
+
+def _shown_plan_hash(state):
+    """Hash of the unmarked week this profile would confirm. None when it cannot be built."""
+    from plan_builder import PlanBuilder
+    from readiness_screen import ReadinessScreen, passing_readiness
+    from record_confirmation import hash_plan
+    from red_flag_check import is_passing_check_in
+
+    screen = ReadinessScreen().screen_intake(_readiness_intake(state))
+    if not passing_readiness(screen):
+        return None
+    check_in = _check_in(state)
+    if not is_passing_check_in(check_in):
+        return None
+    built = PlanBuilder().propose(_profile(state), check_in, readiness_result=screen)
+    if not built.get("ok"):
+        return None
+    return hash_plan(built["confirm"])
+
+
+def _remember_shown_plan(state, preview=None):
+    """Store the hash of the proposal the user is about to see."""
+    digest = _shown_plan_hash(state if preview is None else preview)
+    if digest:
+        state["shown_plan_hash"] = digest
+    else:
+        state.pop("shown_plan_hash", None)
+    return digest
+
+
+def _show_proposal(state):
+    text = _proposal(state)
+    _remember_shown_plan(state)
+    return text
+
+
+def _par_q_and_proposal(state, par_q_text):
+    """The PAR-Q step shows the week once the rest of the profile is complete."""
+    preview = _assumed_all_no(state)
+    if preview is not None and _remember_shown_plan(state, preview):
+        return par_q_text + "\n" + _proposal(state)
+    state.pop("shown_plan_hash", None)
+    return par_q_text
+
+
 def _confirm(state, reply):
     from plan_builder import PlanBuilder
     from readiness_screen import ReadinessScreen, passing_readiness
-    from record_confirmation import ConfirmationRecorder, _mark_first_plan, _store_onboarding_record
+    from record_confirmation import (
+        ConfirmationRecorder,
+        _mark_first_plan,
+        _store_onboarding_record,
+        hash_plan,
+    )
     from red_flag_check import is_passing_check_in
 
     if not confirm_phase_active():
@@ -3729,6 +3853,14 @@ def _confirm(state, reply):
     built = PlanBuilder().propose(_profile(state), check_in, readiness_result=screen)
     if not built.get("ok"):
         state["error"] = built.get("message", "The week did not pass.")
+        return
+    # The yes has to match the week that was shown, and this reply cannot
+    # have edited it. A mismatch shows that week again and waits.
+    digest = hash_plan(built["confirm"])
+    if _plan_inputs_changed(state) or state.get("shown_plan_hash") != digest:
+        state["confirmed"] = False
+        state["record"] = None
+        state["error"] = None
         return
     confirm = _mark_first_plan(built["confirm"])
     record = ConfirmationRecorder().record(confirm, reply, "user", check_in)
@@ -3937,10 +4069,12 @@ def speak(state):
             state["par_q"] or state.get("par_q_skipped") or state.get("par_q_unclear")
         ):
             return _unclear_par_q(state)
+        if missing["id"] == "par_q":
+            return _par_q_and_proposal(state, missing["text"])
         return missing["text"]
     state["phase"] = "confirm"
     state["asked"] = None
-    return _proposal(state)
+    return _show_proposal(state)
 
 
 def _state_for_attempt():
@@ -4017,6 +4151,7 @@ def run_chat(replies):
     bots = []
     for reply in replies:
         text, labels, age, profile, confirm = _host_reply(reply)
+        state["plan_inputs_before"] = _plan_input_snapshot(state)
         token = None
         if state.get("phase") == "confirm":
             token = _CONFIRM_PHASE.set(True)

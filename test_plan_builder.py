@@ -1332,7 +1332,10 @@ def test_an_old_running_injury_gets_easy_and_long_runs_and_a_fresh_one_does_not(
     assert date.fromisoformat(old["sessions"][long_at]["date"]).weekday() == 5
     assert names[long_at - 1] == "Upper"
     heavy = ("squat", "lunge", "deadlift", "leg press", "romanian")
-    upper = " ".join(item["name"].lower() for item in old["sessions"][long_at - 1]["exercises"])
+    upper_row = old["sessions"][long_at - 1]
+    upper = " ".join(item["name"].lower() for item in upper_row["exercises"])
+    assert upper_row["exercises"][0]["name"] == "Dumbbell bench"
+    assert "glute bridge" not in upper
     assert not any(word in upper for word in heavy)
     easy = old["sessions"][names.index("Easy run")]["exercises"][0]
     long = old["sessions"][long_at]["exercises"][0]

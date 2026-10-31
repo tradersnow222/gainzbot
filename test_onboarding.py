@@ -512,7 +512,7 @@ def test_the_next_day_starts_at_the_red_flag_check(monkeypatch):
     assert opened.get("readiness") is None
     assert "PAR-Q" in opened_bots[0]
     assert "all no" in opened_bots[0].lower()
-    assert "one yes confirms the plan" not in opened_bots[0].lower()
+    assert "one yes confirms the plan" in opened_bots[0].lower()
     assert "tomorrow" not in opened_bots[0].lower()
     done, done_bots = run_chat(["all_no", "yes"])
     assert done["readiness"] is not None
@@ -915,7 +915,10 @@ def test_happy_path_confirms_in_five_bot_turns_or_fewer():
     assert happy_path_turns() == state["turns"]
     assert len(bots) <= 5
     assert bots[0] == question_one()
-    assert sum("one yes confirms the plan" in turn.lower() for turn in bots) == 1
+    assert "PAR-Q" in bots[2]
+    assert "one yes confirms the plan" in bots[2].lower()
+    assert "one yes confirms the plan" in bots[-2].lower()
+    assert sum("one yes confirms the plan" in turn.lower() for turn in bots) == 2
     assert "each is opt-in" in bots[-2].lower()
     assert "?" not in bots[-1]
     assert "confirm" in bots[-1].lower()
@@ -1111,7 +1114,7 @@ def test_a_named_injury_stays_and_the_plan_keeps_weight_off_it():
     ])
     assert back["confirmed"] is True
     assert back["answers"]["injuries"] == "lower back"
-    assert "\n".join(bots).count(back_line) == 1
+    assert "\n".join(bots).count(back_line) == 2
     for row in back["sessions"]:
         names = " ".join(item["name"].lower() for item in row["exercises"])
         assert "romanian" not in names
@@ -1128,7 +1131,7 @@ def test_a_named_injury_stays_and_the_plan_keeps_weight_off_it():
     ])
     assert ham["confirmed"] is True
     assert ham["answers"]["injuries"] == "hamstring"
-    assert "\n".join(ham_bots).count(ham_line) == 1
+    assert "\n".join(ham_bots).count(ham_line) == 2
     for row in ham["sessions"]:
         names = " ".join(item["name"].lower() for item in row["exercises"])
         assert "romanian" not in names
@@ -2636,6 +2639,10 @@ def test_danas_profile_payload_confirms_in_five_turns_and_schedules_runs():
     assert state["confirmed"] is True
     assert state["turns"] <= 5
     assert state["turns"] == 5
+    assert "PAR-Q" in bots[3]
+    assert "one yes confirms the plan" in bots[3].lower()
+    assert "The week includes strength and running: easy runs and a long run." in bots[3]
+    assert "Your ankle is an old injury, so the load on it comes back gradually." in bots[3]
     assert state["answers"]["age"] == "41"
     assert state["answers"]["minutes"] == "40"
     assert state["answers"]["sport"] == "running"
@@ -2646,7 +2653,8 @@ def test_danas_profile_payload_confirms_in_five_turns_and_schedules_runs():
     assert state["answers"]["injury_old"] is True
     assert state["answers"]["event"]["month"] == 3
     assert _AGE_ASK not in "\n".join(bots)
-    assert sum("age" in bot.lower() for bot in bots) == 1
+    assert sum("and age?" in bot.lower() for bot in bots) == 1
+    assert "plan for age 41" in bots[3].lower()
     assert "session minutes" not in "\n".join(bots[3:]).lower()
     names = [row["name"] for row in state["sessions"]]
     assert "Easy run" in names
@@ -2656,9 +2664,10 @@ def test_danas_profile_payload_confirms_in_five_turns_and_schedules_runs():
     assert date.fromisoformat(state["sessions"][long_at]["date"]).weekday() == 5
     assert names[long_at - 1] == "Upper"
     heavy = ("squat", "lunge", "deadlift", "leg press", "romanian", "hip hinge")
-    upper_names = " ".join(
-        item["name"].lower() for item in state["sessions"][long_at - 1]["exercises"]
-    )
+    upper = state["sessions"][long_at - 1]
+    upper_names = " ".join(item["name"].lower() for item in upper["exercises"])
+    assert upper["exercises"][0]["name"] == "Dumbbell bench"
+    assert "glute bridge" not in upper_names
     assert not any(word in upper_names for word in heavy)
     for row in state["sessions"]:
         assert row["minutes"] == 40
@@ -2775,8 +2784,85 @@ def test_a_confirm_payload_still_holds_on_chest_pain_and_a_follow_up():
     _drop_hold()
 
 
+def test_all_no_with_confirm_does_not_save_a_plan_that_was_not_shown():
+    profile = {
+        "goal": "hold",
+        "weight_kg": 80,
+        "height_cm": 180,
+        "age": 30,
+        "sex": "male",
+        "days": ["mon", "wed", "fri"],
+        "minutes": 45,
+        "equipment": "bodyweight",
+        "level": "beginner",
+        "sport": "general training",
+    }
+    opened = [{"text": "hi", "labels": _labels(), "profile": profile}]
+    early, early_bots = run_chat(opened + [{
+        "text": "all no",
+        "confirm": {"confirm": True},
+    }])
+    assert early["confirmed"] is False
+    assert early["routines_on"] == []
+    assert "one yes confirms the plan" not in "\n".join(early_bots).lower()
+    injury = {
+        "text": "sprained my ankle 2 years ago, fine now",
+        "labels": _labels(injury="old"),
+        "confirm": {"confirm": True},
+    }
+    blocked, blocked_bots = run_chat(opened + ["all no", injury])
+    assert blocked["confirmed"] is False
+    assert blocked["routines_on"] == []
+    assert blocked["record"] is None
+    assert "one yes confirms the plan" not in "\n".join(blocked_bots[:-1]).lower()
+    assert "one yes confirms the plan" in blocked_bots[-1].lower()
+    saved, _bots = run_chat(opened + [
+        "all no",
+        injury,
+        {"text": "yes", "labels": _labels(), "confirm": {"confirm": True}},
+    ])
+    assert saved["confirmed"] is True
+    assert saved["answers"]["injuries"] == "ankle"
+
+
+def test_an_edit_with_confirm_does_not_save_until_the_new_plan_is_shown():
+    edit = {
+        "text": "yes but make it 6 days, 3 hours, gain",
+        "labels": _labels(),
+        "confirm": {"confirm": True},
+        "profile": {
+            "goal": "gain",
+            "minutes": 180,
+            "days": ["mon", "tue", "wed", "thu", "fri", "sat"],
+        },
+    }
+    state, bots = run_chat(_dana_turns("all no") + [edit])
+    assert state["confirmed"] is False
+    assert state["routines_on"] == []
+    assert state["record"] is None
+    assert state["answers"]["goal"] == "gain"
+    assert state["answers"]["minutes"] == "180"
+    assert state["answers"]["training_days"] == "6"
+    assert "one yes confirms the plan" in bots[-1].lower()
+    assert "6 days" in bots[-1]
+    assert "180" in bots[-1]
+    assert "gain" in bots[-1].lower()
+    saved, saved_bots = run_chat(_dana_turns("all no") + [
+        edit,
+        {"text": "yes", "labels": _labels(), "confirm": {"confirm": True, "question": "does this week include running?"}},
+    ])
+    assert saved["confirmed"] is True
+    assert saved["answers"]["goal"] == "gain"
+    assert saved["answers"]["minutes"] == "180"
+    assert "The week includes strength and running: easy runs and a long run." in saved_bots[-1]
+    assert "one yes confirms the plan" in saved_bots[-2].lower()
+
+
 def test_the_profile_extract_prompt_stays_semantic():
     text = (ROOT / "prompts" / "profile_extract.md").read_text(encoding="utf-8")
     assert "phrase list" in text.lower()
+    assert "a question does not cancel an acceptance" not in text.lower()
+    assert "an edit never does" in text.lower()
+    assert "a pure question with a yes still confirms" in text.lower()
     assert "prompts/profile_extract.md" in (ROOT / "BOT_PROMPT.md").read_text(encoding="utf-8")
     assert "| " not in text

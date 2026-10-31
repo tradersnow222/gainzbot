@@ -653,8 +653,13 @@ def _exercises(
         names = [_bodyweight_name(name) for name in source]
     else:
         names = list(source)
+    # A swap belongs on the session that lost an exercise. An ankle does not
+    # put a glute bridge on an upper day that never loaded it.
+    replacements = []
+    if any(_blocks_exercise(name, injuries) for name in names):
+        replacements = list(_injury_replacements(injuries))
     kept = []
-    for name in list(_injury_replacements(injuries)) + names + list(_SAFE):
+    for name in replacements + names + list(_SAFE):
         if _blocks_exercise(name, injuries):
             continue
         if name not in kept:
