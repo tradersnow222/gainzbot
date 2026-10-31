@@ -125,6 +125,12 @@ def test_first_run_clones_the_repo_and_uses_that_path():
     assert import_line in PROMPT
     assert import_line in QUICKSTART
     assert "if the clone or the import fails, stop" in PROMPT.lower()
+    assert "--branch v0.1.0" in PROMPT
+    assert "--branch v0.1.0" in QUICKSTART
+    assert "do not fall back to main" in PROMPT.lower()
+    assert "do not fall back to main" in QUICKSTART.lower()
+    assert TEMPLATE["release_tag"] == "v0.1.0"
+    assert "the second message runs readiness_screen, then check_in, then plan_check, then shows the proposal, then asks for the yes" in PROMPT.lower()
     assert "/workspace/gainzbot/data/used_confirmations.json" in PROMPT
     assert "/workspace/gainzbot/data/log.json" in PROMPT
     assert TEMPLATE["repo_url"] == "https://github.com/tradersnow222/gainzbot"

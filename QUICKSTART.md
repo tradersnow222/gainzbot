@@ -7,8 +7,10 @@ From a fresh checkout to a Grok Bot you can message in under 5 minutes.
 A fresh Grok Bot cannot see a laptop checkout. On the bot's own computer, clone the public repo to a fixed path:
 
 ```bash
-git clone https://github.com/tradersnow222/gainzbot /workspace/gainzbot
+git clone --depth 1 --branch v0.1.0 https://github.com/tradersnow222/gainzbot /workspace/gainzbot
 ```
+
+That tag is v0.1.0. If the tag is missing, stop. Do not fall back to main.
 
 From that folder, check that the scripts run:
 

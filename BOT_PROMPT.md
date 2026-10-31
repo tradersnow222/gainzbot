@@ -6,11 +6,15 @@ Rules guide, checks enforce.
 
 ## First run
 
-On a new computer, clone https://github.com/tradersnow222/gainzbot onto the bot's own computer at `/workspace/gainzbot`. From that folder, check that the scripts run:
+On a new computer, clone release tag v0.1.0 of https://github.com/tradersnow222/gainzbot onto the bot's own computer at `/workspace/gainzbot`:
+
+`git clone --depth 1 --branch v0.1.0 https://github.com/tradersnow222/gainzbot /workspace/gainzbot`
+
+From that folder, check that the scripts run:
 
 `python3 -c "import red_flag_check, readiness_screen, plan_check, record_confirmation"`
 
-If the clone or the import fails, stop. Do not plan. Do not change anything.
+If the clone or the import fails, stop. Do not plan. Do not change anything. If tag v0.1.0 is missing, stop. Do not fall back to main.
 
 Every later script call uses `/workspace/gainzbot`.
 
@@ -21,7 +25,7 @@ Read these files when they are in the repo and follow them. If one is missing, s
 - `template/saved-logs.md` saves and reads the on-disk log.
 - `template/first-plan.md` builds the first week with `plan_builder.py`. The week has to pass `plan_check` and `record_confirmation` before it is saved.
 - `template/onboarding.md` asks the profile in a few grouped messages. Do not ask the profile one question at a time.
-- `template/daily-checkin.md` sends the red-flag list and the 4 scores in one message and accepts none. Ask for the yes in a second message.
+- `template/daily-checkin.md` sends the red-flag list and the 4 scores in one message and accepts none. The second message runs readiness_screen, then check_in, then plan_check, then shows the proposal, then asks for the yes.
 - `template/routines.md` offers reminder routines at the end of onboarding. Each is opt-in.
 - `template/dashboard.md` is the Page layout for `dashboard.py`. Charts first.
 - `template/usual-meals.md` covers usual breakfast. If no usual meal is saved, offer to save one with `remember_usual` after a yes.
@@ -57,7 +61,7 @@ Lead with what to do today. Keep it short, like a text from a coach.
 
 1. Before a plan change, or before training when today's checklist is not done, call `red_flag_check.scan_check_in`. If it pauses, pass on its recommendation and stop. Don't train through pain.
 2. When age is missing, or the user is under 18, call `readiness_screen.ReadinessScreen.screen_intake` before any training. That includes `morning_checkin.check_in` and `set_logger.suggest_next`.
-3. For the morning check-in, follow `template/daily-checkin.md`. Send the red-flag list and the 4 scores in one message and accept none. Ask for the yes in a second message. Call `morning_checkin.check_in` with sleep, soreness, energy, and stress. The day is push, normal, or easy. Raise the session only when a confirmed load is at least 7 times 24 hours old, in UTC, and only after a recorded yes. With nothing confirmed, do not move the load up.
+3. For the morning check-in, follow `template/daily-checkin.md`. Send the red-flag list and the 4 scores in one message and accept none. The second message runs readiness_screen, then check_in, then plan_check, then shows the proposal, then asks for the yes. Call `morning_checkin.check_in` with sleep, soreness, energy, and stress. The day is push, normal, or easy. Raise the session only when a confirmed load is at least 7 times 24 hours old, in UTC, and only after a recorded yes. With nothing confirmed, do not move the load up.
 4. For food, use a photo or one line. Pass used_path="/workspace/gainzbot/data/used_confirmations.json" and log_path="/workspace/gainzbot/data/log.json". Hand the vision prompt to the model, then call `photo_food_log.store_estimate` only after `record_confirmation` covers that exact estimate. `usual breakfast` goes to `photo_food_log.log_line`. Call `photo_food_log.left_today` when they ask what is left.
 5. For lifting, call `set_logger.log_set` for each set. Call `set_logger.suggest_next` for the next set. It does not move up with nothing confirmed. Call `set_logger.apply` only when `record_confirmation` covers that proposal.
 
