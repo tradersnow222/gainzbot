@@ -4,7 +4,8 @@ Log each set and suggest the next one.
 
 The baseline is the last confirmed load from the shared history reader.
 Nothing moves up when that load is missing or younger than 7 times 24 hours
-in UTC. A rise is at most 10 percent of that confirmed load, and apply does
+in UTC. A logged weight above that confirmed load stays at the confirmed
+value. A rise is at most 10 percent of that confirmed load, and apply does
 nothing until record_confirmation covers that exact proposal.
 """
 
@@ -14,7 +15,7 @@ import os
 import sys
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from confirmed_change import confirmed_baseline
+from confirmed_change import last_confirmed_change, seven_days_old
 from guardrails.validate import InputValidator, ValidationError
 from plan_check import PlanValidator
 from record_confirmation import ConfirmationRecord, ConfirmationRecorder
@@ -85,8 +86,12 @@ class SetLogger:
         if not done and name not in self.working:
             return self._no("Log a set first.")
         last_weight, last_reps = self._last(name, done)
-        baseline = confirmed_baseline(confirmed_changes, "load", as_of)
-        if baseline is None:
+        found = last_confirmed_change(confirmed_changes, "load", as_of)
+        confirmed = found.value if found.ok else None
+        baseline = confirmed if confirmed is not None and seven_days_old(found.at, as_of) else None
+        if confirmed is not None and baseline is None:
+            weight = min(last_weight, confirmed)
+        elif baseline is None:
             weight = last_weight
         else:
             cap = baseline * (1 + PlanValidator.MAX_TRAINING_LOAD_INCREASE_PERCENT / 100)

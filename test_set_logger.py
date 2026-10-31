@@ -100,6 +100,18 @@ class TestSuggestion:
         assert result["suggestion"]["weight"] != 121
         assert result["proposal"] is None
 
+    def test_a_log_above_a_young_confirmed_load_stays_at_the_confirmed_value(self):
+        log = SetLogger()
+        log.log_set("squat", 150, 8, "2026-10-28")
+        early = "2026-10-29T00:30:00Z"
+        young = history(100, as_of=early, hours_ago=(6 * 24) + 22.5)
+        result = log.suggest_next("squat", young, early)
+        assert result["suggestion"]["weight"] == 100
+        assert result["suggestion"]["weight"] != 150
+        assert result["proposal"] is None
+        assert "150" not in result["message"]
+        assert "stays at this weight" in result["message"]
+
     def test_a_short_set_does_not_jump_the_weight(self):
         log = SetLogger()
         log.log_set("bench", 100, 5, "2026-10-30")
