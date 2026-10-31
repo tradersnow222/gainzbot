@@ -1170,6 +1170,22 @@ def test_a_named_injury_stays_and_the_plan_keeps_weight_off_it():
         assert state["answers"]["injuries"] == "none", word
 
 
+def test_a_safety_question_mark_runs_readiness_screen():
+    from readiness_screen import screening_seal_matches
+
+    body = [
+        _marked("hold, male, 80 kg, 180 cm, general training, 3 days 45 min, bodyweight, beginner"),
+        "30",
+        "none",
+    ]
+    state, bots = run_chat(body + ["no?"])
+    assert screening_seal_matches(state.get("readiness"))
+    assert state["confirmed"] is False
+    assert state["par_q"] == {}
+    assert "one yes confirms the plan" not in bots[-1].lower()
+    _drop_hold()
+
+
 def test_ok_does_not_invent_age_sex_weight_or_height():
     state, bots = run_chat(["hello", "cut", "ok", "ok", "all no", "yes"])
     assert state["confirmed"] is False

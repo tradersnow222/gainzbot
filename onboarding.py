@@ -2765,6 +2765,8 @@ def _exact_token(state, reply):
         and not state.get("par_q")
         and not state.get("safety_followup")
     )
+    if safety_open and "?" in reply:
+        return True
     if safety_open and folded in {"no", "nope", "nah", "yes", "yep", "yeah", "yup"}:
         return True
     if folded in _ACCEPT and not (state.get("phase") == "confirm" and state.get("safety_followup")):
@@ -3001,6 +3003,9 @@ def _take_exact(state, reply):
         and not state.get("par_q")
         and not state.get("safety_followup")
     )
+    if safety_open and "?" in reply:
+        state["par_q_unclear"] = True
+        return
     if safety_open and folded in {"no", "nope", "nah"}:
         submit_par_q(state, "all_no")
         state["par_q_reply"] = "no"
