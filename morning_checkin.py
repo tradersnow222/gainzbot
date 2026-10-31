@@ -4,9 +4,10 @@ Morning check-in for sleep, soreness, energy, and stress.
 
 The day is push, normal, or easy. The session scales from the last confirmed
 load, inside the 10 percent cap, and only after 7 times 24 hours. A planned
-load passed by the caller is ignored. A missed session rebuilds the rest of
-the week from that confirmed load, not from the loads the caller sends in.
-Nothing is applied until record_confirmation covers that proposal.
+load passed by the caller is ignored. A missed session rebuilds the later
+days from that confirmed load. Sessions before the missed day stay as
+planned. A lighter deload is not raised. Nothing is applied until
+record_confirmation covers that proposal.
 """
 
 from datetime import date, datetime, timezone
@@ -116,7 +117,7 @@ class MorningCheckIn:
         room = base * (PlanValidator.MAX_TRAINING_LOAD_INCREASE_PERCENT / 100) if can_raise else 0.0
         missed_row = matched[0]
         later = [row for row in rows if row["date"] > missed]
-        rooms = [room for _ in later]
+        rooms = [0.0 if row["load"] < base else room for row in later]
         to_place = min(missed_row["load"], base)
         assigned = self._spread(to_place, rooms)
         updated = []
@@ -131,14 +132,15 @@ class MorningCheckIn:
             if row["date"] < missed:
                 updated.append({
                     "date": row["date"].isoformat(),
-                    "load": _whole(base),
+                    "load": _whole(row["load"]),
                     "missed": False,
                 })
                 continue
             index = later.index(row)
+            start = row["load"] if row["load"] < base else base
             updated.append({
                 "date": row["date"].isoformat(),
-                "load": _whole(base + assigned[index]),
+                "load": _whole(start + assigned[index]),
                 "missed": False,
             })
         left_out = _whole(to_place - sum(assigned))

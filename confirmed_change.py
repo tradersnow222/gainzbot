@@ -46,10 +46,14 @@ def confirmed_history(logs, user):
 
 
 def parse_utc(value) -> Optional[datetime]:
-    """Parse a UTC time. A date with no clock time is rejected, not read as midnight."""
+    """Parse a UTC time. A date with no clock time is rejected, not read as midnight.
+
+    A datetime with no timezone is rejected too. Reading it as UTC would make
+    a Pacific confirmation look up to 8 hours older than it is.
+    """
     if isinstance(value, datetime):
-        if value.tzinfo is None:
-            return value.replace(tzinfo=timezone.utc)
+        if value.tzinfo is None or value.utcoffset() is None:
+            return None
         return value.astimezone(timezone.utc)
     if isinstance(value, date) or not isinstance(value, str):
         return None
@@ -61,8 +65,8 @@ def parse_utc(value) -> Optional[datetime]:
         parsed = datetime.fromisoformat(iso)
     except ValueError:
         return None
-    if parsed.tzinfo is None:
-        return parsed.replace(tzinfo=timezone.utc)
+    if parsed.tzinfo is None or parsed.utcoffset() is None:
+        return None
     return parsed.astimezone(timezone.utc)
 
 

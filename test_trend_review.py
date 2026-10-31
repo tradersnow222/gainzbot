@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Tests for trend_review.py."""
 
-from datetime import date, timedelta
+from datetime import date, datetime, timedelta, timezone
 
 import pytest
 
@@ -591,9 +591,35 @@ class TestSafetyCaps:
     def test_parse_utc_rejects_a_date_with_no_clock_time(self):
         assert parse_utc("2026-10-20") is None
         assert parse_utc(date(2026, 10, 20)) is None
+        assert parse_utc(datetime(2026, 10, 20, 23, 30)) is None
         parsed = parse_utc("2026-10-21T06:30:00Z")
         assert parsed is not None
         assert parsed.hour == 6 and parsed.minute == 30
+
+    def test_a_naive_datetime_does_not_look_eight_hours_older(self):
+        # 23:30 with no timezone, read as UTC, is 8 hours older than 23:30 PST.
+        as_of = "2026-10-27T23:30:00Z"
+        dates = days("2026-10-21", 8)
+        logs = {
+            "sessions": [
+                {"date": day.isoformat(), "planned": True, "completed": True}
+                for day in dates
+            ],
+            "loads": [{"date": day.isoformat(), "load": 40} for day in dates],
+            "confirmed_changes": [{
+                "date": datetime(2026, 10, 20, 23, 30),
+                "confirmed": True,
+                "changes": {"load": 100},
+            }],
+        }
+        early = TrendReview().review(logs, self._adult(), 7, as_of)
+        assert all("load" not in item["changes"] for item in early["proposals"])
+        logs["confirmed_changes"][0]["date"] = datetime(2026, 10, 21, 7, 30, tzinfo=timezone.utc)
+        still_early = TrendReview().review(logs, self._adult(), 7, as_of)
+        assert all("load" not in item["changes"] for item in still_early["proposals"])
+        later = TrendReview().review(logs, self._adult(), 7, "2026-10-28T07:30:00Z")
+        load = next(item["changes"]["load"] for item in later["proposals"] if "load" in item["changes"])
+        assert load == 110
 
     def test_a_date_only_history_does_not_raise(self):
         # 11:30 PM PT on 2026-10-20 is 2026-10-21T06:30:00Z. Reading the
