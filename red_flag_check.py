@@ -27,6 +27,38 @@ def _check_in_seal(message: str):
         return None
 
 
+def clear_safety_no(reply) -> bool:
+    """A clear no to the short safety line, with only scores after it.
+
+    'no', 'no, 7, 2', and 'no, 7, 2, 4, 2' answer that line.
+    'none' does not. That word counts only after the full red-flag list.
+    A symptom, a 'but', another script, or any other word does not.
+    """
+    if not isinstance(reply, str) or not reply.strip():
+        return False
+    if "?" in reply or "？" in reply:
+        return False
+    for char in reply:
+        if char.isspace() or char.isdigit() or ("a" <= char.lower() <= "z"):
+            continue
+        if char in ".,!;:'\"-":
+            continue
+        return False
+    tokens = re.findall(r"[a-z]+|\d+(?:\.\d+)?", reply.lower().replace("'", ""))
+    if not tokens or tokens[0] not in {"no", "nope"}:
+        return False
+    allowed = {
+        "no", "nope", "fine", "sore", "very", "bad", "sleep", "slept",
+        "min", "kg", "good", "low", "ok", "okay",
+    }
+    for token in tokens:
+        if re.fullmatch(r"\d+(?:\.\d+)?", token):
+            continue
+        if token not in allowed:
+            return False
+    return True
+
+
 def is_passing_check_in(result) -> bool:
     """True only for a clear scan_check_in result issued by this module."""
     if not isinstance(result, RedFlagResult):
@@ -870,6 +902,7 @@ class RedFlagChecker:
         aliases = self._alias_map()
         unknown_fields = []
         text_parts = []
+        notes_text = ""
         for key, value in check_in.items():
             norm = self._normalize_key(key)
             known = (
@@ -884,13 +917,22 @@ class RedFlagChecker:
             )
             if checklist_value or norm in aliases:
                 continue
+            if norm == "notes" and isinstance(value, str):
+                notes_text = value
             text_parts.append(self._flatten(value))
 
         scanned = self.scan_text(" ".join(text_parts)) if any(part.strip() for part in text_parts) else self._clear()
         answers, find_error = self._find_checklist(check_in)
         questions = []
         checklist_flags = set()
-        if find_error == "missing":
+        if find_error == "missing" and clear_safety_no(notes_text):
+            answers = {
+                group_aliases[0]: "no" for _flag, group_aliases in self.CHECKLIST_GROUPS
+            }
+            checklist_flags, score_error = self._score_checklist(answers)
+            if score_error:
+                questions.append(score_error)
+        elif find_error == "missing":
             questions.append(
                 "The symptom checklist is missing. Please answer yes or no for each symptom."
             )

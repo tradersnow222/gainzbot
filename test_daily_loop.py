@@ -266,6 +266,55 @@ def test_the_onboarding_profile_opens_the_day():
     assert blocked.phase[day] == "paused"
 
 
+def test_a_clear_no_with_sleep_and_soreness_sends_the_session_in_one_turn():
+    from daily_loop import DailyLoop, adult_profile
+    from red_flag_check import RedFlagChecker, is_passing_check_in
+
+    day = "2026-10-26"
+    loop = DailyLoop(load=80, minutes=45, calories=2200, profile=adult_profile())
+    loop.open_morning(day)
+    text = loop.hear(day, "no, 7, 2")
+    assert loop.phase[day] == "workout"
+    assert day in loop.workouts
+    assert text.startswith("Today is a normal day.")
+    assert "45 min" in text
+    assert "none" not in text.lower()
+    assert "checklist" not in text.lower()
+    assert loop.notes[day]["sleep"] == 7
+    assert loop.notes[day]["soreness"] == 2
+    checked = RedFlagChecker().scan_check_in({"notes": "no, 7, 2"})
+    assert is_passing_check_in(checked)
+    longer = DailyLoop(load=80, minutes=45, calories=2200, profile=adult_profile())
+    longer.open_morning(day)
+    longer_text = longer.hear(day, "no, 7, 2, 4, 2")
+    assert longer.phase[day] == "workout"
+    assert longer.notes[day]["sleep"] == 7
+    assert longer.notes[day]["soreness"] == 2
+    assert longer.notes[day]["energy"] == 4
+    assert longer.notes[day]["stress"] == 2
+    assert longer_text.startswith("Today is a push day.")
+    assert is_passing_check_in(RedFlagChecker().scan_check_in({"notes": "no, 7, 2, 4, 2"}))
+
+
+def test_no_but_palpitations_does_not_send_the_session():
+    from daily_loop import DailyLoop, adult_profile
+    from red_flag_check import RedFlagChecker, clear_safety_no, is_passing_check_in
+
+    reply = "no but I have palpitations"
+    assert clear_safety_no(reply) is False
+    day = "2026-10-26"
+    loop = DailyLoop(load=80, minutes=45, profile=adult_profile())
+    loop.open_morning(day)
+    text = loop.hear(day, reply)
+    assert day not in loop.workouts
+    assert loop.phase[day] == "paused"
+    assert "medical emergency" in text.lower()
+    scanned = RedFlagChecker().scan_check_in({"notes": reply})
+    assert scanned.pause_plan
+    assert "palpitations" in scanned.flags_detected
+    assert not is_passing_check_in(scanned)
+
+
 def test_a_no_with_anything_else_asks_the_symptom_line_again():
     from daily_loop import _SYMPTOM, adult_profile
 

@@ -51,6 +51,14 @@ def parse_morning(reply):
                 parsed["sleep"] = number
                 numbers = numbers[:index] + numbers[index + 1:]
                 break
+    for name in ("soreness", "energy", "stress"):
+        if name in parsed:
+            continue
+        for index, number in enumerate(numbers):
+            if 1 <= number <= 5:
+                parsed[name] = number
+                numbers = numbers[:index] + numbers[index + 1:]
+                break
     weight = re.search(r"(\d+(?:\.\d+)?)\s*kg\b", text)
     if weight:
         parsed["weight_kg"] = float(weight.group(1))
