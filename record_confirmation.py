@@ -65,8 +65,12 @@ def first_plan_seal(plan):
     return seal_hex(b"first_plan", payload)
 
 
-def mark_first_plan(plan):
-    """The onboarding mark. A bare first_plan flag is not this."""
+def _mark_first_plan(plan):
+    """Seal the first plan. Only onboarding, and tests, call this.
+
+    A bare first_plan flag is not this. Other callers check
+    covers_first_plan instead of marking a week themselves.
+    """
     if not isinstance(plan, dict):
         return plan
     marked = _first_plan_body(plan)
@@ -76,6 +80,16 @@ def mark_first_plan(plan):
     except OSError:
         marked["first_plan_seal"] = ""
     return marked
+
+
+def covers_first_plan(record, week) -> bool:
+    """True when the record covers the week or the onboarding-sealed copy."""
+    recorder = ConfirmationRecorder()
+    if recorder.covers(record, week):
+        return True
+    if not isinstance(week, dict):
+        return False
+    return recorder.covers(record, _mark_first_plan(week))
 
 
 # Emoji that may sit beside a bare yes. Every other symbol stays and refuses.

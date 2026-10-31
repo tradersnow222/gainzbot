@@ -302,9 +302,9 @@ class TestClearYes:
         )
         assert shaped.confirmed is False
         assert "clear yes" in shaped.message.lower()
-        from record_confirmation import mark_first_plan
+        from record_confirmation import _mark_first_plan
 
-        marked = mark_first_plan(first)
+        marked = _mark_first_plan(first)
         scheduled = ConfirmationRecorder().record(
             marked, "yes, morning 6:30", "user", passing_check_in()
         )
@@ -327,8 +327,10 @@ class TestClearYes:
         assert not_a_week.confirmed is False
 
     def test_a_forged_first_plan_flag_cannot_take_a_schedule_yes(self):
-        from record_confirmation import mark_first_plan
+        import record_confirmation
+        from record_confirmation import _mark_first_plan
 
+        assert not hasattr(record_confirmation, "mark_first_plan")
         later = {
             "plan": {"training": {"current_load": 110, "previous_load": 100}},
             "sessions": [{"date": "2026-11-09", "name": "Upper", "load": 110}],
@@ -341,7 +343,7 @@ class TestClearYes:
         )
         assert record.confirmed is False
         assert "clear yes" in record.message.lower()
-        real = mark_first_plan({
+        real = _mark_first_plan({
             "plan": {"user": {"age": 30}},
             "sessions": [{"date": "2026-11-02", "name": "Upper"}],
         })
@@ -353,7 +355,7 @@ class TestClearYes:
         assert copied.confirmed is False
         assert hash_plan(forged) != hash_plan(later)
         assert not ConfirmationRecorder().covers(record, later)
-        sealed = mark_first_plan(later)
+        sealed = _mark_first_plan(later)
         assert hash_plan(sealed) != hash_plan(later)
         assert ConfirmationRecorder().record(
             sealed, "yes, morning 6:30", "user", passing_check_in()

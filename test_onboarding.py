@@ -360,6 +360,59 @@ def test_a_weight_outside_30_to_300_asks_again():
     assert high_bots[-1] == _WEIGHT_ASK
 
 
+@pytest.mark.parametrize("reply", [
+    "im 15 and dizzy",
+    "yes, im 15, chest pain",
+    "yes \U0001F9D2 my chest hurts",
+    "my chest hurts",
+    "yes, chest pain",
+    "yes \U0001F915 im 15",
+])
+def test_a_pause_at_confirm_leaves_and_a_later_yes_cannot_confirm(reply):
+    from record_confirmation import reply_pause
+
+    state, bots = run_chat(list(_AGE_25) + [reply])
+    assert state["confirmed"] is False, reply
+    assert state["phase"] != "confirm", reply
+    assert state["record"] is None, reply
+    assert state["answers"]["age"] == "25", reply
+    assert "one yes confirms the plan" not in bots[-1].lower(), reply
+    paused = reply_pause(reply)
+    if paused is not None:
+        assert paused.message in bots[-1], reply
+        assert state["phase"] == "symptom", reply
+    later, later_bots = run_chat(list(_AGE_25) + [reply, "yes"])
+    assert later["confirmed"] is False, reply
+    assert later["phase"] != "confirm", reply
+    assert later["answers"]["age"] == "25", reply
+    assert later["record"] is None or later["record"].confirmed is False, reply
+    assert "one yes confirms the plan" not in later_bots[-1].lower(), reply
+
+
+def test_a_symptom_at_confirm_stays_held_until_the_check_clears():
+    held, held_bots = run_chat(list(_AGE_25) + ["my chest hurts", "yes"])
+    assert held["phase"] == "symptom"
+    assert held["confirmed"] is False
+    assert "one yes confirms the plan" not in held_bots[-1].lower()
+    minor, minor_bots = run_chat(list(_AGE_25) + ["im 15 and dizzy", "15"])
+    assert minor["confirmed"] is False
+    assert minor["answers"]["age"] == "15"
+    assert minor["phase"] == "blocked"
+    assert "calorie" in minor_bots[-1].lower()
+    assert "protein" in minor_bots[-1].lower()
+    still, still_bots = run_chat(list(_AGE_25) + ["im 15 and dizzy", "15", "yes"])
+    assert still["confirmed"] is False
+    assert still["phase"] != "confirm"
+    assert "one yes confirms the plan" not in still_bots[-1].lower()
+    cleared, cleared_bots = run_chat(list(_AGE_25) + ["my chest hurts", "no"])
+    assert cleared["confirmed"] is False
+    assert cleared["phase"] == "confirm"
+    assert "one yes confirms the plan" in cleared_bots[-1].lower()
+    done, _bots = run_chat(list(_AGE_25) + ["my chest hurts", "no", "yes"])
+    assert done["confirmed"] is True
+    assert done["answers"]["age"] == "25"
+
+
 def test_an_unknown_confirm_reply_asks_for_age_and_does_not_confirm():
     from onboarding import _AGE_ASK
 

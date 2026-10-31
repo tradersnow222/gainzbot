@@ -632,18 +632,31 @@ def _typed_int(reply):
     return int(folded)
 
 
-def _take_age_number(state, reply):
-    """Readiness runs on the typed number. Leftover text is not an age."""
+def _clear_proposal(state):
+    """Drop the confirmable proposal. The intake draft stays on disk."""
     state["confirmed"] = False
     state["record"] = None
+
+
+def _take_age_number(state, reply):
+    """Readiness runs on the typed number. Leftover text is not an age."""
+    _clear_proposal(state)
     number = _typed_int(reply)
     if number is None or not 1 <= number <= 120:
-        state["awaiting"] = "age"
+        state["phase"] = "age"
+        state["awaiting"] = None
+        state["need_age"] = True
         state["error"] = _AGE_ASK
         return True
     state["answers"]["age"] = str(number)
     state["awaiting"] = None
+    state["need_age"] = False
     _apply_age_readiness(state)
+    if state.get("error"):
+        state["phase"] = "blocked"
+        return True
+    state["hold_message"] = None
+    state["phase"] = "confirm"
     return True
 
 
@@ -683,8 +696,18 @@ def _intake_age(folded):
 
 def apply_reply(state, reply):
     state["error"] = None
+    phase = state.get("phase")
+    if phase == "symptom":
+        _handle_symptom(state, reply)
+        return
+    if phase == "age":
+        _handle_age(state, reply)
+        return
+    if phase == "blocked":
+        _handle_blocked(state, reply)
+        return
     folded = _fold(reply)
-    if state["phase"] == "confirm" and _handle_confirm(state, reply):
+    if phase == "confirm" and _handle_confirm(state, reply):
         return
     if folded == "skip":
         _remember_skip(state)
@@ -697,24 +720,117 @@ def apply_reply(state, reply):
         _review_confirm_edit(state, reply)
 
 
+def _hold_symptom(state, reply, paused):
+    """Leave confirm. The stored proposal cannot be accepted on a later yes."""
+    _clear_proposal(state)
+    state["phase"] = "symptom"
+    state["awaiting"] = None
+    state["hold_message"] = paused.message
+    state["error"] = paused.message
+    if _hints_age(reply):
+        state["need_age"] = True
+    return True
+
+
+def _hold_age(state):
+    """Leave confirm and ask for a typed age. A later yes is not a confirm."""
+    _clear_proposal(state)
+    state["phase"] = "age"
+    state["awaiting"] = None
+    state["need_age"] = True
+    state["error"] = _AGE_ASK
+    return True
+
+
+def _symptom_check_cleared(reply):
+    """A clear no on the safety line, issued by red_flag_check. A yes is not this."""
+    from red_flag_check import RedFlagChecker, clear_safety_no, is_passing_check_in
+
+    if not clear_safety_no(reply):
+        return False
+    checker = RedFlagChecker()
+    scanned = checker.scan_text(reply)
+    if scanned.pause_plan:
+        return False
+    answers = {aliases[0]: "no" for _flag, aliases in checker.CHECKLIST_GROUPS}
+    result = checker.scan_check_in({"symptom_checklist": answers, "notes": reply})
+    return is_passing_check_in(result)
+
+
+def _handle_symptom(state, reply):
+    """Stay off the proposal until red_flag_check or readiness clears.
+
+    A bare yes never confirms and never clears the hold.
+    """
+    from record_confirmation import reply_pause
+
+    _clear_proposal(state)
+    paused = reply_pause(reply)
+    if paused is not None:
+        return _hold_symptom(state, reply, paused)
+    if _is_plan_yes(reply):
+        state["phase"] = "symptom"
+        state["error"] = state.get("hold_message") or _AGE_ASK
+        return True
+    if state.get("need_age") and _typed_int(reply) is not None:
+        return _take_age_number(state, reply)
+    if state.get("need_age"):
+        state["phase"] = "symptom"
+        state["error"] = _AGE_ASK
+        return True
+    if _symptom_check_cleared(reply):
+        _apply_age_readiness(state)
+        if state.get("error"):
+            state["phase"] = "blocked"
+            return True
+        state["hold_message"] = None
+        state["phase"] = "confirm"
+        return True
+    state["phase"] = "symptom"
+    state["error"] = state.get("hold_message") or _AGE_ASK
+    return True
+
+
+def _handle_age(state, reply):
+    """A typed number runs readiness. A yes stays here and does not confirm."""
+    from record_confirmation import reply_pause
+
+    _clear_proposal(state)
+    paused = reply_pause(reply)
+    if paused is not None:
+        return _hold_symptom(state, reply, paused)
+    return _take_age_number(state, reply)
+
+
+def _handle_blocked(state, reply):
+    """Under 18, or readiness failed. A yes repeats that refusal."""
+    from record_confirmation import reply_pause
+
+    _clear_proposal(state)
+    paused = reply_pause(reply)
+    if paused is not None:
+        return _hold_symptom(state, reply, paused)
+    if _typed_int(reply) is not None:
+        return _take_age_number(state, reply)
+    _apply_age_readiness(state)
+    state["phase"] = "blocked"
+    _clear_proposal(state)
+    return True
+
+
 def _handle_confirm(state, reply):
     """Confirm only when the whole reply is a plan-yes.
 
     Anything else is an edit. A clear weight or profile edit updates the
-    profile and the proposal is shown again. A hint of age, or any reply
-    that is not understood, asks for the number. Readiness runs on that
-    typed number before the plan is shown again. This turn never confirms.
+    profile and the proposal is shown again. A symptom or an age hint leaves
+    this step and clears the pending proposal. A later bare yes cannot
+    confirm. Readiness runs on a typed age before the plan is shown again.
     """
     from record_confirmation import reply_pause
 
     paused = reply_pause(reply)
     if paused is not None:
-        state["confirmed"] = False
-        state["record"] = None
-        state["error"] = paused.message
-        return True
-    if state.get("awaiting") == "age":
-        return _take_age_number(state, reply)
+        return _hold_symptom(state, reply, paused)
     if state.get("awaiting") == "weight":
         return _take_weight_number(state, reply)
     if _is_plan_yes(reply):
@@ -724,11 +840,7 @@ def _handle_confirm(state, reply):
     edit = _explicit_edit(reply)
     if edit is not None:
         return _apply_edit(state, edit)
-    state["confirmed"] = False
-    state["record"] = None
-    state["awaiting"] = "age"
-    state["error"] = _AGE_ASK
-    return True
+    return _hold_age(state)
 
 
 def _apply_age_readiness(state):
@@ -749,13 +861,12 @@ def _apply_age_readiness(state):
 
 
 def _review_confirm_edit(state, reply):
-    """A confirm-step reply that is not a yes still updates the profile."""
+    """A confirm-step reply that fell through still cannot stay confirmable."""
     from record_confirmation import reply_pause
 
     paused = reply_pause(reply)
     if paused is not None:
-        state["confirmed"] = False
-        state["error"] = paused.message
+        _hold_symptom(state, reply, paused)
         return
     age = _number(state["answers"].get("age"))
     if age is not None and age < 18:
@@ -763,8 +874,8 @@ def _review_confirm_edit(state, reply):
 
         screen = ReadinessScreen().screen_intake(_readiness_intake(state))
         state["readiness"] = screen
-        state["confirmed"] = False
-        state["record"] = None
+        _clear_proposal(state)
+        state["phase"] = "blocked"
         state["error"] = _under_18_message(screen)
 
 
@@ -867,7 +978,7 @@ def _check_in(state):
 def _confirm(state, reply):
     from plan_builder import PlanBuilder
     from readiness_screen import ReadinessScreen, passing_readiness
-    from record_confirmation import ConfirmationRecorder, mark_first_plan
+    from record_confirmation import ConfirmationRecorder, _mark_first_plan
     from red_flag_check import is_passing_check_in
 
     if _first_missing(state) is not None:
@@ -889,7 +1000,7 @@ def _confirm(state, reply):
     if not built.get("ok"):
         state["error"] = built.get("message", "The week did not pass.")
         return
-    confirm = mark_first_plan(built["confirm"])
+    confirm = _mark_first_plan(built["confirm"])
     record = ConfirmationRecorder().record(confirm, reply, "user", check_in)
     if not record.confirmed:
         state["error"] = record.message
@@ -978,6 +1089,22 @@ def speak(state):
     error = state.get("error")
     if isinstance(error, str) and error:
         return error
+    held = state.get("phase")
+    if held == "age":
+        state["error"] = _AGE_ASK
+        return _AGE_ASK
+    if held == "symptom":
+        message = state.get("hold_message") or _AGE_ASK
+        state["error"] = message
+        return message
+    if held == "blocked":
+        _apply_age_readiness(state)
+        state["phase"] = "blocked"
+        _clear_proposal(state)
+        if state.get("error"):
+            return state["error"]
+        state["error"] = _AGE_ASK
+        return _AGE_ASK
     missing = _first_missing(state)
     if missing is not None:
         state["phase"] = "intake"
