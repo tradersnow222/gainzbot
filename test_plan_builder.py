@@ -586,6 +586,24 @@ def test_three_gym_days_are_a_deterministic_full_body_split():
         assert names
         assert not any("lunge" in name for name in names)
         assert not any(name.startswith("back squat") or name == "squat" for name in names)
+    calf = PlanBuilder().propose(
+        profile(equipment="full gym", sport="running", injuries="calf"), check_in,
+    )
+    assert calf["ok"] is True
+    for row in calf["sessions"]:
+        names = [item["name"].lower() for item in row["exercises"]]
+        assert names
+        assert not any("calf" in name or "jump" in name or "run" in name for name in names)
+    achilles = PlanBuilder().propose(
+        profile(equipment="full gym", sport="running", injuries="achilles"), check_in,
+    )
+    assert achilles["ok"] is True
+    for row in achilles["sessions"]:
+        names = [item["name"].lower() for item in row["exercises"]]
+        assert names
+        assert not any(
+            "calf" in name or "jump" in name or "lunge" in name or "run" in name for name in names
+        )
     ankle = PlanBuilder().propose(
         profile(equipment="full gym", sport="running", injuries="ankle"), check_in,
     )

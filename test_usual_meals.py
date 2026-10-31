@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
 """Tests for the usual-breakfast starter."""
 
-import os
-import tempfile
 from pathlib import Path
+
+import pytest
 
 from photo_food_log import FoodLog
 from record_confirmation import ConfirmationRecorder
@@ -26,8 +26,18 @@ def passing_check_in():
 
 
 def fresh_log():
-    folder = tempfile.mkdtemp()
-    return FoodLog(os.path.join(folder, "used.json"))
+    raise RuntimeError("fresh_log is provided by the tmp_path fixture")
+
+
+@pytest.fixture(autouse=True)
+def _food_logs_use_tmp(tmp_path, monkeypatch):
+    counter = {"n": 0}
+
+    def make():
+        counter["n"] += 1
+        return FoodLog(str(tmp_path / f"used-{counter['n']}.json"))
+
+    monkeypatch.setattr("test_usual_meals.fresh_log", make)
 
 
 def test_a_missing_usual_breakfast_is_offered_and_saved_only_after_yes():

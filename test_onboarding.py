@@ -1372,6 +1372,146 @@ def test_lift_reps_someone_else_and_a_grade_never_become_the_age():
     assert "one yes confirms the plan" not in child_bots[-1].lower()
 
 
+def test_a_head_emoji_at_confirm_holds_and_a_later_chat_stays_held():
+    from onboarding import hold_is_active
+
+    body = [
+        "hello",
+        "cut, male, 60 kg, 170 cm, no injuries",
+        "25",
+        "general training, 3 days 45 min, dumbbells, beginner, no injuries, none",
+        "all no",
+    ]
+    for tail in (["\U0001F915", "no", "yes"], ["\U0001F915", "none", "yes"]):
+        state, bots = run_chat(body + tail)
+        assert state["confirmed"] is False, tail
+        assert state["phase"] == "symptom", tail
+        assert hold_is_active(), tail
+        assert "which area is injured" not in "\n".join(bots).lower(), tail
+        assert "one yes confirms the plan" not in bots[-1].lower(), tail
+        again, again_bots = run_chat(["hello", "yes"])
+        assert again["confirmed"] is False, tail
+        assert again["phase"] == "symptom", tail
+        assert hold_is_active(), tail
+        assert "one yes confirms the plan" not in "\n".join(again_bots).lower(), tail
+        import os
+
+        import onboarding
+
+        path = onboarding.onboarding_state_path()
+        if os.path.exists(path):
+            os.remove(path)
+        onboarding._memory_hold = None
+    head, head_bots = run_chat(body + ["\U0001F9B5", "my head"])
+    assert head["confirmed"] is False
+    assert head["phase"] == "symptom"
+    assert hold_is_active()
+    assert head_bots[-1] != "Which area is injured?"
+    assert "which area is injured" not in head_bots[-1].lower()
+
+
+def test_a_minor_cue_after_the_age_clears_the_adult_age():
+    from onboarding import _AGE_ASK
+
+    body = [
+        "hello",
+        "cut, male, 60 kg, 170 cm, no injuries",
+        "25",
+        "ok",
+        "all no",
+    ]
+    cues = (
+        "im a minor",
+        "im under 18",
+        "i'm not 18 yet",
+        "im only 16",
+        "in high school",
+        "9th grade",
+        "teen",
+        "15",
+        "fifteen",
+    )
+    for cue in cues:
+        state, bots = run_chat(body + [cue])
+        assert state["confirmed"] is False, cue
+        assert state["answers"].get("age") in (None, ""), cue
+        assert bots[-1] == _AGE_ASK, cue
+        later, later_bots = run_chat(body + [cue, "yes"])
+        assert later["confirmed"] is False, cue
+        assert later["answers"].get("age") in (None, ""), cue
+        assert "one yes confirms the plan" not in later_bots[-1].lower(), cue
+        minor, minor_bots = run_chat(body + [cue, "15"])
+        assert minor["confirmed"] is False, cue
+        assert minor["answers"]["age"] == "15", cue
+        assert "under 18" in minor_bots[-1].lower(), cue
+        assert "one yes confirms the plan" not in minor_bots[-1].lower(), cue
+
+
+def test_a_structural_injury_is_stored_and_does_not_hold_the_day():
+    from onboarding import hold_is_active
+
+    samples = (
+        ("torn acl", "knee"),
+        ("pulled hamstring", "hamstring"),
+        ("sprained ankle", "ankle"),
+        ("old sprained ankle", "ankle"),
+        ("calf tear", "calf"),
+        ("achilles", "achilles"),
+        ("groin strain", "hip"),
+        ("slipped disc", "back"),
+        ("shin splints", "ankle"),
+    )
+    for phrase, area in samples:
+        state, bots = run_chat([
+            f"hold, male, 80 kg, 180 cm, {phrase}",
+            "30",
+            "ok",
+            "all no",
+            "yes",
+        ])
+        assert state["answers"]["injuries"] == area, phrase
+        assert state["confirmed"] is True, phrase
+        assert state["phase"] != "symptom", phrase
+        assert hold_is_active() is False, phrase
+        for row in state["sessions"]:
+            assert row["exercises"], phrase
+    for mixed in ("chest pain and torn acl", "im dizzy and i have a torn acl", "healed, but chest pain"):
+        held, held_bots = run_chat([
+            "hold, male, 80 kg, 180 cm, no injuries",
+            "30",
+            "ok",
+            mixed,
+        ])
+        assert held["confirmed"] is False, mixed
+        assert held["phase"] == "symptom", mixed
+        assert hold_is_active(), mixed
+        assert "tomorrow" in held_bots[-1].lower(), mixed
+        import os
+
+        import onboarding
+
+        path = onboarding.onboarding_state_path()
+        if os.path.exists(path):
+            os.remove(path)
+        onboarding._memory_hold = None
+
+
+def test_a_decimal_kg_and_a_pound_weight_convert():
+    from onboarding import _TARGET_ASK, _WEIGHT_ASK
+
+    kept, _bots = run_chat(["112.1 kg"])
+    assert kept["answers"]["weight"] == "112.1 kg"
+    both, _both_bots = run_chat(["176 lbs, want 64 kg"])
+    assert both["answers"]["weight"] == "79.8 kg"
+    assert both["answers"]["target"] == "64 kg"
+    heavy, heavy_bots = run_chat(["660 lbs"])
+    assert heavy["answers"].get("weight") in (None, "")
+    assert heavy_bots[-1] == _WEIGHT_ASK
+    bare, bare_bots = run_chat(["want 64"])
+    assert bare["answers"].get("target") in (None, "")
+    assert bare_bots[-1] == _TARGET_ASK
+
+
 def test_a_symptom_at_the_par_q_step_holds_the_day():
     body = ["hold, male, 80 kg, 180 cm, no injuries", "30", "ok"]
     for reply in ("my chest hurts", "i feel faint", "im dizzy"):
@@ -1403,9 +1543,6 @@ def test_a_named_area_wins_and_an_emoji_asks_which_area():
     assert bots[-1] == _INJURY_ASK
     named, _named_bots = run_chat(["hold, male, 80 kg, 180 cm", "30", "\U0001F9B5", "knee"])
     assert named["answers"]["injuries"] == "knee"
-    head, head_bots = run_chat(["hold, male, 80 kg, 180 cm", "30", "\U0001F915"])
-    assert head["answers"].get("injuries") in (None, "")
-    assert head_bots[-1] == _INJURY_ASK
     knee, knee_bots = run_chat([
         "hold, male, 80 kg, 180 cm, no injuries except my knee",
         "30",
@@ -1481,6 +1618,9 @@ def test_all_no_phrases_need_the_message_to_stay_free_of_symptoms():
         "all no on 1",
         "all no also",
         "all no my",
+        "all no i",
+        "all no and",
+        "all no ...",
     )
     for reply in impure:
         assert read_par_q(reply)[0] != "all_no", reply

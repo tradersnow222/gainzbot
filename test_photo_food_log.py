@@ -3,7 +3,8 @@
 
 import copy
 import os
-import tempfile
+
+import pytest
 
 from photo_food_log import GROK_VISION_PROMPT, FoodLog
 from usual_meals import plan_to_confirm
@@ -36,8 +37,18 @@ def recorded(plan):
 
 
 def fresh_log():
-    folder = tempfile.mkdtemp()
-    return FoodLog(os.path.join(folder, "used.json"))
+    raise RuntimeError("fresh_log is provided by the tmp_path fixture")
+
+
+@pytest.fixture(autouse=True)
+def _food_logs_use_tmp(tmp_path, monkeypatch):
+    counter = {"n": 0}
+
+    def make():
+        counter["n"] += 1
+        return FoodLog(str(tmp_path / f"used-{counter['n']}.json"))
+
+    monkeypatch.setattr("test_photo_food_log.fresh_log", make)
 
 
 def store(log, meal, day="2026-10-30"):

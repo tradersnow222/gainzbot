@@ -385,6 +385,27 @@ def _kg_text(number):
     return f"{shown:.1f}"
 
 
+def _current_weight(text):
+    """A current body weight in kg or lb. 'ask' means the number is out of range."""
+    cleaned = re.sub(
+        r"\b\d+(?:\.\d+)?\s+to\s+\d+(?:\.\d+)?\s*(?:kg|lb|lbs|pounds?)\b",
+        " ",
+        text,
+    )
+    match = re.search(r"\b(\d+(?:\.\d+)?)\s*(pounds?|lbs|lb|kg)\b", cleaned)
+    if match is None:
+        return None
+    raw = float(match.group(1))
+    unit = match.group(2)
+    # 660 lb converts to 299.4 kg. This intake still asks, as that figure is out of range.
+    if unit != "kg" and raw >= 660:
+        return "ask"
+    value = _as_kg(raw, unit)
+    if not _kg_in_range(value):
+        return "ask"
+    return _kg_text(value) + " kg"
+
+
 def _weight_kg_in(text):
     cleaned = re.sub(
         r"\b\d+(?:\.\d+)?\s+to\s+\d+(?:\.\d+)?\s*(?:kg|lb|lbs|pounds?)\b",
@@ -419,7 +440,7 @@ def _target_from_want(folded):
     if not _kg_in_range(value):
         return "ask"
     current = _weight_kg_in(folded[:match.start()])
-    if current is None or current <= 0:
+    if current is None or current <= 0 or not _kg_in_range(current):
         return "ask"
     if value < current * 0.6 - 1e-6 or value > current * 1.4 + 1e-6:
         return "ask"
@@ -427,7 +448,6 @@ def _target_from_want(folded):
 
 
 _SAFE_ALL_NO_WORDS = {
-    "is", "a", "the", "i", "and",
     "parkrun", "run", "running", "saturday", "saturdays", "sat",
     "min", "mins", "minute", "minutes", "well", "thanks", "lol", "honestly",
     "ok", "okay",
@@ -439,9 +459,11 @@ def _safe_all_no(text):
 
     'all no', 'no to all', 'none', and 'all clear' count, including when the
     same message also gives a profile fact such as no injuries or a parkrun time.
-    A symptom, a condition, a hedge, or a negation of the phrase does not.
+    A symptom, a condition, a hedge, a leftover word, a dotted tail, or a
+    negation of the phrase does not. 'all no i', 'all no and', and 'all no ...'
+    are not all-no.
     """
-    if not isinstance(text, str) or _asks_instead(text):
+    if not isinstance(text, str) or _asks_instead(text) or _ellipsis_tail(text):
         return False
     for char in text:
         if char.isspace() or char.isalnum() or char in "👍":
@@ -620,17 +642,27 @@ def _asks_instead(text):
     return "?" in text or "？" in text or _SAD_FACE.search(text) is not None
 
 
+def _ellipsis_tail(text):
+    """A dotted tail such as 'all no ...' is not final punctuation."""
+    return "..." in text or "…" in text
+
+
 def bare_all_no(text):
     """True only when the whole reply is an all-no phrase.
 
     Fillers, a thumb emoji, punctuation, and whitespace may sit beside it.
-    A question mark, a full-width question mark, or a sad or doubtful face
-    such as ':(' or ':-(' is unclear even when the words underneath are
-    an all-no phrase.
+    A question mark, a full-width question mark, a dotted tail, or a sad or
+    doubtful face such as ':(' or ':-(' is unclear even when the words
+    underneath are an all-no phrase.
     None means this is not an all-no reply. False means the reply tried to
     say all no and also said something else, so nothing is stored as no.
     """
     if not isinstance(text, str):
+        return None
+    if _ellipsis_tail(text):
+        folded = _fold(text)
+        if re.search(r"\ball\s+no\b|\bno\s+to\s+all\b|\ball\s+clear\b|\bnone\b", folded):
+            return False
         return None
     if _asks_instead(text):
         asked = _SAD_FACE.sub(" ", text.replace("?", " ").replace("？", " "))
@@ -797,7 +829,8 @@ def _parse_explicit(state, reply):
     height = re.search(r"\b(\d{2,3})\s*cm\b", folded)
     if height:
         answers["height"] = height.group(1) + " cm"
-    target = _target_from_want(folded)
+    soft = _soft(reply)
+    target = _target_from_want(soft)
     if target == "ask" and state.get("phase") != "age":
         state["awaiting"] = "target"
         if state.get("error") in (None, ""):
@@ -806,14 +839,15 @@ def _parse_explicit(state, reply):
         answers["target"] = target
         if state.get("awaiting") == "target":
             state["awaiting"] = None
-    weight_text = re.sub(r"\b\d+(?:\.\d+)?\s+to\s+\d+(?:\.\d+)?\s*kg\b", " ", folded)
-    weight = re.search(r"\b(\d+(?:\.\d+)?)\s*kg\b", weight_text)
-    if weight and "weight" not in answers:
-        value = float(weight.group(1))
-        if _kg_in_range(value):
-            answers["weight"] = weight.group(1) + " kg"
-        else:
-            state["error"] = _WEIGHT_ASK
+    weight = _current_weight(soft)
+    if weight == "ask":
+        state["error"] = _WEIGHT_ASK
+        if target is not None:
+            answers.pop("target", None)
+            if state.get("awaiting") == "target":
+                state["awaiting"] = None
+    elif weight is not None and "weight" not in answers:
+        answers["weight"] = weight
     if re.search(r"\b(female|woman)\b", folded):
         answers["sex"] = "female"
     elif re.search(r"\b(male|man)\b", folded):
@@ -1077,11 +1111,35 @@ def _nonblocking_stat(folded):
     return False
 
 
+_MINOR_WORDS = {
+    "one": 1, "two": 2, "three": 3, "four": 4, "five": 5, "six": 6, "seven": 7,
+    "eight": 8, "nine": 9, "ten": 10, "eleven": 11, "twelve": 12, "thirteen": 13,
+    "fourteen": 14, "fifteen": 15, "sixteen": 16, "seventeen": 17,
+}
+
+
+def _minor_cue(folded):
+    """A later reply that says the person is under 18. It does not store the number."""
+    if re.fullmatch(r"\d{1,2}", folded):
+        return 1 <= int(folded) <= 17
+    if folded in _MINOR_WORDS:
+        return True
+    if re.search(r"\bminor\b", folded):
+        return True
+    if re.search(r"\bunder\s+18\b", folded):
+        return True
+    if re.search(r"\bnot\s+18\s+yet\b", folded):
+        return True
+    if re.search(r"\b(?:im|i am)\s+only\s+\d{1,3}\b", folded):
+        return True
+    return False
+
+
 def _age_correction(folded):
     """A mention of age. It asks again. It does not store the number."""
     if not folded or _nonblocking_stat(folded):
         return False
-    if _school_age_hint(folded):
+    if _school_age_hint(folded) or _minor_cue(folded):
         return True
     if re.search(r"\bage\b", folded) and re.search(r"\b\d{1,3}\b", folded):
         return True
@@ -1168,6 +1226,16 @@ def _take_weight_number(state, reply):
 
 
 _INJURY_AREAS = (
+    ("old sprained ankle", "ankle"),
+    ("sprained ankle", "ankle"),
+    ("pulled hamstring", "hamstring"),
+    ("shin splints", "ankle"),
+    ("shin splint", "ankle"),
+    ("slipped disc", "back"),
+    ("groin strain", "hip"),
+    ("groin", "hip"),
+    ("calf tear", "calf"),
+    ("achilles", "achilles"),
     ("hip replacement", "hip"),
     ("knee replacement", "knee"),
     ("herniated disc", "back"),
@@ -1200,16 +1268,64 @@ _INJURY_AREAS = (
     ("acl", "knee"),
     ("back", "back"),
 )
-_INJURY_EMOJI = ("\U0001F9B5", "\U0001F915")
+_LEG_EMOJI = "\U0001F9B5"
+_HEAD_EMOJI = "\U0001F915"
 _INJURY_ASK = "Which area is injured?"
 
 
-def _injury_emoji_only(reply):
-    """A lone injury emoji names no area. Ask which one."""
+def _leg_emoji_only(reply):
+    """A lone leg emoji names no area. Ask which one. A head emoji is a symptom."""
     if not isinstance(reply, str):
         return False
     stripped = "".join(ch for ch in reply.strip() if not ch.isspace())
-    return bool(stripped) and all(ch in _INJURY_EMOJI for ch in stripped)
+    return bool(stripped) and all(ch == _LEG_EMOJI for ch in stripped)
+
+
+_INJURY_ONLY_FLAGS = {"injury", "sharp_joint_pain", "tendon_snap"}
+
+
+def _structural_injury(folded):
+    return re.search(
+        r"\b(?:torn\s+acl|pulled\s+hamstring|sprained\s+ankle|healed|calf\s+tear|"
+        r"achilles|groin\s+strain|slipped\s+disc|shin\s+splints?)\b",
+        folded,
+    ) is not None
+
+
+def _pain_happening_now(folded):
+    if re.search(r"\b(?:new|worsen\w+)\b", folded) and re.search(r"\bpain\b", folded):
+        return True
+    if re.search(r"\bright\s+now\b", folded) and re.search(r"\bpain\b", folded):
+        return True
+    return False
+
+
+def _symptom_hold(reply):
+    """Scan first. Hold a current symptom. A structural injury stays an injury.
+
+    A pause whose flags are only an injury does not hold the day when the
+    words are a past or structural injury. Chest pain, fainting, or any other
+    symptom in the same message still holds.
+    """
+    from record_confirmation import reply_pause
+
+    paused = reply_pause(reply)
+    folded = _fold(reply) if isinstance(reply, str) else ""
+    if isinstance(reply, str) and (_HEAD_EMOJI in reply or re.search(r"\bhead\b", folded)):
+        return paused if paused is not None else reply_pause(_HEAD_EMOJI)
+    if _pain_happening_now(folded):
+        if paused is not None:
+            return paused
+        from types import SimpleNamespace
+        return SimpleNamespace(
+            message="Plan paused. Rest today. Come back tomorrow, or after you see a doctor."
+        )
+    if paused is None:
+        return None
+    flags = set(getattr(paused, "flags_detected", []) or [])
+    if _structural_injury(folded) and flags and flags <= _INJURY_ONLY_FLAGS:
+        return None
+    return paused
 
 
 def _stated_injury(folded):
@@ -1248,7 +1364,7 @@ def _ask_which_area(state):
 
 
 def _take_injury_answer(state, reply):
-    if _injury_emoji_only(reply):
+    if _leg_emoji_only(reply):
         state["error"] = _INJURY_ASK
         state["awaiting"] = "injury"
         return
@@ -1301,14 +1417,12 @@ def apply_reply(state, reply):
         _adopt_hold(state)
         _handle_symptom(state, reply)
         return
-    if _injury_emoji_only(reply):
-        _ask_which_area(state)
-        return
-    from record_confirmation import reply_pause
-
-    paused = reply_pause(reply)
+    paused = _symptom_hold(reply)
     if paused is not None:
         _hold_symptom(state, reply, paused)
+        return
+    if _leg_emoji_only(reply):
+        _ask_which_area(state)
         return
     phase = state.get("phase")
     if phase == "symptom":

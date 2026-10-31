@@ -247,6 +247,14 @@ def _loads_ankle(name):
     return "lunge" in name or "jump" in name
 
 
+def _loads_calf(name):
+    return "calf" in name or "jump" in name
+
+
+def _no_running(text):
+    return any(part in text for part in ("ankle", "calf", "achilles", "shin"))
+
+
 def _loads_neck(name):
     if "shrug" in name:
         return True
@@ -272,7 +280,9 @@ def _blocks_exercise(name, injuries):
         return True
     if "elbow" in text and _loads_elbow(folded):
         return True
-    if "ankle" in text and _loads_ankle(folded):
+    if ("ankle" in text or "achilles" in text or "shin" in text) and _loads_ankle(folded):
+        return True
+    if ("calf" in text or "achilles" in text) and _loads_calf(folded):
         return True
     if "neck" in text and _loads_neck(folded):
         return True
@@ -288,7 +298,7 @@ def _injury_replacements(injuries):
         names.extend(("Chest-supported row", "Glute bridge"))
     if "knee" in text or "hip" in text:
         names.extend(("Box squat to a high box", "Glute bridge"))
-    if ("hamstring" in text or "ankle" in text or "elbow" in text or "neck" in text or "shoulder" in text) and (
+    if ("hamstring" in text or "ankle" in text or "elbow" in text or "neck" in text or "shoulder" in text or "calf" in text or "achilles" in text) and (
         "Glute bridge" not in names
     ):
         names.append("Glute bridge")
@@ -546,7 +556,7 @@ def _exercises(equipment, experience, minutes, sport, injuries, index, day_count
             "effort": effort,
         })
     sport_row = _sport_exercise(sport)
-    if sport_row is not None and "ankle" in _injury_text(injuries) and "run" in sport_row["name"].lower():
+    if sport_row is not None and _no_running(_injury_text(injuries)) and "run" in sport_row["name"].lower():
         sport_row = None
     if sport_row is not None:
         chosen.append(sport_row)
