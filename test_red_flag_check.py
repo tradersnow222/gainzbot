@@ -1014,6 +1014,12 @@ class TestNewStemsAndIdioms:
         assert "emergency" in clot.message.lower()
         assert "head_injury" in head.flags_detected
         assert "doctor" in head.message.lower()
+        bandage = RedFlagChecker().scan_text("\U0001F915")
+        assert bandage.pause_plan
+        assert "head_injury" in bandage.flags_detected
+        mixed = RedFlagChecker().scan_text("finished the set \U0001F915")
+        assert mixed.pause_plan
+        assert "head_injury" in mixed.flags_detected
 
 
 if __name__ == "__main__":

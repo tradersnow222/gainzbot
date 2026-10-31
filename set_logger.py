@@ -28,6 +28,17 @@ from record_confirmation import ConfirmationRecord, ConfirmationRecorder
 
 
 KG_STEP = 2.5
+# Cyrillic and Greek letters that look like Latin. Folded after casefold.
+_LOOKALIKES = str.maketrans({
+    "\u0430": "a", "\u0435": "e", "\u043e": "o", "\u0440": "p", "\u0441": "c",
+    "\u0443": "y", "\u0445": "x", "\u0456": "i", "\u0455": "s", "\u0458": "j",
+    "\u04bb": "h", "\u0432": "b", "\u043a": "k", "\u043c": "m", "\u043d": "h",
+    "\u0442": "t",
+    "\u03b1": "a", "\u03b2": "b", "\u03b5": "e", "\u03b9": "i", "\u03ba": "k",
+    "\u03bf": "o", "\u03c1": "p", "\u03c4": "t", "\u03c5": "y", "\u03c7": "x",
+    "\u03bd": "v", "\u03b7": "n", "\u03b3": "y", "\u03b6": "z", "\u03bc": "m",
+})
+_KEY_GAP = str.maketrans({char: "" for char in "-\u2010\u2011\u2012\u2013\u2014\u2015\u2212"})
 
 
 def _parse_day(value) -> Optional[date]:
@@ -362,14 +373,20 @@ class SetLogger:
         return value
 
     def _name(self, exercise) -> Optional[str]:
-        """One history key: NFKC, no zero-width characters, case and accents folded."""
+        """One history key.
+
+        NFKC, no zero-width characters, case and accents folded.
+        Cyrillic and Greek lookalikes become Latin. Hyphens and spaces
+        are removed, so bench-press, benchpress, and bench press match.
+        """
         if not isinstance(exercise, str):
             return None
         text = unicodedata.normalize("NFKC", exercise)
         text = "".join(char for char in text if unicodedata.category(char) != "Cf")
         text = unicodedata.normalize("NFKD", text)
         text = "".join(char for char in text if unicodedata.category(char) != "Mn")
-        text = " ".join(text.casefold().split())
+        text = text.casefold().translate(_LOOKALIKES).translate(_KEY_GAP)
+        text = "".join(text.split())
         return text or None
 
     def _no(self, message: str) -> Dict:

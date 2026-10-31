@@ -428,6 +428,8 @@ class RedFlagChecker:
     def _detect_flags(self, text: str) -> Set[str]:
         """Stem backstop. A single symptom word is enough when the group needs one."""
         flags = set()
+        if "\U0001F915" in text:
+            flags.add("head_injury")
         if self._chest_hit(text):
             flags.add("chest_pain")
         if self._heart_hit(text) or self._active(text, self._CARDIAC_WORD):

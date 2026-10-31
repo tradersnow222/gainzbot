@@ -226,6 +226,14 @@ class TestSuggestion:
         result = log.suggest_next("squat", history(100), AS_OF, rep_top=10)
         assert result["suggestion"]["weight"] == 72.5
         assert result["suggestion"]["exercise"] == "squat"
+        greek = log.log_set("squ\u03b1t", 70, 10, "2026-11-09")
+        assert greek["entry"]["exercise"] == "squat"
+        for name in ("bench-press", "benchpress", "bench press", "b\u0435nch-press"):
+            saved = log.log_set(name, 70, 10, "2026-11-09")
+            assert saved["entry"]["exercise"] == "benchpress", name
+        stepped = log.suggest_next("bench press", history(100), AS_OF, rep_top=10)
+        assert stepped["suggestion"]["exercise"] == "benchpress"
+        assert stepped["suggestion"]["weight"] == 72.5
 
     def test_one_set_short_of_the_top_keeps_the_weight(self):
         log = SetLogger()

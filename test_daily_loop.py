@@ -443,7 +443,6 @@ def test_a_no_with_anything_else_asks_the_symptom_line_again():
         "no, болит грудь",
         "no no 8 fine 45 (actually chest tight)",
         "no, but new pain in my knee",
-        "no 🤕",
         "no idea",
     )
     for reply in unclear:
@@ -453,6 +452,12 @@ def test_a_no_with_anything_else_asks_the_symptom_line_again():
         assert again == _SYMPTOM, reply
         assert loop.phase[day] == "symptom"
         assert day not in loop.workouts
+    bandage = DailyLoop(load=80, minutes=45, profile=adult_profile())
+    bandage.open_morning(day)
+    paused = bandage.hear(day, "no \U0001F915")
+    assert bandage.phase[day] == "paused"
+    assert day not in bandage.workouts
+    assert "head" in paused.lower() or "doctor" in paused.lower()
     for reply in ("no", "no 8 45", "no 8 fine 45"):
         loop = DailyLoop(load=80, minutes=45, profile=adult_profile())
         loop.open_morning(day)
