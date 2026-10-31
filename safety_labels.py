@@ -41,6 +41,7 @@ RED_FLAG_KINDS = (
     "injury",
     "sharp_joint_pain",
     "tendon_snap",
+    "other_medical",
 )
 INJURY_VALUES = ("none", "old", "current", "unclear")
 LABEL_KEYS = ("minor_signal", "red_flag", "injury", "note_ok")

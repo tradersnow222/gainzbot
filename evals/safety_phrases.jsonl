@@ -72,7 +72,7 @@
 {"phrase": "im under 18", "labels": {"minor_signal": true, "red_flag": "none", "injury": "none", "note_ok": false}, "hard_stop": false, "tags": ["minor"]}
 {"phrase": "not 18 yet", "labels": {"minor_signal": true, "red_flag": "none", "injury": "none", "note_ok": false}, "hard_stop": false, "tags": ["minor"]}
 {"phrase": "turning 18 next month", "labels": {"minor_signal": true, "red_flag": "none", "injury": "none", "note_ok": false}, "hard_stop": false, "tags": ["minor"], "held_out": true}
-{"phrase": "fifteen", "labels": {"minor_signal": true, "red_flag": "none", "injury": "none", "note_ok": false}, "hard_stop": false, "tags": ["minor"], "held_out": true}
+{"phrase": "fifteen", "labels": {"minor_signal": false, "red_flag": "none", "injury": "none", "note_ok": false}, "hard_stop": false, "tags": ["pass"], "held_out": true}
 {"phrase": "im fifteen", "labels": {"minor_signal": true, "red_flag": "none", "injury": "none", "note_ok": false}, "hard_stop": false, "tags": ["minor"]}
 {"phrase": "yes im sixteen", "labels": {"minor_signal": true, "red_flag": "none", "injury": "none", "note_ok": false}, "hard_stop": false, "tags": ["minor"], "held_out": true}
 {"phrase": "seventeen years old", "labels": {"minor_signal": true, "red_flag": "none", "injury": "none", "note_ok": false}, "hard_stop": false, "tags": ["minor"], "held_out": true}

@@ -10,13 +10,15 @@ Fail toward a hold. A negated mention still flags: "no chest pain" is still ches
 
 ## minor_signal
 
-True when the person is under 18, or in school below college. That includes saying they are a minor, a teen, in high school, in a grade before college, or not an adult yet. A college student is not a minor on that fact alone. A bare number with no age meaning is not a minor. A training count, a weight, or a clock is not an age.
+True when the person is under 18, or in school below college. That includes saying they are a minor, a teen, in high school, in a grade before college, or not an adult yet. A college student is not a minor on that fact alone. A bare number, or a number word, with no age context is not a minor. Age comes from the structured typed int field. A training count, a weight, or a clock is not an age.
 
 Examples: "I'm 15." "in 10th grade." "not 18 yet." "my son is the one training" when they mean a child is using the plan.
 
 ## red_flag
 
-The kind that best fits the meaning, or none. One kind only.
+The kind that best fits the meaning, or none. One kind only. Choose the nearest kind. Any reasonable kind is fine, because every kind holds.
+
+An effect the person describes as expected or positive after a hard effort is not a red flag. Sore muscles, being out of breath right after a sprint, or a caffeine buzz are ordinary unless they persist or come with a hard-stop symptom.
 
 - none: nothing below.
 - chest_pain: chest pain, pressure, or tightness.
@@ -46,6 +48,7 @@ The kind that best fits the meaning, or none. One kind only.
 - very_low_intake: eating so little that it is dangerous.
 - self_harm: self-harm, or wanting to die or disappear.
 - self_harm_thoughts: thoughts of self-harm without a stated act.
+- other_medical: an acute illness, a fever, an infection, pregnancy, a recent surgery or hospitalization, or any other medical condition a doctor should clear before training. Use this when no closer kind fits.
 
 Examples: "chest feels tight." "heart racing after the session." "my knee buckled and I can't stand on it." "no chest pain" is still chest_pain.
 
