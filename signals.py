@@ -144,7 +144,7 @@ class SignalBook:
     def record(self, signal, at, value=None, down=False):
         self.readings[signal] = {"at": at, "value": value, "down": bool(down)}
 
-    def fresh(self, signal, as_of):
+    def _recent(self, signal, as_of):
         reading = self.readings.get(signal)
         if not reading:
             return False
@@ -153,6 +153,50 @@ class SignalBook:
         if now is None or then is None or then > now:
             return False
         return (now - then) < timedelta(hours=FRESH_HOURS)
+
+    def fresh(self, signal, as_of):
+        """A reading is fresh only with a real in-range value under about 24 hours."""
+        if not self._recent(signal, as_of):
+            return False
+        value = self.readings[signal].get("value")
+        if value is None:
+            return False
+        if signal == "sleep":
+            try:
+                number = float(value)
+            except (TypeError, ValueError):
+                return False
+            if number < 4 or number > 24:
+                return False
+        if signal == "resting_hr":
+            try:
+                number = float(value)
+            except (TypeError, ValueError):
+                return False
+            if number > 120:
+                return False
+        return True
+
+    def abnormal(self, as_of):
+        """Out-of-range values still on the clock. They are asked, and the day is lighter."""
+        found = []
+        if self._recent("sleep", as_of):
+            value = self.readings["sleep"].get("value")
+            if value is not None:
+                try:
+                    if float(value) < 4:
+                        found.append("sleep")
+                except (TypeError, ValueError):
+                    pass
+        if self._recent("resting_hr", as_of):
+            value = self.readings["resting_hr"].get("value")
+            if value is not None:
+                try:
+                    if float(value) > 120:
+                        found.append("resting_hr")
+                except (TypeError, ValueError):
+                    pass
+        return found
 
     def fresh_value(self, signal, as_of):
         if not self.fresh(signal, as_of):
@@ -237,13 +281,17 @@ class Outreach:
         self._scheduled = {}
 
     def proactive_count(self, day):
-        return len(self._proactive.get(day, []))
+        return len(self._proactive.get(self._day(day), []))
 
     def scheduled(self, day, text):
+        day = self._day(day)
         self._scheduled.setdefault(day, []).append(text)
         return {"text": text, "counts": False, "scheduled": True}
 
-    def fire(self, day, poor_recovery=False, missed=False, plateau=False, taper=False, streak=False, pr=False):
+    def _day(self, day):
+        return str(day or "").strip().lower()
+
+    def fire(self, day, poor_recovery=False, missed=False, plateau=False, taper=False, streak=False, pr=False, plan=None, check_in=None, readiness=None):
         queue = []
         if poor_recovery:
             queue.append(self._item(
@@ -258,11 +306,19 @@ class Outreach:
                 needs_yes=False,
             ))
         if plateau:
-            queue.append(self._item(
+            item = self._item(
                 "plateau",
                 "Plateau. Changing calories needs one word yes.",
                 needs_yes=True,
-            ))
+            )
+            item["plan"] = plan
+            item["check_in"] = check_in
+            item["readiness"] = readiness
+            item["hash"] = None
+            if plan is not None:
+                from record_confirmation import hash_plan
+                item["hash"] = hash_plan(plan)
+            queue.append(item)
         if taper:
             queue.append(self._item(
                 "taper",
@@ -273,6 +329,7 @@ class Outreach:
             queue.append(self._item("streak", "Streak noted.", needs_yes=False))
         if pr:
             queue.append(self._item("pr", "PR noted.", needs_yes=False))
+        day = self._day(day)
         delivered = []
         held = list(self._held.get(day, []))
         for item in queue:
@@ -288,17 +345,31 @@ class Outreach:
             "proactive_count": self.proactive_count(day),
         }
 
-    def accept(self, day, reply):
-        """A one-word yes applies a delivered calorie change. A held note stays off."""
+    def accept(self, day, reply, proposal_hash=None):
+        """Apply one delivered proposal after plan_check. The hash has to match."""
+        from plan_check import PlanValidator
         from record_confirmation import is_clear_yes
 
+        day = self._day(day)
+        if not isinstance(proposal_hash, str) or not proposal_hash:
+            return False
         if not is_clear_yes(reply):
             return False
         changed = False
         for item in self._proactive.get(day, []):
-            if item["needs_yes"] and not item["applied"]:
-                item["applied"] = True
-                changed = True
+            if not item["needs_yes"] or item["applied"]:
+                continue
+            if item.get("hash") != proposal_hash or not isinstance(item.get("plan"), dict):
+                continue
+            checked = PlanValidator().validate_plan(
+                item.get("plan"),
+                check_in_result=item.get("check_in"),
+                readiness_result=item.get("readiness"),
+            )
+            if not checked.valid:
+                continue
+            item["applied"] = True
+            changed = True
         return changed
 
     def _item(self, kind, text, needs_yes):

@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Tests for readiness_screen.py screening guardrails."""
 
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
 import pytest
 from readiness_screen import ReadinessScreen, ClearanceLevel, passing_readiness
@@ -851,6 +851,36 @@ class TestDoctorClearance:
         assert result.blocked
         assert result.doctor_cleared is False
         assert "chest pain at rest" in " ".join(result.reasons).lower()
+
+    def test_a_conditional_or_garbled_clearance_does_not_count(self):
+        today = datetime.now(timezone.utc).date()
+        for words in (
+            "my doctor cleared me unless I get chest pain",
+            "cleared unless chest pain",
+            "doctor clear",
+            "my doctor cleared me only if the pain stays away",
+            "my doctor cleared me as long as I feel fine",
+            "the doctor clears me until the pain returns",
+        ):
+            result = self._chest(medical_clearance=words)
+            assert result.blocked, words
+            assert result.doctor_cleared is False
+            assert passing_readiness(result) is False
+        future = self._chest(
+            medical_clearance="my doctor cleared me for exercise",
+            clearance_date=(today + timedelta(days=1)).isoformat(),
+        )
+        assert future.blocked
+        assert future.doctor_cleared is False
+        assert "clearance_date cannot be in the future." in future.reasons
+        expired_on = today.replace(year=today.year - 1) - timedelta(days=1)
+        expired = self._chest(
+            medical_clearance="my doctor cleared me for exercise",
+            clearance_date=expired_on.isoformat(),
+        )
+        assert expired.blocked
+        assert expired.doctor_cleared is False
+        assert "That clearance is more than 12 months old. Ask again." in expired.reasons
 
     def test_pregnancy_still_needs_its_own_clearance(self):
         result = self.screen.screen_intake({

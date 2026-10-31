@@ -605,6 +605,17 @@ def test_an_adult_cut_gets_calories_protein_and_the_goal():
     screened = PlanBuilder().propose(young, check_in, readiness_result=screen_for(young))
     assert screened["ok"] is True
     assert "nutrition" not in screened["plan"]
+    cleared = screen_for(young, medical_clearance="my doctor cleared me for exercise")
+    with_consent = PlanBuilder().propose(young, check_in, readiness_result=cleared)
+    assert with_consent["ok"] is True
+    assert "nutrition" not in with_consent["plan"]
+    stuffed = json.loads(json.dumps(with_consent["plan"]))
+    stuffed["nutrition"] = {"calories": 1800, "protein_g": 80}
+    refused = PlanValidator().validate_plan(
+        stuffed, readiness_result=cleared, check_in_result=check_in,
+    )
+    assert refused.valid is False
+    assert "under 18" in " ".join(refused.errors).lower()
 
 
 def test_the_saved_week_starts_the_seven_day_clock(tmp_path):
@@ -810,16 +821,82 @@ def test_save_rejects_loose_exercises_and_caps_load_by_body_weight(tmp_path):
         later["plan"], too_yes, tmp_path / "too.json", too_heavy, check_in_result=check_in,
     )["saved"] is False
     advanced = builder.propose(profile(experience="advanced"), check_in)
-    capped = _one_lift(advanced["sessions"], load_kg=400)
+    capped = _one_lift(advanced["sessions"], load_kg=300)
     capped_yes = recorded(week_to_confirm(advanced["plan"], capped))
     assert builder.save(
         advanced["plan"], capped_yes, tmp_path / "cap.json", capped, check_in_result=check_in,
     )["saved"] is True
-    past = _one_lift(advanced["sessions"], load_kg=401)
+    past = _one_lift(advanced["sessions"], load_kg=301)
     past_yes = recorded(week_to_confirm(advanced["plan"], past))
     assert builder.save(
         advanced["plan"], past_yes, tmp_path / "past.json", past, check_in_result=check_in,
     )["saved"] is False
+
+
+def test_the_load_cap_uses_the_profile_and_a_fallback_without_weight():
+    from plan_builder import _exercise_problem, _load_cap
+
+    def row(load_kg, experience="advanced"):
+        return {
+            "minutes": 45,
+            "experience": experience,
+            "exercises": [{
+                "name": "Squat",
+                "sets": 3,
+                "reps": 8,
+                "rest": "90 sec",
+                "effort": "Leave 3 reps in reserve",
+                "load_kg": load_kg,
+            }],
+        }
+
+    assert _load_cap({"experience": "beginner", "weight_kg": 80}) == 200
+    assert _load_cap({"experience": "intermediate", "weight_kg": 80}) == 280
+    assert _load_cap({"experience": "advanced", "weight_kg": 80}) == 300
+    assert _load_cap({"experience": "advanced"}) == 100
+    assert _load_cap({"weight_kg": None}) == 100
+    beginner = {"experience": "beginner", "weight_kg": 80}
+    assert _exercise_problem([row(201, "advanced")], beginner) == "That load_kg is outside the bounds."
+    assert _exercise_problem([row(200, "advanced")], beginner) is None
+    assert _exercise_problem([row(100, "beginner")], {"experience": "advanced"}) is None
+    assert _exercise_problem([row(101, "beginner")], {}) == "That load_kg is outside the bounds."
+
+
+def test_a_bad_backup_does_not_replace_the_live_log(tmp_path):
+    from log_store import LogStore
+
+    log_path = tmp_path / "log.json"
+    live = {kind: [] for kind in (
+        "meals", "sets", "checkins", "weights", "confirmations", "used_records", "sessions",
+    )}
+    live["confirmations"] = [{
+        "record_id": "kept",
+        "date": "2026-10-20T00:00:00Z",
+        "confirmed": True,
+        "quoted_words": "yes",
+        "speaker": "user",
+        "plan_hash": "abc",
+    }]
+    raw = (json.dumps(live) + "\n").encode("utf-8")
+    log_path.write_bytes(raw)
+    (tmp_path / "log.json.bak").write_bytes(b"not json {{{")
+    loaded = LogStore(log_path)
+    assert loaded.error is None
+    assert log_path.read_bytes() == raw
+    assert loaded.data["confirmations"][0]["record_id"] == "kept"
+    assert (tmp_path / "log.json.bak").exists()
+    newer = json.loads(raw.decode("utf-8"))
+    newer["confirmations"].append({
+        "record_id": "newer-than-live",
+        "date": "2026-10-30T00:00:00Z",
+        "confirmed": True,
+    })
+    (tmp_path / "log.json.bak").write_bytes((json.dumps(newer) + "\n").encode("utf-8"))
+    again = LogStore(log_path)
+    assert again.data["confirmations"][0]["record_id"] == "kept"
+    assert all(row.get("record_id") != "newer-than-live" for row in again.data["confirmations"])
+    assert log_path.read_bytes() == raw
+    assert (tmp_path / "log.json.bak").exists()
 
 
 def test_a_crashed_save_is_recovered_on_the_next_load(tmp_path):

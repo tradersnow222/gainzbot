@@ -15,14 +15,9 @@ PAR_Q = (
     ("doctor_advised_supervised_only", "Has a doctor said you should only train with supervision?"),
 )
 
-# One word accepts these. A skip still leaves age, sex, and weight unset.
+# Ok fills preferences only. Age, sex, weight, and height are never invented.
 _GOAL_DEFAULTS = {
     "goal": "hold",
-    "weight": "80 kg",
-    "target": "80 kg",
-    "height": "180 cm",
-    "age": "30",
-    "sex": "male",
     "food_style": "no preference",
 }
 _TRAINING_DEFAULTS = {
@@ -34,12 +29,18 @@ _TRAINING_DEFAULTS = {
     "injuries": "none",
     "sources": "none",
 }
-_OPTIONAL = {"name", "food_style", "sources"}
+_OPTIONAL = {"name", "food_style", "sources", "target"}
 _ACCEPT = {"ok", "okay", "yep", "yeah", "defaults", "default", "sounds good", "do it", "lets go"}
 _WEEK_OFFSETS = (0, 2, 4, 5, 1, 3, 6)
 _SETUP_WORDS = ("clone", "pip", "pytest", "release_check", "install", "git ")
 
-HAPPY_PATH = ("hello", "ok", "ok", "all no", "yes")
+HAPPY_PATH = (
+    "hello",
+    "hold, male, age 30, 80 kg, 180 cm",
+    "ok",
+    "all no",
+    "yes",
+)
 
 
 def _par_q_text():
@@ -62,7 +63,7 @@ GROUPS = (
         "asks": ("goal", "weight", "target", "height", "age", "sex", "name", "food_style"),
         "text": (
             "Goal, weight, target, height, and age? "
-            "One word ok uses hold, 80 kg, target 80 kg, 180 cm, age 30, male. "
+            "One word ok uses hold. It does not fill age, sex, weight, or height. "
             "You can skip one. I will not guess a skipped age, sex, or weight. "
             "If you skip the goal, the goal is hold."
         ),
@@ -135,7 +136,7 @@ def _group(group_id):
 
 def _missing_keys(state, group):
     if group["id"] == "par_q":
-        if all(key in state["par_q"] for key, _question in PAR_Q):
+        if all(isinstance(state["par_q"].get(key), bool) for key, _question in PAR_Q):
             return []
         return ["par_q"]
     missing = []
@@ -191,10 +192,79 @@ def _parse_sources(answers, folded):
         answers["sources"] = "none"
 
 
-def _parse_explicit(state, folded):
+def _polarity(clause):
+    has_yes = re.search(r"\byes\b", clause) is not None
+    has_no = re.search(r"\b(?:no|not|never)\b", clause) is not None
+    if has_yes and not has_no:
+        return True
+    if has_no and not has_yes:
+        return False
+    if has_yes and has_no:
+        yes_at = clause.rfind(" yes")
+        no_at = max(clause.rfind(" no"), clause.rfind(" not"), clause.rfind(" never"))
+        if yes_at > no_at:
+            return True
+        if no_at > yes_at:
+            return False
+    return None
+
+
+def parse_par_q(text):
+    """Per-item yes or no. A negated 'all no' does not wipe the list."""
+    if not isinstance(text, str):
+        return {}
+    raw = text.strip().lower().replace("'", "")
+    folded = _fold(text)
+    found = {}
+    negated = re.search(r"\b(?:not|never|isnt)\s+all\s+no\b", folded) is not None
+    if re.search(r"\ball\s+yes\b", folded):
+        found = {key: True for key, _question in PAR_Q}
+    elif re.search(r"\ball\s+no\b", folded) and not negated:
+        found = {key: False for key, _question in PAR_Q}
+    specific = (
+        ("chest_pain_at_rest", ("chest pain at rest", "chest pain while resting", "resting chest pain")),
+        ("chest_pain_during_activity", ("chest pain during activity", "chest pain during")),
+        ("loss_of_balance_dizziness", ("lose balance", "dizziness", "dizzy", "balance")),
+        ("loss_of_consciousness", ("lost consciousness", "loss of consciousness", "consciousness")),
+        ("bone_joint_problem_worsened_by_activity", ("bone or joint", "joint problem", "bone joint")),
+        ("currently_taking_medications", ("medication", "medications", "medicine")),
+        ("doctor_advised_supervised_only", ("supervision", "supervised")),
+    )
+    generic_chest = None
+    rest_polarity = None
+    clauses = re.split(r"\s*(?:,|\band\b|\bbut\b)\s*", raw)
+    for piece in clauses:
+        clause = _fold(piece)
+        polarity = _polarity(clause)
+        if polarity is None:
+            continue
+        for key, phrases in specific:
+            if any(phrase in clause for phrase in phrases):
+                found[key] = polarity
+        if re.search(r"\brest\b", clause) and "during" not in clause:
+            rest_polarity = polarity
+        if "chest pain" in clause and not any(
+            phrase in clause
+            for phrase in ("chest pain at rest", "chest pain while resting", "chest pain during")
+        ):
+            generic_chest = polarity
+    if rest_polarity is not None:
+        found["chest_pain_at_rest"] = rest_polarity
+    if generic_chest is not None:
+        if "chest_pain_during_activity" not in found:
+            found["chest_pain_during_activity"] = generic_chest
+        if "chest_pain_at_rest" not in found:
+            found["chest_pain_at_rest"] = generic_chest
+    return found
+
+
+def _parse_explicit(state, reply):
     answers = state["answers"]
-    if re.search(r"\ball no\b", folded):
-        state["par_q"] = {key: False for key, _question in PAR_Q}
+    folded = _fold(reply)
+    parsed = parse_par_q(reply)
+    if parsed:
+        state["par_q"].update(parsed)
+        state["par_q_reply"] = reply if isinstance(reply, str) else folded
     for goal in ("cut", "lose", "gain", "hold"):
         if re.search(rf"\b{goal}\b", folded):
             answers["goal"] = goal
@@ -256,7 +326,9 @@ def _remember_skip(state):
             state["answers"].setdefault(key, None)
         state["answers"].setdefault("sources", "none")
     elif asked == "par_q":
-        state["par_q"] = {key: None for key, _question in PAR_Q}
+        state["par_q_skipped"] = True
+        for key, _question in PAR_Q:
+            state["par_q"].pop(key, None)
 
 
 def apply_reply(state, reply):
@@ -270,7 +342,7 @@ def apply_reply(state, reply):
     if folded in _ACCEPT and state.get("asked") in {"goal", "training"}:
         _fill_group(state, state["asked"])
         return
-    _parse_explicit(state, folded)
+    _parse_explicit(state, reply)
 
 
 def _is_plan_yes(reply):
@@ -299,7 +371,9 @@ def _profile(state):
         "sport": answers.get("sport") or "general training",
         "injuries": answers.get("injuries") or "none",
         "goal": answers.get("goal") or "hold",
-        "par_q": {key: False for key in state["par_q"]},
+        "par_q": {
+            key: value for key, value in state["par_q"].items() if isinstance(value, bool)
+        },
     }
     sex = answers.get("sex")
     weight = _number(answers.get("weight"))
@@ -313,25 +387,69 @@ def _profile(state):
     return profile
 
 
-def _check_in():
+def _readiness_intake(state):
+    answers = state["answers"]
+    intake = {
+        "par_q": {
+            key: value for key, value in state["par_q"].items() if isinstance(value, bool)
+        },
+    }
+    age = _number(answers.get("age"))
+    if age is not None:
+        intake["age"] = age
+    if answers.get("sex"):
+        intake["sex"] = answers["sex"]
+    weight = _number(answers.get("weight"))
+    if weight is not None:
+        intake["weight_kg"] = weight
+    height = _number(answers.get("height"))
+    if height is not None:
+        intake["height_cm"] = height
+    return intake
+
+
+def _check_in(state):
+    """The symptom check uses the user's words. It does not invent a clear day."""
     from red_flag_check import RedFlagChecker
 
+    reply = state.get("par_q_reply") or ""
     checker = RedFlagChecker()
-    answers = {aliases[0]: "no" for _flag, aliases in checker.CHECKLIST_GROUPS}
-    return checker.scan_check_in({
-        "symptom_checklist": answers,
-        "notes": "Easy lift, slept fine.",
-    })
+    scanned = checker.scan_text(reply)
+    if scanned.pause_plan:
+        return scanned
+    folded = _fold(reply)
+    negated = re.search(r"\b(?:not|never|isnt)\s+all\s+no\b", folded) is not None
+    explicit_no = folded in {"no", "none", "nope", "all no"} or (
+        re.search(r"\ball\s+no\b", folded) is not None and not negated
+    )
+    clear = (
+        len(state["par_q"]) == len(PAR_Q)
+        and all(value is False for value in state["par_q"].values())
+    )
+    if explicit_no and clear:
+        answers = {aliases[0]: "no" for _flag, aliases in checker.CHECKLIST_GROUPS}
+        return checker.scan_check_in({"symptom_checklist": answers, "notes": reply})
+    return checker.scan_check_in({"notes": reply})
 
 
 def _confirm(state, reply):
     from plan_builder import PlanBuilder
+    from readiness_screen import ReadinessScreen, passing_readiness
     from record_confirmation import ConfirmationRecorder
+    from red_flag_check import is_passing_check_in
 
     if _first_missing(state) is not None:
         return
-    check_in = _check_in()
-    built = PlanBuilder().propose(_profile(state), check_in)
+    screen = ReadinessScreen().screen_intake(_readiness_intake(state))
+    state["readiness"] = screen
+    if not passing_readiness(screen):
+        state["error"] = " ".join(screen.reasons) or "Readiness has to pass before a plan is built."
+        return
+    check_in = _check_in(state)
+    if not is_passing_check_in(check_in):
+        state["error"] = check_in.message
+        return
+    built = PlanBuilder().propose(_profile(state), check_in, readiness_result=screen)
     if not built.get("ok"):
         state["error"] = built.get("message", "The week did not pass.")
         return
@@ -364,6 +482,19 @@ def _proposal(state):
     )
 
 
+def _unclear_par_q(state):
+    from readiness_screen import ReadinessScreen
+
+    known = {key: value for key, value in state["par_q"].items() if isinstance(value, bool)}
+    state["readiness"] = ReadinessScreen().check_par_q(known)
+    missing = [
+        key.replace("_", " ")
+        for key, _question in PAR_Q
+        if not isinstance(state["par_q"].get(key), bool)
+    ]
+    return "Still need a yes or no: " + ", ".join(missing) + "."
+
+
 def speak(state):
     """The next bot reply. The first one is question 1 when nothing is known."""
     if state["confirmed"]:
@@ -372,6 +503,8 @@ def speak(state):
     if missing is not None:
         state["phase"] = "intake"
         state["asked"] = missing["id"]
+        if missing["id"] == "par_q" and (state["par_q"] or state.get("par_q_skipped")):
+            return _unclear_par_q(state)
         return missing["text"]
     state["phase"] = "confirm"
     state["asked"] = None

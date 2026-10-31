@@ -68,6 +68,8 @@ _LOAD_MULTIPLE = {
     "intermediate": 3.5,
     "advanced": 5.0,
 }
+_ABSOLUTE_LOAD_CAP = 300.0
+_FALLBACK_LOAD_CAP = 100.0
 _EXERCISE_KEYS = {"name", "sets", "reps", "rest", "effort", "load_kg"}
 _GYM = {
     "Full body": ("Back squat", "Bench press", "Barbell row", "Romanian deadlift", "Plank", "Farmer carry"),
@@ -289,22 +291,24 @@ def _finite_load(value):
     return None
 
 
-def _load_cap(sessions, user):
-    """Body weight times the most conservative experience named on the week."""
-    if not isinstance(user, dict):
-        return None
-    weight = _finite_load(user.get("weight_kg"))
-    if weight is None or weight <= 0:
-        return None
-    multiples = []
-    for row in sessions:
-        if not isinstance(row, dict):
-            continue
-        name = row.get("experience")
+def _load_cap(user):
+    """Body weight times the profile experience, with a fixed cap when weight is missing.
+
+    Experience comes from the profile, not from session rows. The result also
+    stays at or under 300 kg.
+    """
+    experience = "beginner"
+    weight = None
+    if isinstance(user, dict):
+        name = user.get("experience")
         if isinstance(name, str) and name.strip().lower() in _LOAD_MULTIPLE:
-            multiples.append(_LOAD_MULTIPLE[name.strip().lower()])
-    multiple = min(multiples) if multiples else _LOAD_MULTIPLE["beginner"]
-    return weight * multiple
+            experience = name.strip().lower()
+        weight = _finite_load(user.get("weight_kg"))
+    if weight is None or weight <= 0:
+        cap = _FALLBACK_LOAD_CAP
+    else:
+        cap = weight * _LOAD_MULTIPLE[experience]
+    return min(cap, _ABSOLUTE_LOAD_CAP)
 
 
 def _block_minutes(exercise):
@@ -356,7 +360,7 @@ def _fit_minutes(chosen, minutes):
 
 def _exercise_problem(sessions, user=None):
     """A reason the exercises are outside the bounds, or None."""
-    cap = _load_cap(sessions, user)
+    cap = _load_cap(user)
     for row in sessions:
         if not isinstance(row, dict):
             return "Each session needs its exercises."
@@ -392,7 +396,7 @@ def _exercise_problem(sessions, user=None):
                 load_kg = _finite_load(exercise.get("load_kg"))
                 if load_kg is None or load_kg <= 0:
                     return "load_kg has to be a finite number."
-                if cap is None or load_kg > cap + 1e-9:
+                if load_kg > cap + 1e-9:
                     return "That load_kg is outside the bounds."
             if _block_minutes(exercise) is None:
                 return "Those exercises could not be checked."
@@ -491,6 +495,27 @@ def _week_landed(folder, new_ids):
     return False
 
 
+def _backup_can_replace(backup_bytes, live_bytes):
+    """Only a parseable backup that is older or the same set of ids may replace the live log."""
+    if backup_bytes == b"":
+        return True
+    try:
+        backup = json.loads(backup_bytes.decode("utf-8"))
+    except (UnicodeDecodeError, json.JSONDecodeError):
+        return False
+    if not isinstance(backup, dict):
+        return False
+    if not live_bytes:
+        return True
+    try:
+        live = json.loads(live_bytes.decode("utf-8"))
+    except (UnicodeDecodeError, json.JSONDecodeError):
+        return True
+    if not isinstance(live, dict):
+        return True
+    return _confirmation_ids(backup_bytes) <= _confirmation_ids(live_bytes)
+
+
 def _reconcile_backup(log_path):
     """Put a crashed log back, or drop the backup once the week file has landed."""
     backup_path = log_path + ".bak"
@@ -506,6 +531,8 @@ def _reconcile_backup(log_path):
     try:
         if landed or backup_bytes == live_bytes:
             os.remove(backup_path)
+            return
+        if not _backup_can_replace(backup_bytes, live_bytes):
             return
         if backup_bytes == b"":
             if os.path.exists(log_path):
@@ -596,6 +623,8 @@ class PlanBuilder:
         user = self._user(profile)
         if isinstance(user, dict) and user.get("ok") is False:
             return user
+        if isinstance(user, dict):
+            user["experience"] = experience
         allowed, answers = self._authorize(user, profile, readiness_result, self._no)
         if allowed is not None:
             return allowed

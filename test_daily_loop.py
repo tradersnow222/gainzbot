@@ -43,7 +43,7 @@ def test_seven_days_of_short_answers_adapt_the_plan():
     assert len(rows) == 7
     for row in rows:
         assert row["opened"].startswith("Morning.")
-        assert len(row["morning_reply"].split()) <= 4
+        assert len(row["morning_reply"].split()) <= 5
         assert len("yes easy chicken".split()) <= 4
         assert row["evening"].startswith("Did you do it?")
         assert "command" not in row["opened"].lower()
@@ -70,12 +70,61 @@ def test_seven_days_of_short_answers_adapt_the_plan():
 
 
 def test_progress_waits_until_the_load_is_seven_days_old():
-    loop = DailyLoop(load=80, minutes=45, confirmed_at="2026-10-25T12:00:00Z")
+    from daily_loop import adult_profile
+
+    loop = DailyLoop(
+        load=80,
+        minutes=45,
+        history=[{
+            "date": "2026-10-25T12:00:00Z",
+            "confirmed": True,
+            "changes": {"load": 80},
+        }],
+        profile=adult_profile(),
+    )
+    assert DailyLoop(load=80).history == []
     day = "2026-10-26"
     loop.open_morning(day)
-    loop.hear(day, "8 fine 45")
+    loop.hear(day, "no 8 fine 45")
     loop.open_evening(day)
     loop.hear(day, "yes easy oats")
     review = loop.weekly("2026-10-26T20:00:00Z")
     assert review["changed"] is False
     assert review["load"] == 80
+
+
+def test_a_symptom_in_the_morning_pauses_before_the_workout():
+    from daily_loop import adult_profile, parse_evening
+
+    loop = DailyLoop(load=80, minutes=45, profile=adult_profile())
+    day = "2026-10-26"
+    opened = loop.open_morning(day)
+    assert opened.startswith("Morning. Any chest pain, dizziness or new pain? no / yes")
+    paused = loop.hear(day, "my chest hurts 8 fine 45")
+    assert "doctor" in paused.lower()
+    assert "easy day" not in paused.lower()
+    assert day not in loop.workouts
+    assert loop.phase[day] == "paused"
+    clear = DailyLoop(load=80, minutes=45, profile=adult_profile())
+    clear.open_morning(day)
+    follow = clear.hear(day, "no")
+    assert follow != opened
+    assert "easy day" not in follow.lower()
+    assert clear.phase[day] == "morning2"
+    assert parse_evening("did not")["did_it"] is False
+    assert parse_evening("I did not do it")["did_it"] is False
+    assert parse_evening("did")["did_it"] is True
+    clear.hear(day, "8 fine")
+    clear.open_evening(day)
+    missed = clear.hear(day, "did not")
+    assert clear.notes[day]["did_it"] is False
+    assert missed.startswith("Logged the miss")
+    evening = DailyLoop(load=80, minutes=45, profile=adult_profile())
+    evening.open_morning(day)
+    evening.hear(day, "no 8 fine 45")
+    evening.open_evening(day)
+    flagged = evening.hear(day, "no idea, chest pain")
+    assert "doctor" in flagged.lower()
+    assert "logged" not in flagged.lower()
+    assert evening.phase[day] == "paused"
+    assert "did_it" not in evening.notes[day]

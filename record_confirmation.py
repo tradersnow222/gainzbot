@@ -41,7 +41,8 @@ def hash_plan(plan) -> str:
 
 
 # Emoji that may sit beside a bare yes. Every other symbol stays and refuses.
-_ALLOWED_EMOJI = frozenset("👍💪🔥✅")
+_ALLOWED_EMOJI = frozenset("👍💪🔥✅✔")
+_SKIN_TONE = re.compile("[\U0001F3FB-\U0001F3FF]")
 _CLOCK_SKEW = timedelta(minutes=5)
 _CONFIRM_SECRET = b"gainzbot-record-confirmation-v1"
 
@@ -77,6 +78,7 @@ _BARE_YES = CLEAR_YES | {
     "okay",
     "sounds good",
     "lets go",
+    "ok fine",
     "do it",
     "confirm",
     "confirmed",
@@ -104,8 +106,14 @@ def is_clear_yes(reply) -> bool:
     folded = normalize_reply(reply)
     if "?" in folded:
         return False
+    folded = _SKIN_TONE.sub("", folded)
+    folded = folded.replace("<3", " ")
     stripped = "".join(ch for ch in folded if ch not in _ALLOWED_EMOJI)
     stripped = re.sub(r"\s+", " ", stripped).strip()
+    if re.fullmatch(r"lets go+", stripped):
+        return True
+    if stripped == "" and "👍" in folded:
+        return True
     return stripped in _BARE_YES
 
 

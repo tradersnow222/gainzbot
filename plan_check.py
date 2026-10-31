@@ -380,7 +380,7 @@ class PlanValidator:
         errors = []
         
         known_top_level = {"user", "nutrition", "goals", "training", "par_q"}
-        known_user = {"sex", "weight_kg", "age", "height_cm", "medical_clearance"}
+        known_user = {"sex", "weight_kg", "age", "height_cm", "medical_clearance", "experience"}
         known_nutrition = {"calories", "protein_g", "previous_calories"}
         known_goals = {"weight_loss_kg_per_week", "goal"}
         known_training = {"previous_load", "current_load", "weeks_since_deload", "structured_hours", "sport_hours"}

@@ -124,7 +124,7 @@ def test_answers_in_any_order_are_kept_and_only_the_gap_is_asked():
     assert "par-q" not in bots[0].lower()
     done, later = run_chat([
         "running, 4 days, 40 min, dumbbells, beginner, no injuries",
-        "ok",
+        "hold, male, age 30, 80 kg, 180 cm",
         "all no",
         "yes",
     ])
@@ -142,3 +142,69 @@ def test_everything_at_once_skips_questions_already_answered():
     assert len(bots) == 2
     assert "par-q" not in bots[0].lower()
     assert "one yes confirms the plan" in bots[0].lower()
+
+
+def test_ok_does_not_invent_age_sex_weight_or_height():
+    state, bots = run_chat(["hello", "cut", "ok", "ok", "all no", "yes"])
+    assert state["confirmed"] is False
+    assert state["answers"].get("goal") == "cut"
+    for key in ("age", "sex", "weight", "height"):
+        assert state["answers"].get(key) in (None, "")
+    assert "1780" not in "\n".join(bots)
+    assert all("kcal" not in turn.lower() for turn in bots)
+    goal_only, _turns = run_chat(["hello", "ok"])
+    assert goal_only["confirmed"] is False
+    assert goal_only["answers"].get("goal") == "hold"
+    for key in ("age", "sex", "weight", "height"):
+        assert key not in goal_only["answers"]
+    plain, _turns = run_chat(["hello", "ok fine"])
+    assert plain["confirmed"] is False
+    assert "age" not in plain["answers"]
+    confirmed, turns = run_chat(list(HAPPY_PATH[:-1]) + ["ok"])
+    assert confirmed["confirmed"] is True
+    finer, _turns = run_chat(list(HAPPY_PATH[:-1]) + ["ok fine"])
+    assert finer["confirmed"] is True
+    assert "confirm" in turns[-1].lower()
+
+
+def test_par_q_answers_are_kept_and_a_mixed_reply_asks_only_the_gap():
+    from onboarding import PAR_Q, _blank, _check_in
+    from red_flag_check import is_passing_check_in
+
+    body = ["hold, male, age 30, 80 kg, 180 cm", "ok"]
+    skipped, skip_bots = run_chat(body + ["skip", "yes"])
+    assert skipped["confirmed"] is False
+    assert skipped.get("par_q_skipped") is True
+    assert skipped["par_q"] == {}
+    assert skip_bots[-1].startswith("Still need a yes or no:")
+    assert skip_bots[-1].count("\n") == 0
+    negated, neg_bots = run_chat(body + ["not all no, chest pain yes", "yes"])
+    assert negated["confirmed"] is False
+    assert negated["par_q"]["chest_pain_at_rest"] is True
+    assert negated["par_q"]["chest_pain_during_activity"] is True
+    assert "1780" not in "\n".join(neg_bots)
+    mixed, mixed_bots = run_chat(body + ["chest pain yes, rest no"])
+    assert mixed["confirmed"] is False
+    assert mixed["par_q"]["chest_pain_at_rest"] is False
+    assert mixed["par_q"]["chest_pain_during_activity"] is True
+    asked = mixed_bots[-1]
+    assert asked.startswith("Still need a yes or no:")
+    assert asked.count("\n") == 0
+    assert "chest pain at rest" not in asked.lower()
+    assert "chest pain during activity" not in asked.lower()
+    for key, _question in PAR_Q:
+        if key.startswith("chest_pain"):
+            continue
+        assert key.replace("_", " ") in asked
+    invented = _blank()
+    invented["par_q_reply"] = "all no"
+    invented["par_q"] = {key: False for key, _question in PAR_Q}
+    sealed = _check_in(invented)
+    assert is_passing_check_in(sealed)
+    blob = sealed.message + " ".join(sealed.recommendations)
+    assert "Easy lift, slept fine." not in blob
+    fake = _blank()
+    fake["par_q_reply"] = "not all no, chest pain yes"
+    fake["par_q"] = {key: False for key, _question in PAR_Q}
+    refused = _check_in(fake)
+    assert not is_passing_check_in(refused)

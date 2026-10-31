@@ -146,9 +146,11 @@ class ReadinessScreen:
     }
 
     _DOCTOR_WORD = re.compile(r"\b(?:doctors?|physicians?|dr)\b", re.IGNORECASE)
-    _CLEAR_WORD = re.compile(r"\b(?:cleared|clearance|clears|clear)\b", re.IGNORECASE)
+    _CLEAR_WORD = re.compile(r"\b(?:cleared|clearance|clears)\b", re.IGNORECASE)
     _DENY_WORD = re.compile(
-        r"\b(?:not|never|no|without|hasn't|hasnt|haven't|havent|didn't|didnt|won't|wont)\b",
+        r"\b(?:not|never|no|without|hasn't|hasnt|haven't|havent|didn't|didnt|won't|wont|"
+        r"unless|until|except|provided|assuming|although|though|however)\b"
+        r"|\bonly if\b|\bas long as\b",
         re.IGNORECASE,
     )
     _DATE = re.compile(r"\d{4}-\d{2}-\d{2}")
@@ -325,10 +327,19 @@ class ReadinessScreen:
         text = raw.strip() if isinstance(raw, str) else ""
         if self._DATE.fullmatch(text):
             try:
-                datetime.strptime(text, "%Y-%m-%d")
+                cleared_on = datetime.strptime(text, "%Y-%m-%d").date()
             except ValueError:
                 text = ""
             else:
+                today = datetime.now(timezone.utc).date()
+                if cleared_on > today:
+                    return None, "clearance_date cannot be in the future."
+                try:
+                    anniversary = cleared_on.replace(year=cleared_on.year + 1)
+                except ValueError:
+                    anniversary = cleared_on.replace(year=cleared_on.year + 1, day=28)
+                if today >= anniversary:
+                    return None, "That clearance is more than 12 months old. Ask again."
                 return text, None
         return None, "clearance_date must be YYYY-MM-DD."
 
@@ -637,6 +648,7 @@ class ReadinessScreen:
         doctor_cleared = medical_clearance is True
         clearance_date, date_error = self._read_clearance_date(intake, doctor_cleared)
         if date_error:
+            doctor_cleared = False
             absorb(self._blocked(
                 [date_error],
                 ["Please give the clearance date as YYYY-MM-DD."],

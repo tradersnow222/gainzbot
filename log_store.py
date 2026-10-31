@@ -103,6 +103,8 @@ def reconcile_log_backup(log_path):
         if landed or backup_bytes == live_bytes:
             os.remove(backup_path)
             return
+        if not _backup_can_replace(backup_bytes, live_bytes):
+            return
         if backup_bytes == b"":
             if os.path.exists(log_path):
                 os.remove(log_path)
@@ -118,6 +120,27 @@ def reconcile_log_backup(log_path):
                 os.remove(backup_path)
     except OSError:
         return
+
+
+def _backup_can_replace(backup_bytes, live_bytes):
+    """Only a parseable backup that is older or the same set of ids may replace the live log."""
+    if backup_bytes == b"":
+        return True
+    try:
+        backup = json.loads(backup_bytes.decode("utf-8"))
+    except (UnicodeDecodeError, json.JSONDecodeError):
+        return False
+    if not isinstance(backup, dict):
+        return False
+    if not live_bytes:
+        return True
+    try:
+        live = json.loads(live_bytes.decode("utf-8"))
+    except (UnicodeDecodeError, json.JSONDecodeError):
+        return True
+    if not isinstance(live, dict):
+        return True
+    return _confirmation_ids(backup_bytes) <= _confirmation_ids(live_bytes)
 
 
 def _trusted_change(row, changes):

@@ -5,11 +5,14 @@ from datetime import date, timedelta
 import re
 
 from morning_checkin import MorningCheckIn
+from red_flag_check import RedFlagChecker, is_passing_check_in
+from readiness_screen import ReadinessScreen, passing_readiness
 from signals import read_gap_reply
 
 
+_SYMPTOM = "Morning. Any chest pain, dizziness or new pain? no / yes"
 _MORNING = (
-    "Morning. Sleep hours and soreness (fine, sore, or very sore)? "
+    "Sleep hours and soreness (fine, sore, or very sore)? "
     "Minutes today, and weight if you track it."
 )
 _SECOND = "One more: soreness or sleep, in a word or a number."
@@ -65,11 +68,32 @@ def parse_morning(reply):
     return parsed
 
 
+def _pause_text(result):
+    parts = [result.message]
+    for line in result.recommendations or []:
+        if line not in parts:
+            parts.append(line)
+    return " ".join(parts)
+
+
+def symptom_is_clear(reply):
+    """One word no, or no beside the other answers. A yes or a symptom is not clear."""
+    if RedFlagChecker().scan_text(reply if isinstance(reply, str) else "").pause_plan:
+        return False
+    text = _fold(reply)
+    if re.search(r"\b(?:yes|yep|yeah)\b", text):
+        return False
+    return re.search(r"\b(?:no|none|nope)\b", text) is not None
+
+
 def parse_evening(reply):
     text = _fold(reply)
-    did_it = bool(re.search(r"\b(?:yes|yep|yeah|did)\b", text)) and not re.search(r"\bno\b", text)
-    if re.search(r"\bno\b", text):
+    if re.search(r"\bdid\s+not\b", text) or re.search(r"\bdidnt\b", text):
         did_it = False
+    elif re.search(r"\bno\b", text):
+        did_it = False
+    else:
+        did_it = bool(re.search(r"\b(?:yes|yep|yeah|did)\b", text))
     felt = None
     for word in ("easy", "right", "hard"):
         if re.search(rf"\b{word}\b", text):
@@ -85,7 +109,7 @@ def parse_evening(reply):
 class DailyLoop:
     """Morning, workout, evening, and a weekly review inside the load cap."""
 
-    def __init__(self, load=80, minutes=45, calories=None, confirmed_at="2026-10-19T07:00:00Z", goal="hold", signals=None, outreach=None):
+    def __init__(self, load=80, minutes=45, calories=None, confirmed_at=None, goal="hold", signals=None, outreach=None, history=None, profile=None):
         self.load = load
         self.minutes = minutes
         self.calories = calories
@@ -93,11 +117,8 @@ class DailyLoop:
         self.confirmed_at = confirmed_at
         self.signals = signals
         self.outreach = outreach
-        self.history = [{
-            "date": confirmed_at,
-            "confirmed": True,
-            "changes": {"load": load},
-        }]
+        self.profile = profile
+        self.history = list(history) if history else []
         self.phase = {}
         self.notes = {}
         self.nudges = {}
@@ -107,25 +128,25 @@ class DailyLoop:
         self.pending = {}
 
     def open_morning(self, day):
-        """The bot opens. The user does not send a command first."""
+        """The bot opens with the symptom line. Wearables skip only the other questions."""
         self.notes[day] = {}
+        self.phase[day] = "symptom"
+        extra = self._other_questions(day)
+        if extra:
+            return f"{_SYMPTOM} {extra}"
+        return _SYMPTOM
+
+    def _other_questions(self, day):
         if self.signals is None or not self.signals.connected():
-            self.phase[day] = "morning"
+            self.questions[day] = 1
             return _MORNING
         as_of = f"{day}T08:00:00Z"
         gaps = self.signals.gaps(as_of)
         personal = self.signals.personal_questions()
-        self.pending[day] = {"gaps": gaps, "personal": [key for key, _text in personal]}
-        if not gaps and not personal:
-            self._seed(day, as_of)
-            self.questions[day] = 0
-            note = self.signals.plan_note(as_of)
-            workout = self._workout(day)
-            if self.outreach is not None:
-                self.outreach.scheduled(day, note)
-            return f"{note} {workout}"
+        self.pending[day] = {"gaps": list(gaps), "personal": [key for key, _text in personal]}
         self.questions[day] = len(gaps) + len(personal)
-        self.phase[day] = "signals"
+        if not gaps and not personal:
+            return ""
         asked = [self.signals.gap_question(gap) for gap in gaps]
         asked.extend(text for _key, text in personal)
         return " ".join(asked)
@@ -143,26 +164,79 @@ class DailyLoop:
 
     def hear(self, day, reply):
         phase = self.phase.get(day)
+        if phase == "symptom":
+            self.notes.setdefault(day, {})["reply"] = reply
+            paused = self._text_pause(reply)
+            if paused:
+                self.phase[day] = "paused"
+                return paused
+            if not symptom_is_clear(reply):
+                return _SYMPTOM
+            return self._after_symptom(day, reply)
         if phase == "signals":
             pending = self.pending.get(day, {"gaps": [], "personal": []})
+            self.notes[day]["reply"] = (self.notes[day].get("reply") or "") + " " + reply
+            paused = self._text_pause(reply)
+            if paused:
+                self.phase[day] = "paused"
+                return paused
             self.notes[day].update(read_gap_reply(pending["gaps"], reply))
             for key in pending["personal"]:
                 self.signals.settle(key)
             self._seed(day, f"{day}T08:00:00Z")
             return self._workout(day)
-        if phase == "morning":
-            parsed = parse_morning(reply)
-            self.notes[day].update(parsed)
-            if self._needs_more(day):
-                self.phase[day] = "morning2"
-                return _SECOND
-            return self._workout(day)
         if phase == "morning2":
+            self.notes[day]["reply"] = (self.notes[day].get("reply") or "") + " " + reply
+            paused = self._text_pause(reply)
+            if paused:
+                self.phase[day] = "paused"
+                return paused
             self.notes[day].update(parse_morning(reply))
             return self._workout(day)
         if phase == "evening":
             return self._evening(day, reply)
         return "I'll pick it up in the morning."
+
+    def _text_pause(self, reply):
+        scanned = RedFlagChecker().scan_text(reply if isinstance(reply, str) else "")
+        if scanned.pause_plan:
+            return _pause_text(scanned)
+        return None
+
+    def _gap_open(self, day, gap):
+        notes = self.notes.get(day, {})
+        if gap == "weight":
+            return "weight_kg" not in notes
+        return gap not in notes
+
+    def _after_symptom(self, day, reply):
+        as_of = f"{day}T08:00:00Z"
+        pending = self.pending.get(day)
+        if pending is None:
+            self.notes[day].update(parse_morning(reply))
+            if self._needs_more(day):
+                self.phase[day] = "morning2"
+                return _SECOND
+            return self._workout(day)
+        self.notes[day].update(read_gap_reply(pending["gaps"], reply))
+        abnormal = set(self.signals.abnormal(as_of)) if self.signals is not None else set()
+        unanswered = [
+            gap for gap in pending["gaps"]
+            if self._gap_open(day, gap) and gap not in abnormal
+        ]
+        personal = list(pending["personal"])
+        if personal and _fold(reply) not in {"no", "none", "nope"}:
+            for key in personal:
+                self.signals.settle(key)
+            personal = []
+        if unanswered or personal:
+            self.phase[day] = "signals"
+            self.pending[day] = {"gaps": unanswered, "personal": personal}
+            asked = [self.signals.gap_question(gap) for gap in unanswered]
+            asked.extend(text for key, text in self.signals.personal_questions() if key in personal)
+            return " ".join(asked)
+        self._seed(day, as_of)
+        return self._workout(day)
 
     def _seed(self, day, as_of):
         book = self.signals
@@ -175,6 +249,10 @@ class DailyLoop:
                 notes["sleep"] = sleep
         if book.hrv_down(as_of) and "stress" not in notes:
             notes["stress"] = 4
+        if book.abnormal(as_of):
+            notes["stress"] = 4
+            if "sleep" in book.abnormal(as_of) and "sleep" not in notes:
+                notes["sleep"] = book.readings["sleep"].get("value")
 
     def _needs_more(self, day):
         notes = self.notes.get(day, {})
@@ -189,7 +267,32 @@ class DailyLoop:
             "stress": notes.get("stress", 2),
         }
 
+    def _checklist(self, reply):
+        checker = RedFlagChecker()
+        if symptom_is_clear(reply):
+            answers = {aliases[0]: "no" for _flag, aliases in checker.CHECKLIST_GROUPS}
+            return checker.scan_check_in({"symptom_checklist": answers, "notes": reply})
+        return checker.scan_check_in({"notes": reply})
+
+    def _before_training(self, day):
+        reply = self.notes.get(day, {}).get("reply") or ""
+        result = self._checklist(reply)
+        if not is_passing_check_in(result):
+            self.phase[day] = "paused"
+            return _pause_text(result)
+        if not isinstance(self.profile, dict):
+            self.phase[day] = "paused"
+            return "Readiness has to pass before training."
+        screen = ReadinessScreen().screen_intake(self.profile)
+        if not passing_readiness(screen):
+            self.phase[day] = "paused"
+            return "Readiness has to pass before training."
+        return None
+
     def _workout(self, day):
+        blocked = self._before_training(day)
+        if blocked:
+            return blocked
         scores = self._scores(day)
         as_of = f"{day}T12:00:00Z"
         checked = MorningCheckIn().check_in(
@@ -209,6 +312,12 @@ class DailyLoop:
             lead = f"Today is a {day_name} day."
         food = f"{self.calories} kcal" if self.calories is not None else self.goal
         text = f"{lead} {session_minutes} min, load {load}. Food: {food}."
+        if self.signals is not None and self.signals.connected():
+            note = self.signals.plan_note(f"{day}T08:00:00Z")
+            if self.outreach is not None:
+                self.outreach.scheduled(day, note)
+            if note and note != "Today is on plan.":
+                text = f"{note} {text}"
         row = {
             "day": day_name,
             "minutes": session_minutes,
@@ -221,6 +330,10 @@ class DailyLoop:
         return text
 
     def _evening(self, day, reply):
+        paused = self._text_pause(reply)
+        if paused:
+            self.phase[day] = "paused"
+            return paused
         parsed = parse_evening(reply)
         self.notes[day].update(parsed)
         if parsed.get("felt") == "easy":
@@ -263,18 +376,42 @@ class DailyLoop:
         }
 
 
+def adult_profile():
+    """A caller-supplied adult. The loop does not invent one."""
+    return {
+        "age": 30,
+        "sex": "male",
+        "weight_kg": 80,
+        "height_cm": 180,
+        "par_q": {flag: False for flag in ReadinessScreen.PAR_Q_RED_FLAGS},
+        "pregnant": False,
+        "medical_conditions": [],
+        "medical_clearance": False,
+    }
+
+
 def simulate_happy_week():
     """Seven bot-led days. The user only answers the questions."""
-    loop = DailyLoop(load=80, minutes=45, calories=2200, confirmed_at="2026-10-19T07:00:00Z")
+    loop = DailyLoop(
+        load=80,
+        minutes=45,
+        calories=2200,
+        history=[{
+            "date": "2026-10-19T07:00:00Z",
+            "confirmed": True,
+            "changes": {"load": 80},
+        }],
+        profile=adult_profile(),
+    )
     start = date(2026, 10, 26)
     mornings = (
-        "8 fine 45",
-        "8 very sore 30",
-        "bad sleep fine 40",
-        "8 fine 45",
-        "8 fine 45",
-        "8 fine 45",
-        "8 fine 45",
+        "no 8 fine 45",
+        "no 8 very sore 30",
+        "no bad sleep fine 40",
+        "no 8 fine 45",
+        "no 8 fine 45",
+        "no 8 fine 45",
+        "no 8 fine 45",
     )
     rows = []
     for offset, morning in enumerate(mornings):
