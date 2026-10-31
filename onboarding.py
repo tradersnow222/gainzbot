@@ -506,8 +506,8 @@ def _mask_clocks(reply):
 
 
 _AGE_ASK = "How old are you? Please type the number."
-_WEIGHT_ASK = "What is your weight in kg? Please type a number from 30 to 300."
-_UNCLEAR = "I didn't catch that. What should I change?"
+_WEIGHT_ASK = "That weight looks off. What's your weight in kg?"
+_AGE_EMOJI = "\U0001F9D2\U0001F476\U0001F466\U0001F467"
 _NUMBER_WORDS = frozenset({
     "zero", "one", "two", "three", "four", "five", "six", "seven", "eight", "nine",
     "ten", "eleven", "twelve", "thirteen", "fourteen", "fifteen", "sixteen",
@@ -519,7 +519,7 @@ _NUMBER_WORDS = frozenset({
 })
 _AGE_WORDS = frozenset({
     "under", "over", "minor", "grade", "school", "yo", "years", "old", "teen",
-    "teens", "teenage", "teenager",
+    "teens", "teenage", "teenager", "kid", "child", "young", "son", "daughter",
 })
 _WEIGHT_EDIT = re.compile(
     r"^(?:(?:wait|actually|please|sorry|just)\s+)*"
@@ -534,6 +534,21 @@ _HEIGHT_EDIT = re.compile(
     r"^(?:(?:wait|actually|please|sorry|just)\s+)*"
     r"(?:my\s+)?height(?:\s+is)?\s+(\d{2,3})\s+cm$"
 )
+
+
+def _soft(reply):
+    """Fold a reply but keep a decimal point that sits between digits."""
+    if not isinstance(reply, str):
+        return ""
+    text = reply.strip().lower().replace("'", "").replace("\u2019", "")
+    protected = re.sub(r"(?<=\d)\.(?=\d)", "\x00", text)
+    cleaned = []
+    for char in protected:
+        if char == "\x00" or char.isalnum() or char.isspace():
+            cleaned.append(char)
+        else:
+            cleaned.append(" ")
+    return " ".join("".join(cleaned).split()).replace("\x00", ".")
 
 
 def _kg_in_range(value):
@@ -561,6 +576,8 @@ def _hints_age(reply):
     """True when the reply hints at age. The number itself is not read."""
     if not isinstance(reply, str) or not reply.strip():
         return False
+    if any(char in reply for char in _AGE_EMOJI):
+        return True
     if _non_latin_letter(reply):
         return True
     folded = _fold(_mask_clocks(reply))
@@ -574,10 +591,10 @@ def _hints_age(reply):
 
 def _explicit_edit(reply):
     """A profile edit that uses the whole reply, or None."""
-    folded = _fold(reply)
-    weight = _WEIGHT_EDIT.fullmatch(folded)
+    weight = _WEIGHT_EDIT.fullmatch(_soft(reply))
     if weight:
         return ("weight", weight.group(1) + " kg")
+    folded = _fold(reply)
     days = _DAYS_EDIT.fullmatch(folded)
     if days:
         return ("days", days.group(1))
@@ -633,8 +650,7 @@ def _take_age_number(state, reply):
 def _take_weight_number(state, reply):
     state["confirmed"] = False
     state["record"] = None
-    folded = _fold(reply)
-    match = re.fullmatch(r"(\d+(?:\.\d+)?)(?:\s+kg)?", folded)
+    match = re.fullmatch(r"(\d+(?:\.\d+)?)(?:\s+kg)?", _soft(reply))
     if match is None:
         state["awaiting"] = "weight"
         state["error"] = _WEIGHT_ASK
@@ -685,9 +701,9 @@ def _handle_confirm(state, reply):
     """Confirm only when the whole reply is a plan-yes.
 
     Anything else is an edit. A clear weight or profile edit updates the
-    profile and the proposal is shown again. A hint of age asks for the
-    number. Readiness runs on that typed number, and this turn never
-    confirms. Leftover text that is not an edit asks a short question.
+    profile and the proposal is shown again. A hint of age, or any reply
+    that is not understood, asks for the number. Readiness runs on that
+    typed number before the plan is shown again. This turn never confirms.
     """
     from record_confirmation import reply_pause
 
@@ -710,11 +726,8 @@ def _handle_confirm(state, reply):
         return _apply_edit(state, edit)
     state["confirmed"] = False
     state["record"] = None
-    if _hints_age(reply):
-        state["awaiting"] = "age"
-        state["error"] = _AGE_ASK
-        return True
-    state["error"] = _UNCLEAR
+    state["awaiting"] = "age"
+    state["error"] = _AGE_ASK
     return True
 
 
@@ -854,7 +867,7 @@ def _check_in(state):
 def _confirm(state, reply):
     from plan_builder import PlanBuilder
     from readiness_screen import ReadinessScreen, passing_readiness
-    from record_confirmation import ConfirmationRecorder
+    from record_confirmation import ConfirmationRecorder, mark_first_plan
     from red_flag_check import is_passing_check_in
 
     if _first_missing(state) is not None:
@@ -876,8 +889,7 @@ def _confirm(state, reply):
     if not built.get("ok"):
         state["error"] = built.get("message", "The week did not pass.")
         return
-    confirm = dict(built["confirm"])
-    confirm["first_plan"] = True
+    confirm = mark_first_plan(built["confirm"])
     record = ConfirmationRecorder().record(confirm, reply, "user", check_in)
     if not record.confirmed:
         state["error"] = record.message

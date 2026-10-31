@@ -23,7 +23,7 @@ from readiness_screen import (
     screening_seal_matches,
     subject_hash,
 )
-from record_confirmation import ConfirmationRecord, ConfirmationRecorder
+from record_confirmation import ConfirmationRecord, ConfirmationRecorder, mark_first_plan
 
 
 _WEEKDAYS = {
@@ -815,9 +815,16 @@ class PlanBuilder:
         load = training.get("current_load")
         if any(row.get("load") != load for row in sessions):
             return self._saved_no("The first week does not raise the load.")
-        if not isinstance(confirmation, ConfirmationRecord) or not ConfirmationRecorder().covers(
-            confirmation, week_to_confirm(plan, sessions)
-        ):
+        week = week_to_confirm(plan, sessions)
+        recorder = ConfirmationRecorder()
+        covered = (
+            isinstance(confirmation, ConfirmationRecord)
+            and (
+                recorder.covers(confirmation, week)
+                or recorder.covers(confirmation, mark_first_plan(week))
+            )
+        )
+        if not covered:
             return self._saved_no("This week needs record_confirmation before it is saved.")
         problem = _exercise_problem(sessions, plan.get("user") if isinstance(plan.get("user"), dict) else None)
         if problem:

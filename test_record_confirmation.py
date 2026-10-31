@@ -302,18 +302,62 @@ class TestClearYes:
         )
         assert shaped.confirmed is False
         assert "clear yes" in shaped.message.lower()
-        marked = dict(first)
-        marked["first_plan"] = True
+        from record_confirmation import mark_first_plan
+
+        marked = mark_first_plan(first)
         scheduled = ConfirmationRecorder().record(
             marked, "yes, morning 6:30", "user", passing_check_in()
         )
         assert scheduled.confirmed is True
         assert scheduled.quoted_words == "yes, morning 6:30"
+        assert hash_plan(marked) != hash_plan(first)
+        assert not ConfirmationRecorder().covers(scheduled, first)
+        assert ConfirmationRecorder().covers(scheduled, marked)
+        bare_flag = dict(first)
+        bare_flag["first_plan"] = True
+        forged = ConfirmationRecorder().record(
+            bare_flag, "yes, morning 6:30", "user", passing_check_in()
+        )
+        assert forged.confirmed is False
+        assert "clear yes" in forged.message.lower()
         flagged = {"changes": {"load": 110}, "first_plan": True}
         not_a_week = ConfirmationRecorder().record(
             flagged, "yes, morning 6:30", "user", passing_check_in()
         )
         assert not_a_week.confirmed is False
+
+    def test_a_forged_first_plan_flag_cannot_take_a_schedule_yes(self):
+        from record_confirmation import mark_first_plan
+
+        later = {
+            "plan": {"training": {"current_load": 110, "previous_load": 100}},
+            "sessions": [{"date": "2026-11-09", "name": "Upper", "load": 110}],
+            "changes": {"load": 110},
+        }
+        forged = dict(later)
+        forged["first_plan"] = True
+        record = ConfirmationRecorder().record(
+            forged, "yes, morning 6:30", "user", passing_check_in()
+        )
+        assert record.confirmed is False
+        assert "clear yes" in record.message.lower()
+        real = mark_first_plan({
+            "plan": {"user": {"age": 30}},
+            "sessions": [{"date": "2026-11-02", "name": "Upper"}],
+        })
+        stolen = dict(forged)
+        stolen["first_plan_seal"] = real["first_plan_seal"]
+        copied = ConfirmationRecorder().record(
+            stolen, "yes, evening 9pm", "user", passing_check_in()
+        )
+        assert copied.confirmed is False
+        assert hash_plan(forged) != hash_plan(later)
+        assert not ConfirmationRecorder().covers(record, later)
+        sealed = mark_first_plan(later)
+        assert hash_plan(sealed) != hash_plan(later)
+        assert ConfirmationRecorder().record(
+            sealed, "yes, morning 6:30", "user", passing_check_in()
+        ).confirmed is True
 
     def test_a_schedule_yes_with_a_symptom_stays_a_red_flag(self):
         reply = "yes, morning 6:30, but my chest hurts"

@@ -37,14 +37,45 @@ CLEAR_YES = {
 def hash_plan(plan) -> str:
     """Stable hash of one exact plan version.
 
-    first_plan is the onboarding marker that allows a routine-time yes.
-    It is not part of the week PlanBuilder.save checks.
+    first_plan and its seal are part of this hash. A later week with the
+    flag copied on does not match a first-plan confirmation.
     """
-    body = plan
-    if isinstance(plan, dict) and "first_plan" in plan:
-        body = {key: value for key, value in plan.items() if key != "first_plan"}
-    payload = json.dumps(body, sort_keys=True, separators=(",", ":"), default=str)
+    payload = json.dumps(plan, sort_keys=True, separators=(",", ":"), default=str)
     return hashlib.sha256(payload.encode("utf-8")).hexdigest()
+
+
+def _first_plan_body(plan):
+    return {
+        key: value
+        for key, value in plan.items()
+        if key not in ("first_plan", "first_plan_seal")
+    }
+
+
+def first_plan_seal(plan):
+    """HMAC over the week without the marker. A copied flag does not match."""
+    from seal_secret import seal_hex
+
+    payload = json.dumps(
+        _first_plan_body(plan),
+        sort_keys=True,
+        separators=(",", ":"),
+        default=str,
+    )
+    return seal_hex(b"first_plan", payload)
+
+
+def mark_first_plan(plan):
+    """The onboarding mark. A bare first_plan flag is not this."""
+    if not isinstance(plan, dict):
+        return plan
+    marked = _first_plan_body(plan)
+    marked["first_plan"] = True
+    try:
+        marked["first_plan_seal"] = first_plan_seal(marked)
+    except OSError:
+        marked["first_plan_seal"] = ""
+    return marked
 
 
 # Emoji that may sit beside a bare yes. Every other symbol stays and refuses.
@@ -141,16 +172,27 @@ def is_plan_yes(reply, proposal_hash) -> bool:
 
 
 def _first_plan_confirm(plan) -> bool:
-    """True only when onboarding marked this object as the first plan.
+    """True only when onboarding sealed this object as the first plan.
 
-    The week shape is not enough. A load or calorie proposal still needs
-    a bare yes, even if someone copies the sessions list onto it.
+    A copied first_plan flag, or a seal from a different week, does not
+    count. A load or calorie proposal still needs a bare yes.
     """
     if not isinstance(plan, dict) or plan.get("first_plan") is not True:
         return False
     if not isinstance(plan.get("plan"), dict):
         return False
-    return isinstance(plan.get("sessions"), list)
+    if not isinstance(plan.get("sessions"), list):
+        return False
+    seal = plan.get("first_plan_seal")
+    if not isinstance(seal, str) or not seal:
+        return False
+    try:
+        expected = first_plan_seal(plan)
+    except OSError:
+        return False
+    if len(seal) != len(expected):
+        return False
+    return hmac.compare_digest(seal, expected)
 
 
 def reply_pause(reply):
