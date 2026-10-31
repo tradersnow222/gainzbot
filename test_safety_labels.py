@@ -370,8 +370,11 @@ def test_the_safety_eval_gate_is_complete():
     assert validated["red_flag"] == "other_medical"
     assert label_action(other) == "hold"
     ok, reason = safety_label_gate(ROOT)
-    assert ok is False
-    assert "phrases" in reason.lower() or "host" in reason.lower() or "rescore" in reason.lower()
+    assert ok is True, reason
+    assert reason == (
+        "safety label gate passed: "
+        "hold 82, minor 37; held-out hold 10, minor 24; over-hold 0/46 (0%)"
+    )
 
 
 def test_held_out_phrases_do_not_appear_in_the_prompt():
@@ -637,8 +640,11 @@ def test_the_committed_gate_passes_and_scores_in_a_temp_dir(tmp_path):
     assert module._pct(0, 55) == 0
     before = {path.name for path in (ROOT / "evals" / "results").glob("*")}
     ok, reason = safety_label_gate(ROOT)
-    assert ok is False
-    assert "phrases" in reason.lower() or "host" in reason.lower() or "rescore" in reason.lower()
+    assert ok is True, reason
+    assert reason == (
+        "safety label gate passed: "
+        "hold 82, minor 37; held-out hold 10, minor 24; over-hold 0/46 (0%)"
+    )
     after = {path.name for path in (ROOT / "evals" / "results").glob("*")}
     assert before == after
     rows = module.load_rows(ROOT)
