@@ -5,6 +5,7 @@ from datetime import date, timedelta
 import re
 
 from morning_checkin import MorningCheckIn
+from signals import read_gap_reply
 
 
 _MORNING = (
@@ -84,12 +85,14 @@ def parse_evening(reply):
 class DailyLoop:
     """Morning, workout, evening, and a weekly review inside the load cap."""
 
-    def __init__(self, load=80, minutes=45, calories=None, confirmed_at="2026-10-19T07:00:00Z", goal="hold"):
+    def __init__(self, load=80, minutes=45, calories=None, confirmed_at="2026-10-19T07:00:00Z", goal="hold", signals=None, outreach=None):
         self.load = load
         self.minutes = minutes
         self.calories = calories
         self.goal = goal
         self.confirmed_at = confirmed_at
+        self.signals = signals
+        self.outreach = outreach
         self.history = [{
             "date": confirmed_at,
             "confirmed": True,
@@ -100,12 +103,32 @@ class DailyLoop:
         self.nudges = {}
         self.felt_easy = 0
         self.workouts = {}
+        self.questions = {}
+        self.pending = {}
 
     def open_morning(self, day):
         """The bot opens. The user does not send a command first."""
-        self.phase[day] = "morning"
         self.notes[day] = {}
-        return _MORNING
+        if self.signals is None or not self.signals.connected():
+            self.phase[day] = "morning"
+            return _MORNING
+        as_of = f"{day}T08:00:00Z"
+        gaps = self.signals.gaps(as_of)
+        personal = self.signals.personal_questions()
+        self.pending[day] = {"gaps": gaps, "personal": [key for key, _text in personal]}
+        if not gaps and not personal:
+            self._seed(day, as_of)
+            self.questions[day] = 0
+            note = self.signals.plan_note(as_of)
+            workout = self._workout(day)
+            if self.outreach is not None:
+                self.outreach.scheduled(day, note)
+            return f"{note} {workout}"
+        self.questions[day] = len(gaps) + len(personal)
+        self.phase[day] = "signals"
+        asked = [self.signals.gap_question(gap) for gap in gaps]
+        asked.extend(text for _key, text in personal)
+        return " ".join(asked)
 
     def open_evening(self, day):
         self.phase[day] = "evening"
@@ -120,6 +143,13 @@ class DailyLoop:
 
     def hear(self, day, reply):
         phase = self.phase.get(day)
+        if phase == "signals":
+            pending = self.pending.get(day, {"gaps": [], "personal": []})
+            self.notes[day].update(read_gap_reply(pending["gaps"], reply))
+            for key in pending["personal"]:
+                self.signals.settle(key)
+            self._seed(day, f"{day}T08:00:00Z")
+            return self._workout(day)
         if phase == "morning":
             parsed = parse_morning(reply)
             self.notes[day].update(parsed)
@@ -133,6 +163,18 @@ class DailyLoop:
         if phase == "evening":
             return self._evening(day, reply)
         return "I'll pick it up in the morning."
+
+    def _seed(self, day, as_of):
+        book = self.signals
+        if book is None:
+            return
+        notes = self.notes[day]
+        if "sleep" not in notes:
+            sleep = book.fresh_value("sleep", as_of)
+            if sleep is not None:
+                notes["sleep"] = sleep
+        if book.hrv_down(as_of) and "stress" not in notes:
+            notes["stress"] = 4
 
     def _needs_more(self, day):
         notes = self.notes.get(day, {})

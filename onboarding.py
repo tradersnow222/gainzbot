@@ -32,8 +32,9 @@ _TRAINING_DEFAULTS = {
     "equipment": "bodyweight",
     "experience": "beginner",
     "injuries": "none",
+    "sources": "none",
 }
-_OPTIONAL = {"name", "food_style"}
+_OPTIONAL = {"name", "food_style", "sources"}
 _ACCEPT = {"ok", "okay", "yep", "yeah", "defaults", "default", "sounds good", "do it", "lets go"}
 _WEEK_OFFSETS = (0, 2, 4, 5, 1, 3, 6)
 _SETUP_WORDS = ("clone", "pip", "pytest", "release_check", "install", "git ")
@@ -68,11 +69,12 @@ GROUPS = (
     },
     {
         "id": "training",
-        "asks": ("sport", "training_days", "minutes", "equipment", "experience", "injuries"),
+        "asks": ("sport", "training_days", "minutes", "equipment", "experience", "injuries", "sources"),
         "text": (
             "Sport, schedule, and equipment? "
             "One word ok uses general training, 3 days, 45 min, bodyweight, beginner, no injuries. "
-            "Any sport is fine. Sport and the schedule come before the PAR-Q."
+            "Any sport is fine. What do you track with? A watch, a scale, a food app, or none. "
+            "I will not assume a connection. Sport and the schedule come before the PAR-Q."
         ),
     },
     {
@@ -165,6 +167,30 @@ def _fill_group(state, group_id):
     state["answers"]["name"] = state["answers"].get("name", "")
 
 
+def _parse_sources(answers, folded):
+    phrases = (
+        ("apple health", "apple_health"),
+        ("apple watch", "apple_health"),
+        ("garmin", "garmin"),
+        ("oura", "oura"),
+        ("whoop", "whoop"),
+        ("fitbit", "fitbit"),
+        ("smart scale", "smart_scale"),
+        ("food app", "food_app"),
+        ("scale", "smart_scale"),
+        ("none", "none"),
+    )
+    found = []
+    for phrase, key in phrases:
+        if re.search(rf"\b{re.escape(phrase)}\b", folded) and key not in found:
+            found.append(key)
+    real = [key for key in found if key != "none"]
+    if real:
+        answers["sources"] = real
+    elif "none" in found:
+        answers["sources"] = "none"
+
+
 def _parse_explicit(state, folded):
     answers = state["answers"]
     if re.search(r"\ball no\b", folded):
@@ -212,6 +238,7 @@ def _parse_explicit(state, folded):
         answers["sport"] = "running"
     elif re.search(r"\blifting\b", folded):
         answers["sport"] = "lifting"
+    _parse_sources(answers, folded)
     named = re.search(r"\bcall me\s+([a-z]+)\b", folded)
     if named:
         answers["name"] = named.group(1)
@@ -227,6 +254,7 @@ def _remember_skip(state):
     elif asked == "training":
         for key in ("sport", "training_days", "minutes", "equipment", "experience", "injuries"):
             state["answers"].setdefault(key, None)
+        state["answers"].setdefault("sources", "none")
     elif asked == "par_q":
         state["par_q"] = {key: None for key, _question in PAR_Q}
 

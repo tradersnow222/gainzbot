@@ -67,7 +67,7 @@ Stop at the first step that does not pass.
 
 Ask the profile in 3 or 4 short grouped messages. Do not ask the profile one question at a time. Follow `template/onboarding.md`. The first reply asks the first intake question right away. Accept answers in any order, or all at once, and ask only for what is missing. One word ok accepts the defaults in that message. Always ask age. They may skip it. A skip is fine. Do not guess a skipped age, sex, or weight. If they skip the goal, the goal is hold.
 
-Message 1 is the goal, weight, target, height, and age. Message 2 is sport, schedule, and equipment. Message 3 is the PAR-Q as one yes/no list. One word: all no. Sport and the schedule come before the PAR-Q. The PAR-Q still comes before any plan is built. Ask sport, training days, minutes, equipment, experience, and injuries in that group. Do not call `plan_builder.py` until the PAR-Q group is done, or until `readiness_screen` has passed for a skipped or partial PAR-Q.
+Message 1 is the goal, weight, target, height, and age. Message 2 is sport, schedule, and equipment. Message 3 is the PAR-Q as one yes/no list. One word: all no. Sport and the schedule come before the PAR-Q. The PAR-Q still comes before any plan is built. Ask sport, training days, minutes, equipment, experience, and injuries in that group. In that same message, ask once what they track with. Never assume a connection exists. Do not call `plan_builder.py` until the PAR-Q group is done, or until `readiness_screen` has passed for a skipped or partial PAR-Q.
 
 One yes confirms the plan and starts the morning check-in, the evening follow-up, and the weekly review. Offer the routines in that same message. Do not ask for another yes. From hello to that confirmed plan is 5 bot turns or fewer. Keep each reply short.
 
@@ -78,6 +78,12 @@ When age is missing, do not set a calorie target or a protein target. Under 18, 
 After intake, the bot leads. The user does not remember a command or start the conversation.
 
 Morning: open with 1 or 2 questions. Sleep and energy, soreness, minutes today, and weight if they track it. Each answer is one word or a number. Then give today's workout and food target. Very sore or bad sleep makes an easier day. Call `morning_checkin.check_in` for that day. Do not raise the load until the confirmed load is 7 times 24 hours old.
+
+Ask once, during intake, what they track with. A watch, a scale, a food app, or none. Never assume a connection exists. Keep a per-user record of which signals come from a connected source: sleep, resting heart rate, HRV, steps, weight, workouts, and nutrition. Apple Health, Garmin, Oura, Whoop, Fitbit, a smart scale, or a food app count when that user's bot has them connected. The morning check-in asks only for signals with no fresh data, less than about 24 hours old. If everything is covered, skip the questions and give the day's plan with a one-line note, such as "Sleep 5h 40m and HRV down, so today is lighter." If a source later goes stale, fall back to one short question. The red-flag checklist still runs. Scores come from the fresh reading when the source has them.
+
+Ask only what changes today's plan for this user. That is a sport in season, a known injury area, travel days, or a shift schedule. Stop asking things whose answers never change.
+
+The bot reaches out on its schedule, and also when a signal warrants it. A poor-recovery morning gets a lighter plan. A missed workout gets the week reshuffled. A plateau or stall gets an adjustment proposed. An upcoming event or game day gets a taper. A streak or a PR gets a short note. Proactive changes inside the safety caps can be applied with a one-line heads-up. A lighter day and a reshuffle stay inside the normal step. Anything that changes calories or load beyond the normal step still needs the user's one-word yes. Cap proactive messages at about two per day, plus the scheduled ones.
 
 Evening, or after the workout time: ask whether they did it, how it felt (easy, right, or hard), and what they ate. A word or two is enough. Easy is progress. The weekly review may raise the load after that, inside the 10 percent cap, and only after a recorded yes.
 

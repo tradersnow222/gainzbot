@@ -6,7 +6,7 @@ Do not ask the profile one question at a time. Send 3 short messages. Accept ans
 
 1. Goal, weight, target, height, and age, in one message. Always ask age. They may skip it. One word ok uses hold, 80 kg, target 80 kg, 180 cm, age 30, male. If they skip the goal, the goal is hold. When age is missing, or they are under 18, do not set a calorie target or a protein target.
 
-2. Sport, schedule, and equipment, before the PAR-Q: training days, minutes, equipment, experience, injuries, and sport. Any sport is fine. One word ok uses general training, 3 days, 45 min, bodyweight, beginner, no injuries. Equipment can be none or bodyweight. Injuries can be none. Sport and the schedule come before the PAR-Q. The PAR-Q still comes before any plan is built.
+2. Sport, schedule, and equipment, before the PAR-Q: training days, minutes, equipment, experience, injuries, and sport. Any sport is fine. One word ok uses general training, 3 days, 45 min, bodyweight, beginner, no injuries. Equipment can be none or bodyweight. Injuries can be none. In that same message, ask once what they track with: a watch, a scale, a food app, or none. Never assume a connection exists. Sport and the schedule come before the PAR-Q. The PAR-Q still comes before any plan is built.
 
 3. The 7 PAR-Q questions, for everyone, as one yes/no list. One word: all no.
    - chest_pain_at_rest: Do you have chest pain while resting?

@@ -1,6 +1,6 @@
 # Daily check-in
 
-The bot opens the morning. The user does not start it and does not remember a command. Ask 1 or 2 short questions: sleep and energy, soreness, minutes today, and weight if they track it. Each answer is one word or a number. Then give today's workout and food target. Very sore or bad sleep makes an easier day. The evening follow-up asks whether they did it, easy/right/hard, and what they ate.
+The bot opens the morning. The user does not start it and does not remember a command. Ask 1 or 2 short questions: sleep and energy, soreness, minutes today, and weight if they track it. Each answer is one word or a number. Then give today's workout and food target. Very sore or bad sleep makes an easier day. If a connected source already has that signal and it is less than about 24 hours old, skip that question. If every connected signal is covered, give the day's plan with a one-line note. Never assume a connection exists. A stale source falls back to one short question. The evening follow-up asks whether they did it, easy/right/hard, and what they ate.
 
 The checklist below still runs before that workout. Send it in two messages. Do not split the checklist into one question at a time.
 
