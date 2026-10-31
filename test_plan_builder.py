@@ -1287,3 +1287,56 @@ def test_an_orphan_backup_cannot_replace_a_log_with_more_rows(tmp_path):
     assert kept_odd.data["meals"][0]["calories"] == 500
     assert len(kept_odd.data["meals"]) == 1
     assert (tmp_path / "odd.json.bak").read_bytes() == shaped_bytes
+
+
+def test_an_old_running_injury_gets_easy_and_long_runs_and_a_fresh_one_does_not():
+    from datetime import date
+
+    days = ["2026-11-02", "2026-11-04", "2026-11-06", "2026-11-07"]
+    check_in = passing_check_in()
+    fresh = PlanBuilder().propose(
+        profile(
+            minutes=40,
+            equipment="dumbbells",
+            experience="beginner",
+            sport="running",
+            injuries="ankle",
+            days=days,
+            event={"name": "half marathon", "month": 3},
+        ),
+        check_in,
+    )
+    assert fresh["ok"] is True
+    for row in fresh["sessions"]:
+        assert "run" not in row["name"].lower()
+        for item in row["exercises"]:
+            assert "run" not in item["name"].lower()
+    old = PlanBuilder().propose(
+        profile(
+            minutes=40,
+            equipment="dumbbells",
+            experience="beginner",
+            sport="running",
+            injuries="ankle",
+            injury_old=True,
+            days=days,
+            event={"name": "half marathon", "month": 3},
+        ),
+        check_in,
+    )
+    assert old["ok"] is True
+    names = [row["name"] for row in old["sessions"]]
+    assert names.count("Easy run") == 1
+    assert names.count("Long run") == 1
+    long_at = names.index("Long run")
+    assert date.fromisoformat(old["sessions"][long_at]["date"]).weekday() == 5
+    assert names[long_at - 1] == "Upper"
+    heavy = ("squat", "lunge", "deadlift", "leg press", "romanian")
+    upper = " ".join(item["name"].lower() for item in old["sessions"][long_at - 1]["exercises"])
+    assert not any(word in upper for word in heavy)
+    easy = old["sessions"][names.index("Easy run")]["exercises"][0]
+    long = old["sessions"][long_at]["exercises"][0]
+    assert easy["reps"].endswith(" min")
+    assert long["reps"].endswith(" min")
+    assert int(long["reps"].split()[0]) >= int(easy["reps"].split()[0])
+    assert int(long["reps"].split()[0]) <= 40

@@ -602,6 +602,8 @@ def _missing_keys(state, group):
     for key in group["asks"]:
         if key in _OPTIONAL:
             continue
+        if state.get("from_profile_payload") and key == "sport":
+            continue
         if key not in state["answers"]:
             missing.append(key)
     return missing
@@ -2244,8 +2246,7 @@ def _take_injury_answer(state, reply):
     state["error"] = None
 
 
-def _injury_clause(injuries):
-    """One plain sentence. An explicit no does not add it."""
+def _injury_area(injuries):
     if not isinstance(injuries, str):
         return ""
     text = injuries.strip()
@@ -2253,11 +2254,23 @@ def _injury_clause(injuries):
         return ""
     parts = [part.strip() for part in text.split(",") if part.strip()]
     if len(parts) <= 1:
-        area = parts[0] if parts else text
-    elif len(parts) == 2:
-        area = f"{parts[0]} and {parts[1]}"
-    else:
-        area = ", ".join(parts[:-1]) + ", and " + parts[-1]
+        return parts[0] if parts else text
+    if len(parts) == 2:
+        return f"{parts[0]} and {parts[1]}"
+    return ", ".join(parts[:-1]) + ", and " + parts[-1]
+
+
+def _injury_clause(injuries, old=False):
+    """One plain sentence. An explicit no does not add it.
+
+    An old, healed injury comes back gradually. Anything else stays off
+    until a doctor or a physio clears the load.
+    """
+    area = _injury_area(injuries)
+    if not area:
+        return ""
+    if old:
+        return f"Your {area} is an old injury, so the load on it comes back gradually. "
     return (
         f"I kept weight off your {area}. "
         "Check with your doctor or a physio before loading it. "
@@ -2300,6 +2313,8 @@ def submit_injury_when(state, choice):
         label = state.get("pending_injury") or ""
         if label:
             state["answers"]["injuries"] = label
+        if state["answers"].get("injuries"):
+            state["answers"]["injury_old"] = True
         state.pop("pending_injury", None)
         state["awaiting"] = None
         state["error"] = None
@@ -2538,6 +2553,7 @@ def _store_old_from_text(state, reply):
         label = state.get("pending_injury") or ""
     if label:
         state["answers"]["injuries"] = label
+        state["answers"]["injury_old"] = True
     state.pop("pending_injury", None)
     state["awaiting"] = None
     state["label_unclear"] = 0
@@ -2825,10 +2841,184 @@ def _consume_pending(state, reply, labels):
     return True
 
 
-def apply_reply(state, reply, labels=None):
+_GAP_WORDS = {
+    "goal": "your goal (cut, lose, gain, or hold)",
+    "weight": "your weight in kg",
+    "height": "your height in cm",
+    "age": "your age as a number",
+    "sex": "sex",
+    "days": "which days you train",
+    "minutes": "session minutes",
+    "equipment": "equipment",
+    "experience": "your level (beginner, intermediate, or advanced)",
+}
+
+
+def _payload_gaps(state):
+    """Required profile fields still empty. Sport, name, and food do not block."""
+    answers = state.get("answers") if isinstance(state.get("answers"), dict) else {}
+    missing = []
+    for key in ("goal", "weight", "height", "age", "sex"):
+        if answers.get(key) in (None, ""):
+            missing.append(key)
+    if not answers.get("days"):
+        missing.append("days")
+    for key in ("minutes", "equipment", "experience"):
+        if answers.get(key) in (None, ""):
+            missing.append(key)
+    return missing
+
+
+def _combined_profile_ask(gaps):
+    parts = [_GAP_WORDS[key] for key in gaps if key in _GAP_WORDS]
+    if len(parts) == 1:
+        return f"Still need {parts[0]}."
+    if len(parts) == 2:
+        return f"Still need {parts[0]} and {parts[1]}."
+    return "Still need " + ", ".join(parts[:-1]) + ", and " + parts[-1] + "."
+
+
+def _clear_resolved_asks(state):
+    answers = state.get("answers") if isinstance(state.get("answers"), dict) else {}
+    error = state.get("error")
+    if error == _AGE_ASK and answers.get("age") not in (None, ""):
+        state["error"] = None
+    if error in {_WEIGHT_ASK, _CURRENT_WEIGHT_ASK} and answers.get("weight") not in (None, ""):
+        state["error"] = None
+        if state.get("awaiting") == "weight":
+            state["awaiting"] = None
+    if error == _TARGET_ASK and answers.get("target") not in (None, ""):
+        state["error"] = None
+        if state.get("awaiting") == "target":
+            state["awaiting"] = None
+    if (
+        isinstance(error, str)
+        and error.startswith("That target looks far")
+        and answers.get("target") not in (None, "")
+    ):
+        state["error"] = None
+        state["awaiting"] = None
+        state.pop("target_far_once", None)
+
+
+def _release_age_phase_if_filled(state):
+    age = _number(state["answers"].get("age"))
+    if age is None:
+        return
+    if age < 18:
+        _apply_age_readiness(state)
+        if state.get("error"):
+            state["phase"] = "blocked"
+            return
+    if state.get("phase") == "age":
+        state["phase"] = "intake"
+        state["need_age"] = False
+        if state.get("error") == _AGE_ASK:
+            state["error"] = None
+
+
+def _merge_profile_payload(state, payload):
+    """Store every valid profile field. Invalid fields are dropped, not asked as a group."""
+    from profile_payload import accept_profile
+
+    fields, rejected = accept_profile(payload)
+    state["from_profile_payload"] = True
+    state["profile_rejected"] = list(rejected)
+    day_indexes = fields.pop("day_indexes", None)
+    for key, value in fields.items():
+        state["answers"][key] = value
+    if day_indexes:
+        state["answers"]["training_days"] = str(len(day_indexes))
+        state["answers"]["days"] = _dates(len(day_indexes), day_indexes)
+    if state["answers"].get("age") not in (None, ""):
+        state["need_age"] = False
+    _release_age_phase_if_filled(state)
+    _clear_resolved_asks(state)
+
+
+def _finish_profile(state, profile):
+    if not isinstance(profile, dict):
+        return
+    if hold_is_active() or state.get("phase") == "symptom":
+        return
+    if state.get("safety_followup"):
+        return
+    _merge_profile_payload(state, profile)
+
+
+def _clock_hhmm(value):
+    if not isinstance(value, str):
+        return None
+    match = re.fullmatch(r"(\d{1,2}):(\d{2})", value.strip())
+    if match is None:
+        return None
+    hour = int(match.group(1))
+    minute = int(match.group(2))
+    if hour > 23 or minute > 59:
+        return None
+    return f"{hour:02d}:{minute:02d}"
+
+
+def _overlay_routine_times(state, times):
+    if not isinstance(times, dict):
+        return
+    current = dict(state.get("times") or {})
+    for key, value in times.items():
+        if key in {"daily_checkin", "evening_followup"}:
+            clock = _clock_hhmm(value)
+            if clock:
+                current[key] = clock
+        elif key == "weekly_review" and isinstance(value, str) and value.strip():
+            current[key] = " ".join(value.split())
+    state["times"] = current
+
+
+def _plan_answer(state):
+    """What the built week contains. The question text is not read."""
+    sessions = state.get("sessions") or []
+    names = [row.get("name") for row in sessions if isinstance(row, dict)]
+    if "Easy run" in names or "Long run" in names:
+        return "The week includes strength and running: easy runs and a long run."
+    return "This week is strength sessions."
+
+
+def _structured_confirm_allowed(state):
+    if hold_is_active() or state.get("phase") == "symptom":
+        return False
+    if state.get("safety_followup") or state.get("cleared_follow_up"):
+        return False
+    pending = _read_safety()
+    if isinstance(pending, dict) and pending.get("kind") in {"follow_up", "age_check", "hold"}:
+        return False
+    if _first_missing(state) is not None:
+        return False
+    return True
+
+
+def _apply_structured_confirm(state, confirm, token):
+    """confirm true accepts the plan. A question is answered from the week."""
+    if not isinstance(confirm, dict) or confirm.get("confirm") is not True:
+        return token
+    if not _structured_confirm_allowed(state):
+        return token
+    if token is None:
+        token = _CONFIRM_PHASE.set(True)
+    state["phase"] = "confirm"
+    _confirm(state, "yes")
+    if not state.get("confirmed"):
+        return token
+    _overlay_routine_times(state, confirm.get("routine_times"))
+    question = confirm.get("question")
+    if isinstance(question, str) and question.strip():
+        state["confirm_note"] = _plan_answer(state)
+    return token
+
+
+def apply_reply(state, reply, labels=None, profile=None):
     """One user reply. Hard-stop first, then host labels, then a structured slot.
 
     Labels are the argument. They are never read out of reply.
+    A profile payload is the argument. It is never read out of reply.
     A pending follow-up, age check, or hold blocks confirm.
     """
     state["error"] = None
@@ -2845,6 +3035,8 @@ def apply_reply(state, reply, labels=None):
         return
     if state.get("awaiting") == "injury_when":
         _take_injury_choice(state, text, labels)
+        if state.get("phase") != "symptom":
+            _finish_profile(state, profile)
         return
     if (
         state.get("phase") == "confirm"
@@ -2859,6 +3051,13 @@ def apply_reply(state, reply, labels=None):
         _handle_symptom(state, text)
         return
     if phase == "age":
+        if labels is not None and _apply_label_decision(state, text, labels):
+            return
+        _finish_profile(state, profile)
+        if state.get("phase") == "blocked":
+            return
+        if _number(state["answers"].get("age")) is not None and state.get("phase") != "age":
+            return
         _handle_age(state, text, labels)
         return
     if phase == "blocked":
@@ -2866,18 +3065,23 @@ def apply_reply(state, reply, labels=None):
         return
     if labels is not None:
         if _apply_label_decision(state, text, labels):
+            if state.get("phase") != "age":
+                _finish_profile(state, profile)
             return
         if _exact_token(state, text):
             _take_exact(state, text)
         elif state.get("phase") == "confirm":
             _review_confirm_edit(state, text)
+        _finish_profile(state, profile)
         return
     if _exact_token(state, text):
         _take_exact(state, text)
+        _finish_profile(state, profile)
         return
     if _profile_facts_only(text) and not state.get("safety_followup"):
         _parse_profile_fields(state, text)
         state["label_unclear"] = 0
+        _finish_profile(state, profile)
         return
     from safety_pending import typed_age
 
@@ -3430,6 +3634,13 @@ def _profile(state):
         profile["weight_kg"] = weight
         profile["age"] = age
         profile["height_cm"] = height
+    if answers.get("injury_old") is True:
+        profile["injury_old"] = True
+    event = answers.get("event")
+    if isinstance(event, dict):
+        profile["event"] = {
+            key: event[key] for key in ("name", "month", "date") if key in event
+        }
     return profile
 
 
@@ -3569,14 +3780,20 @@ def _proposal(state):
     equipment = answers.get("equipment", "bodyweight")
     scheduled = answers.get("days") or []
     start = f"The first session is {min(scheduled)}. " if scheduled else ""
-    injury = _injury_clause(answers.get("injuries"))
+    injury = _injury_clause(answers.get("injuries"), old=answers.get("injury_old") is True)
     age = _number(answers.get("age"))
     lead = f"Plan for age {age}. " if age is not None else ""
+    from plan_builder import running_week
+
+    sport_line = ""
+    if running_week(_profile(state)):
+        sport_line = "The week includes strength and running: easy runs and a long run. "
     return (
         f"{lead}"
         f"{days} days, {minutes} min, {goal}, {equipment}. "
         f"{start}"
         f"{injury}"
+        f"{sport_line}"
         "One yes confirms the plan and starts the morning check-in at 07:00, "
         "the evening follow-up at 20:00, and the weekly review Sunday at 18:00. "
         "Routines, each is opt-in. "
@@ -3631,10 +3848,16 @@ def _confirmed_line(state):
         parts.append(f"evening at {times.get('evening_followup', '20:00')}")
     if "weekly_review" in enabled:
         parts.append(f"weekly {times.get('weekly_review', 'Sun 18:00')}")
+    note = state.get("confirm_note")
+    extra = note.strip() if isinstance(note, str) and note.strip() else ""
     if not parts:
-        return "Confirmed."
-    line = ", ".join(parts)
-    return "Confirmed. " + line[0].upper() + line[1:] + "."
+        line = "Confirmed."
+    else:
+        listed = ", ".join(parts)
+        line = "Confirmed. " + listed[0].upper() + listed[1:] + "."
+    if extra:
+        return f"{line} {extra}"
+    return line
 
 
 def speak(state):
@@ -3667,6 +3890,19 @@ def speak(state):
             return state["error"]
         state["error"] = _AGE_ASK
         return _AGE_ASK
+    if state.get("from_profile_payload"):
+        gaps = _payload_gaps(state)
+        if gaps:
+            if gaps == ["age"]:
+                state["phase"] = "age"
+                state["need_age"] = True
+                state["asked"] = "goal"
+                state["error"] = _AGE_ASK
+                return _AGE_ASK
+            state["phase"] = "intake"
+            goal_keys = {"goal", "weight", "height", "age", "sex"}
+            state["asked"] = "goal" if any(key in goal_keys for key in gaps) else "training"
+            return _combined_profile_ask(gaps)
     missing = _first_missing(state)
     if missing is None and state.get("checks_again"):
         _apply_age_readiness(state)
@@ -3744,22 +3980,24 @@ def open_chat():
 
 
 def _host_reply(reply):
-    """A string, an int age, (text, labels), or {text, labels, age}."""
+    """A string, an int age, (text, labels), or {text, labels, age, profile, confirm}."""
     if isinstance(reply, bool):
-        return "", None, None
+        return "", None, None, None, None
     if isinstance(reply, int):
-        return str(reply), None, reply
+        return str(reply), None, reply, None, None
     if isinstance(reply, tuple) and len(reply) == 2:
         text, labels = reply
-        return text if isinstance(text, str) else "", labels, None
+        return text if isinstance(text, str) else "", labels, None, None, None
     if isinstance(reply, dict) and "text" in reply:
         age = reply.get("age")
         if isinstance(age, bool):
             age = None
-        return reply.get("text") or "", reply.get("labels"), age
+        profile = reply.get("profile") if isinstance(reply.get("profile"), dict) else None
+        confirm = reply.get("confirm") if isinstance(reply.get("confirm"), dict) else None
+        return reply.get("text") or "", reply.get("labels"), age, profile, confirm
     if isinstance(reply, str):
-        return reply, None, None
-    return "", None, None
+        return reply, None, None, None, None
+    return "", None, None, None, None
 
 
 def run_chat(replies):
@@ -3778,7 +4016,7 @@ def run_chat(replies):
     state = _state_for_attempt()
     bots = []
     for reply in replies:
-        text, labels, age = _host_reply(reply)
+        text, labels, age, profile, confirm = _host_reply(reply)
         token = None
         if state.get("phase") == "confirm":
             token = _CONFIRM_PHASE.set(True)
@@ -3800,8 +4038,11 @@ def run_chat(replies):
                 and state.get("phase") in {"age", "blocked"}
                 and labels is None
                 and not follow_up
+                and not hard_stop(text)
             ):
                 submit_age(state, host_age)
+                if isinstance(profile, dict) and state.get("phase") != "symptom":
+                    _merge_profile_payload(state, profile)
             elif (
                 state.get("asked") == "par_q"
                 and labels is None
@@ -3810,8 +4051,11 @@ def run_chat(replies):
                 and _par_q_all_no_button(text)
             ):
                 submit_par_q(state, "all_no")
+                if isinstance(profile, dict):
+                    _merge_profile_payload(state, profile)
             else:
-                apply_reply(state, text, labels)
+                apply_reply(state, text, labels, profile)
+            token = _apply_structured_confirm(state, confirm, token)
             bots.append(speak(state))
         finally:
             if token is not None:

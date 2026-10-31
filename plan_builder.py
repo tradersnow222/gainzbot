@@ -518,9 +518,133 @@ def _exercise_problem(sessions, user=None):
     return None
 
 
-def _exercises(equipment, experience, minutes, sport, injuries, index, day_count):
+def _wants_running(sport, event):
+    text = sport.lower() if isinstance(sport, str) else ""
+    if "run" in text:
+        return True
+    if not isinstance(event, dict):
+        return False
+    name = event.get("name")
+    name = name.lower() if isinstance(name, str) else ""
+    return "run" in name or "marathon" in name
+
+
+def _weeks_until(event, today=None):
+    """Weeks until a structured event. None when the event has no date."""
+    if not isinstance(event, dict):
+        return None
+    current = today or date.today()
+    raw = event.get("date")
+    if isinstance(raw, str):
+        try:
+            when = date.fromisoformat(raw.strip())
+        except ValueError:
+            when = None
+        if when is not None:
+            return max(0, (when - current).days / 7.0)
+    month = event.get("month")
+    if isinstance(month, bool) or not isinstance(month, int) or not 1 <= month <= 12:
+        return None
+    year = current.year
+    if (year, month) < (current.year, current.month):
+        year += 1
+    when = date(year, month, 1)
+    if when < current:
+        when = date(year + 1, month, 1)
+    return max(0, (when - current).days / 7.0)
+
+
+def _run_lengths(experience, minutes, weeks):
+    """Easy and long run minutes that fit inside the session, warmup included."""
+    room = int(minutes) - _WARMUP_MINUTES
+    if room < 1:
+        room = max(1, int(minutes))
+    near = weeks is not None and weeks <= 8
+    beginner = experience not in {"intermediate", "advanced"}
+    if beginner:
+        easy, long = (min(30, room), room) if near else (min(25, room), min(30, room))
+    else:
+        easy, long = (min(35, room), room) if near else (min(30, room), min(40, room))
+    if room >= 10:
+        easy = max(10, min(easy, room))
+    else:
+        easy = min(easy, room)
+    long = max(easy, min(long, room))
+    return int(easy), int(long)
+
+
+def _run_roles(days):
+    """Long run on Saturday, else the last day. No heavy legs the session before it."""
+    long_i = next((index for index, day in enumerate(days) if day.weekday() == 5), len(days) - 1)
+    roles = ["strength"] * len(days)
+    roles[long_i] = "long"
+    if long_i > 0:
+        roles[long_i - 1] = "upper"
+    easy_at = next((index for index, role in enumerate(roles) if role == "strength"), None)
+    if easy_at is not None:
+        roles[easy_at] = "easy"
+    return roles
+
+
+def _run_block(name, run_minutes):
+    return [{
+        "name": name,
+        "sets": 1,
+        "reps": f"{int(run_minutes)} min",
+        "rest": "0 sec",
+        "effort": "Easy, conversational",
+    }]
+
+
+def running_week(profile, today=None):
+    """Easy run, long run, and strength roles, or None for a normal strength week.
+
+    A running sport or a running event schedules those sessions only when an
+    event is on record or the injury is already marked old. A fresh ankle,
+    calf, achilles, or shin keeps the week off running.
+    """
+    if not isinstance(profile, dict):
+        return None
+    sport = profile.get("sport") if isinstance(profile.get("sport"), str) else ""
+    event = profile.get("event") if isinstance(profile.get("event"), dict) else None
+    injuries = profile.get("injuries") if isinstance(profile.get("injuries"), str) else ""
+    injury_old = profile.get("injury_old") is True
+    if not _wants_running(sport, event):
+        return None
+    if _no_running(_injury_text(injuries)) and not injury_old:
+        return None
+    if event is None and not injury_old:
+        return None
+    parsed = []
+    for item in profile.get("days") or []:
+        if isinstance(item, date):
+            parsed.append(item)
+            continue
+        if not isinstance(item, str):
+            return None
+        try:
+            parsed.append(date.fromisoformat(item.strip()[:10]))
+        except ValueError:
+            return None
+    if not parsed:
+        return None
+    try:
+        minutes = float(profile.get("minutes"))
+    except (TypeError, ValueError):
+        return None
+    if not math.isfinite(minutes) or minutes <= 0:
+        return None
+    experience = profile.get("experience") if isinstance(profile.get("experience"), str) else "beginner"
+    easy, long = _run_lengths(experience.strip().lower(), minutes, _weeks_until(event, today))
+    return {"roles": _run_roles(parsed), "easy": easy, "long": long}
+
+
+def _exercises(
+    equipment, experience, minutes, sport, injuries, index, day_count,
+    include_sport=True, forced_label=None,
+):
     """Deterministic sets, reps, rest, and an effort cue for one session."""
-    label = _split_name(day_count, index)
+    label = forced_label or _split_name(day_count, index)
     gear = _gear(equipment)
     source = _GYM.get(label, _GYM["Full body"])
     if gear == "dumbbell":
@@ -555,7 +679,7 @@ def _exercises(equipment, experience, minutes, sport, injuries, index, day_count
             "rest": rest,
             "effort": effort,
         })
-    sport_row = _sport_exercise(sport)
+    sport_row = _sport_exercise(sport) if include_sport else None
     if sport_row is not None and _no_running(_injury_text(injuries)) and "run" in sport_row["name"].lower():
         sport_row = None
     if sport_row is not None:
@@ -824,11 +948,36 @@ class PlanBuilder:
         if injuries.strip().lower() not in _NO_INJURY:
             note = "Do not add load."
         shown_minutes = minutes if minutes != int(minutes) else int(minutes)
+        week = running_week({
+            "sport": sport,
+            "injuries": injuries,
+            "injury_old": profile.get("injury_old") is True,
+            "event": profile.get("event") if isinstance(profile.get("event"), dict) else None,
+            "experience": experience,
+            "minutes": minutes,
+            "days": [day.isoformat() for day in days],
+        })
         sessions = []
         for index, day in enumerate(days):
-            label, exercises = _exercises(
-                equipment, experience, minutes, sport, injuries, index, len(days),
-            )
+            role = week["roles"][index] if week else None
+            if role == "easy":
+                label, exercises = "Easy run", _run_block("Easy run", week["easy"])
+            elif role == "long":
+                label, exercises = "Long run", _run_block("Long run", week["long"])
+            elif role == "upper":
+                label, exercises = _exercises(
+                    equipment, experience, minutes, sport, injuries, index, len(days),
+                    include_sport=False, forced_label="Upper",
+                )
+            elif role == "strength":
+                label, exercises = _exercises(
+                    equipment, experience, minutes, sport, injuries, index, len(days),
+                    include_sport=False,
+                )
+            else:
+                label, exercises = _exercises(
+                    equipment, experience, minutes, sport, injuries, index, len(days),
+                )
             row = {
                 "date": day.isoformat(),
                 "name": label,
