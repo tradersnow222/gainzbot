@@ -4,6 +4,11 @@
   "instructions_file": "BOT_PROMPT.md",
   "getting_started": "getting-started.md",
   "memory": "profile.md",
+  "repo_url": "https://github.com/tradersnow222/gainzbot",
+  "release_tag": "v0.1.0",
+  "repo_path": "/workspace/gainzbot",
+  "used_list_path": "/workspace/gainzbot/data/used_confirmations.json",
+  "log_path": "/workspace/gainzbot/data/log.json",
   "starter_prompts": [
     "What should I do today?",
     "Run my morning check-in.",
@@ -21,5 +26,26 @@
     "set_logger",
     "wearable_import",
     "trend_review"
-  ]
+  ],
+  "skill_files": {
+    "red_flag_check": "skills/red_flag_check.md",
+    "readiness_screen": "skills/readiness_screen.md",
+    "plan_check": "skills/plan_check.md",
+    "record_confirmation": "skills/record_confirmation.md",
+    "dashboard": "skills/dashboard.md",
+    "morning_checkin": "skills/morning_checkin.md",
+    "photo_food_log": "skills/photo_food_log.md",
+    "set_logger": "skills/set_logger.md",
+    "wearable_import": "skills/wearable_import.md",
+    "trend_review": "skills/trend_review.md"
+  },
+  "guides": {
+    "saved_logs": "saved-logs.md",
+    "first_plan": "first-plan.md",
+    "onboarding": "onboarding.md",
+    "daily_checkin": "daily-checkin.md",
+    "routines": "routines.md",
+    "dashboard": "dashboard.md",
+    "usual_meals": "usual-meals.md"
+  }
 }

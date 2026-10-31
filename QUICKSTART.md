@@ -2,7 +2,25 @@
 
 From a fresh checkout to a Grok Bot you can message in under 5 minutes.
 
-## 1. Check the scripts
+## 1. Put the repo on the bot's computer
+
+A fresh Grok Bot cannot see a laptop checkout. On the bot's own computer, clone the public repo to a fixed path:
+
+```bash
+git clone --depth 1 --branch v0.1.0 https://github.com/tradersnow222/gainzbot /workspace/gainzbot
+```
+
+That tag is v0.1.0. If the tag is missing, stop. Do not fall back to main.
+
+From that folder, check that the scripts run:
+
+```bash
+python3 -c "import red_flag_check, readiness_screen, plan_check, record_confirmation"
+```
+
+If the clone or the import fails, stop. Every later call uses `/workspace/gainzbot`. Food logs also need `used_path="/workspace/gainzbot/data/used_confirmations.json"`.
+
+## 2. Check the scripts
 
 You need Python 3.11 or newer. From this folder, the test suite is:
 
@@ -10,7 +28,7 @@ You need Python 3.11 or newer. From this folder, the test suite is:
 pytest -v
 ```
 
-## 2. Create the bot
+## 3. Create the bot
 
 In Grok, make a new bot and name it Gainzbot.
 
@@ -18,11 +36,11 @@ Paste `BOT_PROMPT.md` into the bot instructions. That file is the coach. It call
 
 Copy the starter prompts from `template/template.json`.
 
-Paste `template/getting-started.md` in as the getting-started skill. The first chat asks one question at a time.
+Paste `template/getting-started.md` in as the getting-started skill. The first chat follows `template/onboarding.md` and does not ask the profile one question at a time.
 
 Leave `template/profile.md` as the place the bot writes their sport, goal, and schedule. Do not put a real name or health history in the repo.
 
-## 3. Confirm one adult plan
+## 4. Confirm one adult plan
 
 Paste this in the repo folder with `python3`:
 
@@ -61,7 +79,7 @@ print(record.confirmed)
 
 `True` prints only when the checklist passed, the plan passed `plan_check`, and the yes covers that exact plan.
 
-## 4. Message the bot
+## 5. Message the bot
 
 Send "What should I do today?" The bot leads with today. It will not change a load or a calorie target until you give a recorded yes.
 
