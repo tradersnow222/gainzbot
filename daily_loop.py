@@ -118,29 +118,50 @@ def _ate_text(text):
     return text
 
 
+_FOOD_DOUBT = re.compile(r"\b(?:no idea|dont know|not sure|no clue|idk)\b")
+
+
+def _food_unknown(text):
+    """True when the reply says they do not know what they ate."""
+    return _FOOD_DOUBT.search(text) is not None and re.search(r"\bwhat i ate\b", text) is not None
+
+
 def parse_evening(reply):
-    """Workout words and food are separate. 'ate' starts the food."""
+    """Workout words and food are separate. 'ate' starts the food.
+
+    'no idea what I ate' leaves the food unknown. A reply that only names
+    food leaves the workout unknown instead of calling it a miss.
+    """
     text = _fold(reply)
-    workout = text
+    unknown_food = _food_unknown(text)
+    scan = text
+    if unknown_food:
+        scan = _FOOD_DOUBT.sub(" ", text)
+        scan = re.sub(r"\bwhat i ate\b", " ", scan)
+    workout = scan
     food = None
-    ate_at = re.search(r"\bate\b", text)
+    ate_at = re.search(r"\bate\b", scan)
     if ate_at:
-        workout = text[:ate_at.start()]
-        food = text[ate_at.end():]
-    elif "," in text:
-        workout, food = text.split(",", 1)
+        workout = scan[:ate_at.start()]
+        food = scan[ate_at.end():]
+    elif "," in scan:
+        workout, food = scan.split(",", 1)
     if re.search(r"\bdid\s+not\b", workout) or re.search(r"\bdidnt\b", workout):
         did_it = False
     elif re.search(r"\bno\b", workout):
         did_it = False
+    elif re.search(r"\b(?:yes|yep|yeah|did)\b", workout):
+        did_it = True
+    elif (food is not None and _ate_text(food).strip()) or unknown_food:
+        did_it = None
     else:
-        did_it = bool(re.search(r"\b(?:yes|yep|yeah|did)\b", workout))
+        did_it = False
     felt = None
     for word in ("easy", "right", "hard"):
         if re.search(rf"\b{word}\b", workout):
             felt = word
             break
-    ate = _ate_text(food if food is not None else text)
+    ate = None if unknown_food else _ate_text(food if food is not None else text)
     return {"did_it": did_it, "felt": felt, "ate": ate}
 
 
@@ -400,11 +421,16 @@ class DailyLoop:
             self.phase[day] = "paused"
             return paused
         parsed = parse_evening(reply)
+        if parsed.get("ate") == "" and self.notes[day].get("ate"):
+            parsed = {key: value for key, value in parsed.items() if key != "ate"}
         self.notes[day].update(parsed)
+        if parsed.get("did_it") is None:
+            self.phase[day] = "evening"
+            return "Did you do the workout?"
         if parsed.get("felt") == "easy":
             self.felt_easy += 1
         self.phase[day] = "done"
-        if parsed.get("did_it"):
+        if parsed["did_it"]:
             return "Logged. See you in the morning."
         return "Logged the miss. See you in the morning."
 

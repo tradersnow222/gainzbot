@@ -213,6 +213,8 @@ def _polarity(clause):
 _CLEAN_ALL_NO = {"all no", "no to all", "none", "nope all no"}
 _ALL_NO_FILLERS = {"honestly", "thanks", "lol"}
 _THUMB = re.compile("👍[\U0001F3FB-\U0001F3FF]?")
+# Sad or doubtful faces. A smile such as :) or :-) is not one of these.
+_SAD_FACE = re.compile(r"[:;]['’]?-?[(/\\|]")
 
 
 def _all_no_tokens(text):
@@ -246,23 +248,24 @@ def _all_no_attempt(tokens):
 
 
 def _asks_instead(text):
-    """A question mark or a frown is unclear before any punctuation is removed."""
-    return "?" in text or "？" in text or ":(" in text
+    """A question mark or a sad or doubtful face is unclear before punctuation is removed."""
+    return "?" in text or "？" in text or _SAD_FACE.search(text) is not None
 
 
 def bare_all_no(text):
     """True only when the whole reply is an all-no phrase.
 
     Fillers, a thumb emoji, punctuation, and whitespace may sit beside it.
-    A question mark, a full-width question mark, or ':(' is unclear even
-    when the words underneath are an all-no phrase.
+    A question mark, a full-width question mark, or a sad or doubtful face
+    such as ':(' or ':-(' is unclear even when the words underneath are
+    an all-no phrase.
     None means this is not an all-no reply. False means the reply tried to
     say all no and also said something else, so nothing is stored as no.
     """
     if not isinstance(text, str):
         return None
     if _asks_instead(text):
-        asked = text.replace("?", " ").replace("？", " ").replace(":(", " ")
+        asked = _SAD_FACE.sub(" ", text.replace("?", " ").replace("？", " "))
         asked_tokens = _all_no_tokens(asked)
         if asked_tokens is None:
             return None

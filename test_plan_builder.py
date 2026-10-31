@@ -944,6 +944,46 @@ def test_a_crashed_save_is_recovered_on_the_next_load(tmp_path):
     assert (tmp_path / "log.json.bak").read_bytes() == b'{"confirmations": []}\n'
 
 
+def test_a_successful_save_removes_the_leftover_backup(tmp_path):
+    """A crash can leave log.json.bak after the week has already landed.
+
+    A plain read keeps that backup. The next successful save removes it.
+    """
+    from log_store import LogStore
+
+    builder = PlanBuilder()
+    check_in = passing_check_in()
+    built = builder.propose(profile(goal="cut"), check_in)
+    path = tmp_path / "week.json"
+    yes = recorded(built["confirm"])
+    assert _save(builder, built, yes, path, check_in=check_in)["saved"] is True
+    log_path = tmp_path / "log.json"
+    saved = log_path.read_bytes()
+    week = path.read_bytes()
+    leftover = b'{"confirmations": []}\n'
+    (tmp_path / "log.json.bak").write_bytes(leftover)
+    kept = LogStore(log_path)
+    assert kept.data["confirmations"]
+    assert (tmp_path / "log.json.bak").read_bytes() == leftover
+    refused = builder.save(built["plan"], None, path, built["sessions"], check_in_result=check_in)
+    assert refused["saved"] is False
+    assert (tmp_path / "log.json.bak").read_bytes() == leftover
+    again = _save(builder, built, yes, path, check_in=check_in)
+    assert again["saved"] is True
+    assert not (tmp_path / "log.json.bak").exists()
+    assert log_path.read_bytes() == saved
+    assert path.read_bytes() == week
+    path.unlink()
+    (tmp_path / "log.json.bak").write_bytes(leftover)
+    assert LogStore(log_path).data["confirmations"]
+    assert (tmp_path / "log.json.bak").exists()
+    restored = _save(builder, built, yes, path, check_in=check_in)
+    assert restored["saved"] is True
+    assert path.exists()
+    assert not (tmp_path / "log.json.bak").exists()
+    assert log_path.read_bytes() == saved
+
+
 def test_advanced_work_fits_in_the_named_minutes():
     built = PlanBuilder().propose(
         profile(experience="advanced", minutes=61, equipment="full gym", sport="lifting"),

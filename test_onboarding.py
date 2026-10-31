@@ -243,6 +243,14 @@ def test_all_no_counts_only_when_the_whole_reply_is_that_phrase():
         "none?",
         "all no？",
         "all no :(",
+        "all no :-(",
+        "all no :/",
+        "all no :'(",
+        "all no :-/",
+        "all no :\\",
+        "all no :|",
+        "all no ;-(",
+        "all no :'-(",
     )
     for reply in unclear:
         state, bots = run_chat(body + [reply, "yes"])
@@ -285,6 +293,7 @@ def test_all_no_counts_only_when_the_whole_reply_is_that_phrase():
         "nope all no",
         "honestly all no",
         "all no :)",
+        "all no :-)",
     )
     for reply in accepted:
         state, _bots = run_chat(body + [reply, "yes"])
