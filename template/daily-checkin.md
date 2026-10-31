@@ -36,6 +36,11 @@ Call `red_flag_check.scan_check_in` before `readiness_screen`.
 
 ## Message 2
 
-Ask for the yes. Call `record_confirmation` with the exact plan. Do not change a load or a calorie target until that yes covers it.
+Do these in this order. The yes waits until the proposal exists.
 
-Then call `morning_checkin.check_in` with the 4 scores.
+1. Call `readiness_screen.ReadinessScreen.screen_intake`. Do not train until it passes.
+2. Call `morning_checkin.check_in` with the 4 scores.
+3. Call `plan_check.PlanValidator.validate_plan` with the passing check-in. If it does not pass, stop. Do not plan. Do not change anything.
+4. Show the proposal.
+5. Ask for the yes.
+6. Call `record_confirmation.ConfirmationRecorder.record` on that exact proposal. Do not change a load or a calorie target until that yes covers it.

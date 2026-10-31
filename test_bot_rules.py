@@ -65,6 +65,17 @@ def test_the_daily_check_in_is_two_messages():
     assert "message 2" in lowered
     assert "4 scores" in lowered
     assert lowered.index("scan_check_in") < lowered.index("readiness_screen")
+    message2 = lowered.split("## message 2", 1)[1]
+    order = [
+        "readiness_screen",
+        "morning_checkin.check_in",
+        "plan_check",
+        "show the proposal",
+        "ask for the yes",
+        "record_confirmation",
+    ]
+    positions = [message2.index(step) for step in order]
+    assert positions == sorted(positions)
     assert "\u2014" not in RULES
     assert "\u2014" not in guide
 
