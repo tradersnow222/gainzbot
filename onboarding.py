@@ -31,7 +31,6 @@ _TRAINING_DEFAULTS = {
     "minutes": "45",
     "equipment": "bodyweight",
     "experience": "beginner",
-    "injuries": "none",
     "sources": "none",
 }
 _OPTIONAL = {"name", "food_style", "sources", "target"}
@@ -48,7 +47,7 @@ _SETUP_WORDS = ("clone", "pip", "pytest", "release_check", "install", "git ")
 
 HAPPY_PATH = (
     "hello",
-    "hold, male, age 30, 80 kg, 180 cm",
+    "hold, male, age 30, 80 kg, 180 cm, no injuries",
     "ok",
     "all no",
     "yes",
@@ -85,7 +84,8 @@ GROUPS = (
         "asks": ("sport", "training_days", "minutes", "equipment", "experience", "injuries", "sources"),
         "text": (
             "Sport, schedule, and equipment? "
-            "One word ok uses general training, 3 days, 45 min, bodyweight, beginner, no injuries. "
+            "One word ok uses general training, 3 days, 45 min, bodyweight, beginner. "
+            "It does not fill injuries. "
             "Any sport is fine. What do you track with? A watch, a scale, a food app, or none. "
             "I will not assume a connection. Sport and the schedule come before the PAR-Q."
         ),
@@ -314,18 +314,17 @@ def _training_weekdays(folded):
 
 
 def _paired_session_minutes(folded):
-    """Session length from '30 min' next to days per week, not a parkrun time."""
+    """Session length from '30 min' next to days per week, not a parkrun time.
+
+    '3 days 30 min, parkrun saturdays' is a 30 minute session. Only an explicit
+    'parkrun is about 32 min' is the parkrun time, and that number is ignored.
+    """
     if re.search(r"\b[1-7]\s+days?\b", folded) is None:
         return None
     masked = re.sub(
-        r"\bparkrun\b(?:\s+\w+){0,6}\s+\d+\s+min(?:ute)?s?\b",
+        r"\bparkrun\s+is\s+about\s+\d+(?:\.\d+)?\s+min(?:ute)?s?\b",
         " ",
         folded,
-    )
-    masked = re.sub(
-        r"\b\d+\s+min(?:ute)?s?\b(?:\s+\w+){0,4}\s+parkrun\b",
-        " ",
-        masked,
     )
     match = re.search(r"\b(\d{2,3})\s+min(?:ute)?s?\b", masked)
     if match is None:
@@ -333,83 +332,21 @@ def _paired_session_minutes(folded):
     return match.group(1)
 
 
-_SEX_WORD = r"(?:female|male|woman|man)"
+_AGE_CUE = (
+    re.compile(r"\bage\s+(\d{1,3})\b"),
+    re.compile(r"\b(\d{1,3})\s*yo\b"),
+    re.compile(r"\b(\d{1,3})\s+y\s+o\b"),
+    re.compile(r"\b(\d{1,3})\s+years?\s+old\b"),
+    re.compile(r"\b(?:im|i am)\s+actually\s+(\d{1,3})\b"),
+    re.compile(
+        r"\b(?:im|i am)\s+(\d{1,3})\b"
+        r"(?!\s*(?:kg|lb|lbs|pounds?|cm|mins?|minutes?|days?|reps?|sets?|sessions?|times?)\b)"
+    ),
+)
 _OTHER_PERSON = (
     "mom", "dad", "wife", "husband", "son", "daughter", "friend",
     "partner", "brother", "sister", "kid",
 )
-_NOT_AN_AGE = {
-    "bench", "squat", "deadlift", "press", "row", "curl", "lunge", "rdl",
-    "pushup", "pushups", "rep", "reps", "set", "sets",
-    "min", "mins", "minute", "minutes", "day", "days",
-    "session", "sessions", "time", "times",
-    "kg", "lb", "lbs", "pound", "pounds",
-    "grade", "grader", "grades",
-}
-
-
-def _person_owns_number(folded, number_start):
-    """True when a nearby person word, not a sex or height token, owns this number."""
-    prefix = folded[:number_start]
-    person = None
-    for match in re.finditer(
-        r"\b(?:mom|dad|wife|husband|son|daughter|friend|partner|brother|sister|kid)s?\b",
-        prefix,
-    ):
-        person = match
-    if person is None:
-        return False
-    between = prefix[person.end():]
-    if re.search(rf"\bcm\b|\b{_SEX_WORD}\b", between):
-        return False
-    return True
-
-
-def _number_is_not_age(folded, start, end):
-    """A lift, a rep count, a unit, a grade, or someone else's age is not the user's age."""
-    if _person_owns_number(folded, start):
-        return True
-    before = folded[:start].split()
-    after = folded[end:].split()
-    prev = before[-1] if before else ""
-    nxt = after[0] if after else ""
-    if prev in _NOT_AN_AGE or prev in _OTHER_PERSON or prev.rstrip("s") in _OTHER_PERSON:
-        return True
-    if nxt in _NOT_AN_AGE or nxt in {"cm"}:
-        return True
-    return False
-
-
-def _bare_age(folded):
-    """A bare number is an age only beside a sex or height token.
-
-    '165 cm, 41, female', '41, female', and 'female, 41' count. A number on a
-    lift, a rep count, a unit, a grade, or another person does not. Any doubt
-    leaves the age blank.
-    """
-    patterns = (
-        re.compile(rf"\b\d{{2,3}}\s*cm\s+(\d{{1,3}})\b"),
-        re.compile(rf"\b(\d{{1,3}})\s+\d{{2,3}}\s*cm\b"),
-        re.compile(rf"\b(\d{{1,3}})\s+{_SEX_WORD}\b"),
-        re.compile(rf"\b{_SEX_WORD}\s+(\d{{1,3}})\b"),
-    )
-    wanted = re.search(r"\b(?:want|target)\s+(\d+(?:\.\d+)?)\b", folded)
-    wanted_span = wanted.span(1) if wanted is not None else None
-    found = []
-    for pattern in patterns:
-        for match in pattern.finditer(folded):
-            value = int(match.group(1))
-            if not 1 <= value <= 120:
-                continue
-            start, end = match.span(1)
-            if (start, end) == wanted_span:
-                continue
-            if _number_is_not_age(folded, start, end):
-                continue
-            found.append(value)
-    if len(set(found)) == 1:
-        return found[0]
-    return None
 
 
 def _school_age_hint(folded):
@@ -430,11 +367,13 @@ def _school_age_hint(folded):
 
 
 def _target_from_want(folded):
-    """'want N' is a target weight only beside a real current body weight.
+    """'want N' is a target weight only after a current body weight in this message.
 
-    N has to be from 30 to 300 kg. It is not a target when it is followed by
-    days, minutes, sets, reps, sessions, or times. None means the message
-    did not name a target. 'ask' means ask instead of guessing.
+    N has to be from 30 to 300 kg. The current weight, with a unit, has to
+    come before 'want' or 'target'. N is not a target when days, minutes,
+    sets, reps, sessions, or times follow it. A weight that shows up only
+    after 'want', or only in an earlier message, does not count. None means
+    the message did not name a target. 'ask' means ask instead of guessing.
     """
     match = re.search(r"\b(?:want|target)\s+(\d+(?:\.\d+)?)\b", folded)
     if match is None:
@@ -446,22 +385,20 @@ def _target_from_want(folded):
     value = float(raw)
     if not _kg_in_range(value):
         return "ask"
-    rest_after = re.sub(r"^(?:kg|lb|lbs|pounds?)\b", " ", after, count=1)
-    rest = folded[:match.start()] + " " + rest_after
-    rest = re.sub(
+    prefix = re.sub(
         r"\b\d+(?:\.\d+)?\s+to\s+\d+(?:\.\d+)?\s*(?:kg|lb|lbs|pounds?)\b",
         " ",
-        rest,
+        folded[:match.start()],
     )
-    if re.search(r"\b\d+(?:\.\d+)?\s*(?:kg|lb|lbs|pounds?)\b", rest) is None:
+    if re.search(r"\b\d+(?:\.\d+)?\s*(?:kg|lb|lbs|pounds?)\b", prefix) is None:
         return "ask"
     shown = raw[:-2] if raw.endswith(".0") else raw
     return shown + " kg"
 
 
 _SAFE_ALL_NO_WORDS = {
-    "is", "a", "the", "my", "i", "also", "most", "and", "at", "on", "for", "to",
-    "about", "parkrun", "run", "running", "saturday", "saturdays", "sat",
+    "is", "a", "the", "my", "i", "also", "and",
+    "parkrun", "run", "running", "saturday", "saturdays", "sat",
     "min", "mins", "minute", "minutes", "well", "thanks", "lol", "honestly",
     "ok", "okay",
 }
@@ -503,7 +440,11 @@ def _safe_all_no(text):
     rest = re.sub(r"\bnone\b", " ", rest)
     rest = re.sub(r"\bno\s+injur(?:y|ies)\b", " ", rest)
     rest = re.sub(r"\binjur(?:y|ies)\s+none\b", " ", rest)
-    rest = re.sub(r"\b\d+(?:\.\d+)?\b", " ", rest)
+    rest = re.sub(
+        r"\bparkrun\s+is\s+about\s+\d+(?:\.\d+)?\s+min(?:ute)?s?\b",
+        " ",
+        rest,
+    )
     leftover = [
         token for token in rest.split()
         if token not in _SAFE_ALL_NO_WORDS and token not in _ALL_NO_FILLERS
@@ -639,6 +580,8 @@ def _all_no_attempt(tokens):
             return True
         if tokens[index:index + 3] == ["nope", "all", "no"]:
             return True
+    if "none" in tokens and tokens != ["none"]:
+        return True
     return False
 
 
@@ -822,11 +765,9 @@ def _parse_explicit(state, reply):
                 answers["goal"] = goal
                 break
     age = _intake_age(folded)
-    if age is None and "age" not in answers:
-        age = _bare_age(folded)
-    if age is not None:
+    if age is not None and "age" not in answers:
         answers["age"] = str(age)
-    elif "age" not in answers and _school_age_hint(folded):
+    elif "age" not in answers and _should_ask_age(folded):
         state["phase"] = "age"
         state["need_age"] = True
         state["awaiting"] = None
@@ -874,8 +815,12 @@ def _parse_explicit(state, reply):
         if re.search(rf"\b{experience}\b", folded):
             answers["experience"] = experience
             break
-    if "no injuries" in folded or "injuries none" in folded:
-        answers["injuries"] = "none"
+    stated = _stated_injury(folded)
+    if stated == "none":
+        if "injuries" not in answers:
+            answers["injuries"] = "none"
+    elif stated is not None and answers.get("injuries") in (None, "", "none"):
+        answers["injuries"] = stated
     if re.search(r"\bparkrun\b", folded):
         answers["sport"] = "parkrun"
         if re.search(r"\b(?:saturdays?|sat)\b", folded):
@@ -1000,6 +945,23 @@ def _non_latin_letter(reply):
     return False
 
 
+def _mask_asides(folded):
+    """Shoe size and a pet count are not an age."""
+    text = re.sub(r"\bsize\s+\d+\s+shoes?\b", " ", folded)
+    text = re.sub(r"\b\d+\s+dogs?\b", " ", text)
+    return text
+
+
+def _harmless_aside(reply):
+    """A shoe size or a pet count does not block a stored adult age."""
+    folded = _fold(reply)
+    if re.fullmatch(r"size\s+\d+\s+shoes?", folded):
+        return True
+    if re.fullmatch(r"\d+\s+dogs?", folded):
+        return True
+    return False
+
+
 def _hints_age(reply):
     """True when the reply hints at age. The number itself is not read."""
     if not isinstance(reply, str) or not reply.strip():
@@ -1008,7 +970,7 @@ def _hints_age(reply):
         return True
     if _non_latin_letter(reply):
         return True
-    folded = _fold(_mask_clocks(reply))
+    folded = _mask_asides(_fold(_mask_clocks(reply)))
     if re.search(r"\d", folded):
         return True
     for token in folded.split():
@@ -1066,10 +1028,33 @@ def _clear_proposal(state):
     state["record"] = None
 
 
+def _reply_age(reply):
+    """The age question accepts a bare number, or that same number with an age cue."""
+    number = _typed_int(reply)
+    if number is not None and 1 <= number <= 120:
+        return number
+    folded = _fold(reply)
+    for pattern in (
+        r"age\s+(\d{1,3})",
+        r"(\d{1,3})\s*yo",
+        r"(\d{1,3})\s+y\s+o",
+        r"(\d{1,3})\s+years?\s+old",
+        r"(?:im|i am)\s+actually\s+(\d{1,3})",
+        r"(?:im|i am)\s+(\d{1,3})",
+    ):
+        match = re.fullmatch(pattern, folded)
+        if match is None:
+            continue
+        value = int(match.group(1))
+        if 1 <= value <= 120:
+            return value
+    return None
+
+
 def _take_age_number(state, reply):
     """Readiness runs on the typed number. Leftover text is not an age."""
     _clear_proposal(state)
-    number = _typed_int(reply)
+    number = _reply_age(reply)
     if number is None or not 1 <= number <= 120:
         state["phase"] = "age"
         state["awaiting"] = None
@@ -1131,15 +1116,95 @@ def _take_weight_number(state, reply):
 
 
 def _intake_age(folded):
-    age = re.search(r"\bage\s+(\d{1,3})\b", folded)
-    if not age:
-        age = re.search(r"\b(?:im|i am)\s+actually\s+(\d{1,3})\b", folded)
-    if not age:
-        return None
-    value = int(age.group(1))
-    if 1 <= value <= 120:
-        return value
+    """An age only beside an explicit cue. A bare list number is not an age."""
+    found = []
+    for pattern in _AGE_CUE:
+        for match in pattern.finditer(folded):
+            value = int(match.group(1))
+            if 1 <= value <= 120:
+                found.append(value)
+    if len(set(found)) == 1:
+        return found[0]
     return None
+
+
+def _should_ask_age(folded):
+    """A grade, a lift, another person, or a birth year. It is not a typed age."""
+    if _school_age_hint(folded):
+        return True
+    if re.search(r"\bpush\s*ups?\b", folded):
+        return True
+    if re.search(r"\bborn\b", folded):
+        return True
+    if re.search(r"\bclass\s+of\b", folded):
+        return True
+    person = "|".join(_OTHER_PERSON)
+    if re.search(rf"\b(?:{person})s?\b", folded) and re.search(r"\d", folded):
+        return True
+    if re.search(r"\b(?:bench|deadlift|squat)\b", folded) and re.search(r"\d", folded):
+        return True
+    return False
+
+
+_INJURY_AREAS = (
+    ("lower back", "lower back"),
+    ("low back", "lower back"),
+    ("hamstring", "hamstring"),
+    ("shoulder", "shoulder"),
+    ("knee", "knee"),
+    ("ankle", "ankle"),
+    ("wrist", "wrist"),
+    ("elbow", "elbow"),
+    ("neck", "neck"),
+    ("hip", "hip"),
+    ("back", "back"),
+)
+
+
+def _stated_injury(folded):
+    """A named injury, or an explicit no. Ok, fine, and yes are not an answer."""
+    if re.search(r"\bno\s+injur(?:y|ies)\b", folded) or re.search(r"\binjur(?:y|ies)\s+none\b", folded):
+        return "none"
+    if folded in {"no", "none", "nope"}:
+        return "none"
+    found = []
+    for phrase, label in _INJURY_AREAS:
+        if not re.search(rf"\b{re.escape(phrase)}\b", folded):
+            continue
+        if label == "back" and "lower back" in found:
+            continue
+        if label not in found:
+            found.append(label)
+    if found:
+        return ", ".join(found)
+    for word in ("surgery", "sprain", "tear", "injury", "pain"):
+        if re.search(rf"\bno\s+{word}s?\b", folded):
+            continue
+        if word == "pain" and re.search(r"\bchest\s+pain\b", folded):
+            continue
+        if re.search(rf"\b{word}s?\b", folded):
+            return word
+    return None
+
+
+def _injury_clause(injuries):
+    """One plain sentence. An explicit no does not add it."""
+    if not isinstance(injuries, str):
+        return ""
+    text = injuries.strip()
+    if text.lower() in {"", "none", "no", "n/a", "na", "nope"}:
+        return ""
+    parts = [part.strip() for part in text.split(",") if part.strip()]
+    if len(parts) <= 1:
+        area = parts[0] if parts else text
+    elif len(parts) == 2:
+        area = f"{parts[0]} and {parts[1]}"
+    else:
+        area = ", ".join(parts[:-1]) + ", and " + parts[-1]
+    return (
+        f"I kept weight off your {area}. "
+        "Check with your doctor or a physio before loading it. "
+    )
 
 
 def apply_reply(state, reply):
@@ -1541,7 +1606,7 @@ def _handle_blocked(state, reply):
     paused = reply_pause(reply)
     if paused is not None:
         return _hold_symptom(state, reply, paused)
-    if _typed_int(reply) is not None:
+    if _reply_age(reply) is not None:
         return _take_age_number(state, reply)
     _apply_age_readiness(state)
     state["phase"] = "blocked"
@@ -1571,6 +1636,10 @@ def _handle_confirm(state, reply):
     edit = _explicit_edit(reply)
     if edit is not None:
         return _apply_edit(state, edit)
+    if _harmless_aside(reply):
+        state["error"] = None
+        state["phase"] = "confirm"
+        return True
     return _hold_age(state)
 
 
@@ -1794,9 +1863,11 @@ def _proposal(state):
     equipment = answers.get("equipment", "bodyweight")
     scheduled = answers.get("days") or []
     start = f"The first session is {min(scheduled)}. " if scheduled else ""
+    injury = _injury_clause(answers.get("injuries"))
     return (
         f"{days} days, {minutes} min, {goal}, {equipment}. "
         f"{start}"
+        f"{injury}"
         "One yes confirms the plan and starts the morning check-in at 07:00, "
         "the evening follow-up at 20:00, and the weekly review Sunday at 18:00. "
         "Routines, each is opt-in. "

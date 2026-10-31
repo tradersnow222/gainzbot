@@ -557,8 +557,15 @@ def test_three_gym_days_are_a_deterministic_full_body_split():
     assert "Back squat" in names
     knee = PlanBuilder().propose(profile(equipment="full gym", injuries="left knee"), check_in)
     assert knee["ok"] is True
-    knee_names = [item["name"].lower() for item in knee["sessions"][0]["exercises"]]
-    assert not any("squat" in name or "lunge" in name for name in knee_names)
+    for row in knee["sessions"]:
+        knee_names = [item["name"].lower() for item in row["exercises"]]
+        assert any("box squat" in name for name in knee_names)
+        assert any("glute bridge" in name for name in knee_names)
+        for name in knee_names:
+            assert "lunge" not in name
+            assert "split squat" not in name
+            if "squat" in name:
+                assert "box squat" in name
 
 
 def test_a_swapped_exercise_is_not_the_confirmed_week(tmp_path):

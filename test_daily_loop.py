@@ -367,7 +367,7 @@ def test_the_daily_loop_stops_while_onboarding_is_held():
 
     run_chat([
         "hello",
-        "hold, male, age 25, 80 kg, 180 cm",
+        "hold, male, age 25, 80 kg, 180 cm, no injuries",
         "ok",
         "all no",
         "my chest hurts",

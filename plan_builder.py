@@ -187,20 +187,77 @@ def _dumbbell_name(name):
     return swapped
 
 
-def _blocked_parts(injuries):
-    text = injuries.lower()
-    if text.strip() in _NO_INJURY:
-        return ()
-    parts = []
-    if "knee" in text:
-        parts.extend(("squat", "lunge", "leg press"))
-    if "shoulder" in text:
-        parts.extend(("overhead", "bench", "push-up", "pike", "dip", "press"))
+def _injury_text(injuries):
+    if not isinstance(injuries, str):
+        return ""
+    text = injuries.strip().lower()
+    if text in _NO_INJURY:
+        return ""
+    return text
+
+
+def _loads_knee(name):
+    if "lunge" in name or "split squat" in name:
+        return True
+    if "squat" in name and "box squat" not in name:
+        return True
+    return False
+
+
+def _loads_back(name):
+    if "chest-supported" in name or "chest supported" in name:
+        return False
+    if any(part in name for part in (
+        "romanian", "deadlift", "good morning", "hip hinge", "nordic", "rdl", "back extension",
+    )):
+        return True
+    return "row" in name
+
+
+def _loads_shoulder(name):
+    if "overhead" in name or "pike" in name or "dip" in name:
+        return True
+    return "shoulder press" in name
+
+
+def _loads_hamstring(name):
+    return any(part in name for part in ("romanian", "deadlift", "nordic", "hip hinge", "rdl"))
+
+
+def _loads_wrist(name):
+    return any(part in name for part in ("push-up", "pushup", "bench", "dip"))
+
+
+def _blocks_exercise(name, injuries):
+    text = _injury_text(injuries)
+    if not text:
+        return False
+    folded = name.lower()
+    if "knee" in text and _loads_knee(folded):
+        return True
+    if "back" in text and _loads_back(folded):
+        return True
+    if "shoulder" in text and _loads_shoulder(folded):
+        return True
+    if "hamstring" in text and _loads_hamstring(folded):
+        return True
+    if "wrist" in text and _loads_wrist(folded):
+        return True
+    return False
+
+
+def _injury_replacements(injuries):
+    text = _injury_text(injuries)
+    if not text:
+        return []
+    names = []
     if "back" in text:
-        parts.extend(("deadlift", "row", "extension"))
-    if "wrist" in text:
-        parts.extend(("push-up", "bench", "dip"))
-    return tuple(parts)
+        names.extend(("Chest-supported row", "Glute bridge"))
+    if "knee" in text:
+        names.extend(("Box squat to a high box", "Glute bridge"))
+    if "hamstring" in text and "Glute bridge" not in names:
+        names.append("Glute bridge")
+    return names
 
 
 def _sport_exercise(sport):
@@ -427,10 +484,9 @@ def _exercises(equipment, experience, minutes, sport, injuries, index, day_count
         names = [_bodyweight_name(name) for name in source]
     else:
         names = list(source)
-    blocked = _blocked_parts(injuries)
     kept = []
-    for name in names + list(_SAFE):
-        if any(part in name.lower() for part in blocked):
+    for name in list(_injury_replacements(injuries)) + names + list(_SAFE):
+        if _blocks_exercise(name, injuries):
             continue
         if name not in kept:
             kept.append(name)
