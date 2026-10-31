@@ -40,15 +40,13 @@ def _confirmed(load):
     }]
 
 
-def _stays(result, weight):
-    assert result["ok"] is True
-    assert result["suggestion"]["weight"] == weight
+def _asks(result):
+    assert result["suggestion"] is None
     assert result["proposal"] is None
-    assert str(weight) in result["message"]
-    assert "stays at" in result["message"]
+    assert "What load is confirmed?" in result["message"]
+    assert "150" not in result["message"]
+    assert "133.1" not in result["message"]
     assert "stays at this weight" not in result["message"]
-    assert "What load is confirmed?" not in result["message"]
-    assert "wrong key" not in result["message"].lower()
 
 
 def history(load, as_of=AS_OF, hours_ago=7 * 24, confirmed=True):
@@ -96,30 +94,39 @@ class TestSuggestion:
         assert "stays at this weight" not in result["message"]
         assert "77" not in result["message"]
 
-    def test_one_call_adds_at_most_2_5_kg(self):
+    def test_sets_on_one_day_do_not_stack_a_second_step(self):
         log = SetLogger()
         prior = history(100)
         log.log_set("squat", 100, 10, "2026-10-30")
         first = log.suggest_next("squat", prior, AS_OF, rep_top=10)
         assert first["suggestion"]["weight"] == 102.5
         assert first["suggestion"]["weight"] != 105
-        assert first["suggestion"]["weight"] != 110
+        assert first["proposal"] is None
         log.log_set("squat", 102.5, 10, "2026-10-30")
         second = log.suggest_next("squat", prior, AS_OF, rep_top=10)
-        assert second["suggestion"]["weight"] == 105
-        assert second["suggestion"]["weight"] != 110
-        assert second["suggestion"]["weight"] != 121
+        assert second["suggestion"]["weight"] == 102.5
+        assert second["suggestion"]["weight"] != 105
+        log.log_set("squat", 105, 10, "2026-10-30")
+        third = log.suggest_next("squat", prior, AS_OF, rep_top=10)
+        assert third["suggestion"]["weight"] == 102.5
+        assert third["suggestion"]["weight"] != 105
+        assert third["suggestion"]["weight"] != 107.5
+        log.log_set("squat", 102.5, 10, "2026-10-31")
+        nxt = log.suggest_next("squat", prior, AS_OF, rep_top=10)
+        assert nxt["suggestion"]["weight"] == 105
+        assert nxt["proposal"] is None
 
-    def test_logged_kilograms_do_not_need_a_load_index(self):
+    def test_logging_100_then_121_then_133_1_with_no_history_asks(self):
         log = SetLogger()
         log.log_set("squat", 100, 8, "2026-10-30")
         log.log_set("squat", 121, 8, "2026-10-30")
         log.log_set("squat", 133.1, 8, "2026-10-30")
         result = log.suggest_next("squat", as_of=AS_OF)
-        assert result["suggestion"]["weight"] == 133.1
-        assert "133.1" in result["message"]
-        assert "What load is confirmed?" not in result["message"]
+        assert result["suggestion"] is None
         assert result["proposal"] is None
+        assert "What load is confirmed?" in result["message"]
+        assert "133.1" not in result["message"]
+        assert "stays at this weight" not in result["message"]
 
     def test_a_kilogram_step_does_not_wait_7_days(self):
         log = SetLogger()
@@ -149,35 +156,35 @@ class TestSuggestion:
         assert "150" in held["message"]
         assert held["proposal"] is None
 
-    def test_a_missing_as_of_stays_at_the_logged_kilograms(self):
+    def test_a_missing_as_of_asks_instead_of_repeating_150(self):
         result = _logged(150).suggest_next("squat", _confirmed(100))
-        _stays(result, 150)
+        _asks(result)
 
-    def test_a_date_only_as_of_stays_at_the_logged_kilograms(self):
+    def test_a_date_only_as_of_asks_instead_of_repeating_150(self):
         result = _logged(150).suggest_next("squat", _confirmed(100), "2026-10-30")
-        _stays(result, 150)
+        _asks(result)
 
-    def test_a_us_date_as_of_stays_at_the_logged_kilograms(self):
+    def test_a_us_date_as_of_asks_instead_of_repeating_150(self):
         result = _logged(150).suggest_next("squat", _confirmed(100), "10/30/2026")
-        _stays(result, 150)
+        _asks(result)
 
-    def test_a_date_only_history_entry_stays_at_the_logged_kilograms(self):
+    def test_a_date_only_history_entry_asks_instead_of_repeating_150(self):
         prior = [{
             "date": "2026-10-20",
             "confirmed": True,
             "changes": {"load": 100},
         }]
         result = _logged(150).suggest_next("squat", prior, AS_OF)
-        _stays(result, 150)
+        _asks(result)
 
-    def test_a_string_history_stays_at_the_logged_kilograms(self):
+    def test_a_string_history_asks_instead_of_repeating_150(self):
         result = _logged(150).suggest_next("squat", "confirmed 100", AS_OF)
-        _stays(result, 150)
+        _asks(result)
 
-    def test_one_bad_history_row_does_not_change_the_kilograms(self):
+    def test_one_bad_history_row_asks_instead_of_repeating_150(self):
         prior = _confirmed(100) + [{"nope": True}]
         result = _logged(150).suggest_next("squat", prior, AS_OF)
-        _stays(result, 150)
+        _asks(result)
         found = last_confirmed_change(prior, "load", AS_OF)
         assert found.ok is False
         assert found.reason == "wrong key"
@@ -236,6 +243,37 @@ class TestSuggestion:
         assert normal["suggestion"]["weight"] == 72.5
         assert normal["proposal"] is None
 
+    def test_a_yes_jump_is_capped_at_10_percent(self):
+        log = SetLogger()
+        log.log_set("squat", 70, 10, "2026-10-30")
+        result = log.suggest_next(
+            "squat", history(100), AS_OF, rep_top=10, requested_weight=80,
+        )
+        assert result["suggestion"]["weight"] == 77
+        assert result["suggestion"]["weight"] != 80
+        assert result["proposal"]["needs_confirmation"] is True
+        assert "77" in result["message"]
+        assert "80" not in result["message"]
+        assert "yes" in result["message"].lower()
+
+    def test_a_prior_week_baseline_keeps_the_kilograms_inside_10_percent(self):
+        log = SetLogger()
+        log.log_set("squat", 100, 10, "2026-10-21")
+        log.log_set("squat", 133.1, 8, "2026-10-28")
+        held = log.suggest_next("squat", as_of=AS_OF, rep_top=10)
+        assert held["suggestion"]["weight"] == 100
+        assert held["suggestion"]["weight"] != 133.1
+        assert "133.1" not in held["message"]
+        assert held["proposal"] is None
+        raised = log.suggest_next(
+            "squat", history(100), AS_OF, rep_top=10, requested_weight=130,
+        )
+        assert raised["suggestion"]["weight"] == 110
+        assert raised["suggestion"]["weight"] != 130
+        assert raised["proposal"]["needs_confirmation"] is True
+        assert "130" not in raised["message"]
+        assert "110" in raised["message"]
+
     def test_a_short_set_does_not_jump_the_weight(self):
         log = SetLogger()
         log.log_set("bench", 100, 5, "2026-10-30")
@@ -260,7 +298,9 @@ class TestSuggestion:
             "weight": 70,
             "reps": 10,
         })
-        result = SetLogger().suggest_next("Bench press", log_path=path, rep_top=10)
+        result = SetLogger().suggest_next(
+            "Bench press", history(100), AS_OF, log_path=path, rep_top=10,
+        )
         assert result["ok"] is True
         assert "Log a set first" not in result["message"]
         assert result["suggestion"]["weight"] == 72.5
@@ -302,7 +342,8 @@ class TestConfirmation:
         assert "squat" not in log.working
         log.log_set("squat", 72.5, 10, "2026-10-30")
         held = log.suggest_next("squat", prior, AS_OF, rep_top=10)
-        assert held["suggestion"]["weight"] == 75
+        assert held["suggestion"]["weight"] == 72.5
+        assert held["suggestion"]["weight"] != 75
         assert held["suggestion"]["weight"] != 77.5
         assert held["proposal"] is None
 
@@ -321,7 +362,8 @@ class TestConfirmation:
         )["proposal"]
         applied = log.apply(proposal, confirm(proposal))
         assert applied["applied"] is True
-        assert applied["changes"]["weight"] == 80
+        assert applied["changes"]["weight"] == 77
+        assert applied["changes"]["weight"] != 80
 
     def test_an_edited_proposal_does_not_apply(self):
         log = SetLogger()
