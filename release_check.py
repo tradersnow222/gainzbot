@@ -125,7 +125,17 @@ def check_configured_install(repo_path, expected_tag):
             return False, failure
         return False, "This folder is not a git repo. Stop and ask."
     describe_text = describe_out if describe_code == 0 else describe_err
-    return existing_install_ok(describe_text, status_out, expected_tag)
+    ok, reason = existing_install_ok(describe_text, status_out, expected_tag)
+    if not ok:
+        return False, reason
+    tracked_code, tracked_out, _tracked_err = _git(
+        repo_path, ["ls-files", "--", "data/seal.key"]
+    )
+    if tracked_code == 0:
+        tracked = {line.strip() for line in tracked_out.splitlines() if line.strip()}
+        if "data/seal.key" in tracked:
+            return False, "data/seal.key is tracked. Stop and ask."
+    return True, ""
 
 
 def main(repo_path=None, expected_tag=None):

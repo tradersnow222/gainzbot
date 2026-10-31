@@ -55,7 +55,7 @@ pytest -v
 
 This is not medical advice.
 
-The checks catch mistakes. Each install writes a random seal key to data/seal.key, which is gitignored. The seal is tamper-evidence, not security. The speaker is a caller-supplied string. A deliberate fake can still get through.
+The checks catch mistakes. Each install writes a random seal key to data/seal.key (mode 0600), which is gitignored. release_check refuses when that file is tracked. The seal is tamper-evidence, not security. The speaker is a caller-supplied string. A deliberate fake can still get through.
 
 ## License
 

@@ -122,20 +122,53 @@ def reconcile_log_backup(log_path):
         return
 
 
-def _listed(data, key):
+_LOG_ROW_TYPES = ("sets", "weights", "meals", "checkins", "confirmations")
+
+
+def _row_list(data, key):
     if not isinstance(data, dict):
-        return 0
+        return []
     value = data.get(key)
-    return len(value) if isinstance(value, list) else 0
+    return list(value) if isinstance(value, list) else []
+
+
+def _row_counts(rows):
+    counts = {}
+    for item in rows:
+        try:
+            token = json.dumps(item, sort_keys=True, ensure_ascii=False)
+        except (TypeError, ValueError):
+            token = repr(item)
+        counts[token] = counts.get(token, 0) + 1
+    return counts
+
+
+def _counts_cover(backup_rows, live_rows):
+    live_counts = _row_counts(live_rows)
+    backup_counts = _row_counts(backup_rows)
+    for token, count in live_counts.items():
+        if backup_counts.get(token, 0) < count:
+            return False
+    return True
 
 
 def _backup_can_replace(backup_bytes, live_bytes):
-    """A backup replaces the live log only when it is parseable and not newer.
+    """Replace only when the backup is a strict superset of every record type.
 
-    An empty backup never wipes a live log that already has meals, check-ins,
-    or confirmation ids. A live log with more meals or check-ins is never replaced.
+    sets, weights, meals, check-ins, and confirmations each have to cover the
+    live rows, and the backup has to hold at least one extra row. An empty or
+    unparseable backup never replaces the live log. A missing or unparseable
+    live log is treated as empty, so a parseable backup can restore it.
     """
-    live = None
+    if not backup_bytes:
+        return False
+    try:
+        backup = json.loads(backup_bytes.decode("utf-8"))
+    except (UnicodeDecodeError, json.JSONDecodeError, AttributeError):
+        return False
+    if not isinstance(backup, dict):
+        return False
+    live = {}
     if live_bytes:
         try:
             parsed = json.loads(live_bytes.decode("utf-8"))
@@ -143,25 +176,16 @@ def _backup_can_replace(backup_bytes, live_bytes):
             parsed = None
         if isinstance(parsed, dict):
             live = parsed
-    if backup_bytes == b"":
-        if live is None:
-            return True
-        if _listed(live, "meals") or _listed(live, "checkins") or _confirmation_ids(live_bytes):
+    backup_total = 0
+    live_total = 0
+    for key in _LOG_ROW_TYPES:
+        backup_rows = _row_list(backup, key)
+        live_rows = _row_list(live, key)
+        if not _counts_cover(backup_rows, live_rows):
             return False
-        return True
-    try:
-        backup = json.loads(backup_bytes.decode("utf-8"))
-    except (UnicodeDecodeError, json.JSONDecodeError):
-        return False
-    if not isinstance(backup, dict):
-        return False
-    if live is None:
-        return True
-    if _listed(live, "meals") > _listed(backup, "meals"):
-        return False
-    if _listed(live, "checkins") > _listed(backup, "checkins"):
-        return False
-    return _confirmation_ids(backup_bytes) <= _confirmation_ids(live_bytes)
+        backup_total += len(backup_rows)
+        live_total += len(live_rows)
+    return backup_total > live_total
 
 
 def _trusted_change(row, changes):

@@ -902,12 +902,24 @@ class TestDoctorClearance:
 
     def test_a_year_in_the_clearance_sentence_is_that_date(self):
         today = datetime.now(timezone.utc).date().isoformat()
-        for words in ("cleared in 2009", "my doctor cleared me in 2009"):
+        for words in ("cleared in 2009", "my doctor cleared me in 2009", "cleared in 2025"):
             result = self._chest(medical_clearance=words)
             assert result.blocked, words
             assert result.doctor_cleared is False
             assert result.clearance_date != today
             assert "That clearance is more than 12 months old. Ask again." in result.reasons
+            assert passing_readiness(result) is False
+
+    def test_a_year_without_a_month_asks_for_the_month(self):
+        today = datetime.now(timezone.utc).date().isoformat()
+        for words in ("cleared in 2026", "my doctor cleared me in 2026"):
+            result = self._chest(medical_clearance=words)
+            assert result.blocked, words
+            assert result.doctor_cleared is False
+            assert result.clearance_date != today
+            blob = " ".join(result.reasons).lower()
+            assert "month" in blob, words
+            assert "more than 12 months" not in blob
             assert passing_readiness(result) is False
 
     def test_a_minor_does_not_pass_with_consent_and_clearance(self):

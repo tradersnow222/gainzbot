@@ -348,7 +348,10 @@ class ReadinessScreen:
         if "clearance_date" not in intake:
             implied = self._year_date(intake) if cleared else None
             if implied:
-                return self._check_clearance_date(implied)
+                _checked, error = self._check_clearance_date(implied)
+                if error:
+                    return None, error
+                return None, "That clearance names only a year. Ask for the month."
             if cleared:
                 return datetime.now(timezone.utc).date().isoformat(), None
             return "", None

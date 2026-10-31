@@ -123,10 +123,10 @@ def parse_evening(reply):
             felt = word
             break
     ate = text
-    for word in ("yes", "yep", "yeah", "did", "no", "easy", "right", "hard"):
+    for word in ("yes", "yep", "yeah", "did", "didnt", "no", "not", "nt", "easy", "right", "hard"):
         ate = re.sub(rf"\b{word}\b", " ", ate)
     ate = " ".join(ate.split())
-    if ate in {"not", "nt"}:
+    if ate in {"not", "nt", "didnt"}:
         ate = ""
     return {"did_it": did_it, "felt": felt, "ate": ate}
 
@@ -259,7 +259,6 @@ class DailyLoop:
             return self._workout(day)
         self.notes[day].update(read_gap_reply(pending["gaps"], reply))
         abnormal = set(self.signals.abnormal(as_of)) if self.signals is not None else set()
-        abnormal.discard("resting_hr")
         unanswered = [
             gap for gap in pending["gaps"]
             if self._gap_open(day, gap) and gap not in abnormal
@@ -352,6 +351,8 @@ class DailyLoop:
             lead = f"Today is a {day_name} day."
         food = f"{self.calories} kcal" if self.calories is not None else self.goal
         text = f"{lead} {session_minutes} min, load {load}. Food: {food}."
+        if self.signals is not None and "resting_hr" in self.signals.abnormal(as_of):
+            text += " If you feel unwell, check with a doctor."
         if self.signals is not None and self.signals.connected():
             note = self.signals.plan_note(f"{day}T08:00:00Z")
             if self.outreach is not None:
@@ -435,35 +436,6 @@ def _sealed_changes(history):
     return sealed
 
 
-def sealed_load_history(load, when):
-    """One confirmed load row this install actually sealed."""
-    from record_confirmation import ConfirmationRecorder
-    from red_flag_check import RedFlagChecker, is_passing_check_in
-
-    checker = RedFlagChecker()
-    answers = {aliases[0]: "no" for _flag, aliases in checker.CHECKLIST_GROUPS}
-    check_in = checker.scan_check_in({"symptom_checklist": answers, "notes": "no"})
-    if not is_passing_check_in(check_in):
-        return []
-    plan = {"changes": {"load": load}}
-    record = ConfirmationRecorder().record(plan, "yes", "user", check_in)
-    if not record.confirmed:
-        return []
-    return [{
-        "date": when,
-        "confirmed": True,
-        "changes": {"load": load},
-        "proposal": plan,
-        "record_id": record.record_id,
-        "plan_hash": record.plan_hash,
-        "quoted_words": record.quoted_words,
-        "speaker": record.speaker,
-        "timestamp": record.timestamp,
-        "issuer_seal": record.issuer_seal,
-        "message": record.message,
-    }]
-
-
 def adult_profile():
     """A caller-supplied adult. The loop does not invent one."""
     return {
@@ -478,13 +450,13 @@ def adult_profile():
     }
 
 
-def simulate_happy_week():
+def simulate_happy_week(history=None):
     """Seven bot-led days. The user only answers the questions."""
     loop = DailyLoop(
         load=80,
         minutes=45,
         calories=2200,
-        history=sealed_load_history(80, "2026-10-19T07:00:00Z"),
+        history=history,
         profile=adult_profile(),
     )
     start = date(2026, 10, 26)

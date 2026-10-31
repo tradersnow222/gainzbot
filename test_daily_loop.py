@@ -1,6 +1,8 @@
 #!/usr/bin/env python3
 """A bot-led week. The user only answers the questions."""
 
+from pathlib import Path
+
 from daily_loop import DailyLoop, simulate_happy_week
 from routines import change_loop_time, start_daily_loop
 
@@ -37,8 +39,37 @@ def test_a_missed_day_gets_one_nudge_then_the_next_morning():
     assert "command" not in morning.lower()
 
 
+def sealed_load_history(load, when):
+    """One confirmed load row this install actually sealed. Tests only."""
+    from record_confirmation import ConfirmationRecorder
+    from red_flag_check import RedFlagChecker, is_passing_check_in
+
+    checker = RedFlagChecker()
+    answers = {aliases[0]: "no" for _flag, aliases in checker.CHECKLIST_GROUPS}
+    check_in = checker.scan_check_in({"symptom_checklist": answers, "notes": "no"})
+    if not is_passing_check_in(check_in):
+        return []
+    plan = {"changes": {"load": load}}
+    record = ConfirmationRecorder().record(plan, "yes", "user", check_in)
+    if not record.confirmed:
+        return []
+    return [{
+        "date": when,
+        "confirmed": True,
+        "changes": {"load": load},
+        "proposal": plan,
+        "record_id": record.record_id,
+        "plan_hash": record.plan_hash,
+        "quoted_words": record.quoted_words,
+        "speaker": record.speaker,
+        "timestamp": record.timestamp,
+        "issuer_seal": record.issuer_seal,
+        "message": record.message,
+    }]
+
+
 def test_seven_days_of_short_answers_adapt_the_plan():
-    week = simulate_happy_week()
+    week = simulate_happy_week(history=sealed_load_history(80, "2026-10-19T07:00:00Z"))
     rows = week["rows"]
     assert len(rows) == 7
     for row in rows:
@@ -120,6 +151,12 @@ def test_a_symptom_in_the_morning_pauses_before_the_workout():
     assert clear.notes[day]["did_it"] is False
     assert clear.notes[day]["ate"] == ""
     assert parse_evening("did not")["ate"] == ""
+    for words in ("didn't", "didnt", "did not"):
+        parsed = parse_evening(words)
+        assert parsed["ate"] == "", words
+        assert parsed["did_it"] is False, words
+    assert parse_evening("did not chicken")["ate"] == "chicken"
+    assert "sealed_load_history" not in Path(__file__).resolve().parent.joinpath("daily_loop.py").read_text(encoding="utf-8")
     assert missed.startswith("Logged the miss")
     evening = DailyLoop(load=80, minutes=45, profile=adult_profile())
     evening.open_morning(day)

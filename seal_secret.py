@@ -16,42 +16,59 @@ def _key_path():
     return os.path.join(os.path.dirname(os.path.abspath(__file__)), "data", "seal.key")
 
 
-def install_secret():
-    """32 random bytes for this install. The same file is reused after the first run."""
-    path = _key_path()
+def _read_installed(path):
+    """The stored key, or None. A short or unreadable file is left untouched."""
     try:
         with open(path, "rb") as handle:
             current = handle.read()
-        if len(current) >= 32:
-            return current
     except OSError:
-        current = b""
+        return None
+    if len(current) >= 32:
+        return current
+    return None
+
+
+def install_secret():
+    """32 random bytes for this install. The same file is reused after the first run.
+
+    The file is created as mode 0600. If it already exists and cannot be read,
+    this returns None and does not overwrite it.
+    """
+    path = _key_path()
+    if os.path.exists(path):
+        return _read_installed(path)
     folder = os.path.dirname(path)
-    os.makedirs(folder, exist_ok=True)
-    fresh = os.urandom(32)
-    temporary = path + ".tmp"
     try:
-        with open(temporary, "wb") as handle:
-            handle.write(fresh)
-            handle.flush()
-            os.fsync(handle.fileno())
-        os.replace(temporary, path)
+        os.makedirs(folder, exist_ok=True)
+        descriptor = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+    except FileExistsError:
+        return _read_installed(path)
     except OSError:
-        if os.path.exists(path):
-            with open(path, "rb") as handle:
-                current = handle.read()
-            if len(current) >= 32:
-                return current
-        return fresh
-    with open(path, "rb") as handle:
-        stored = handle.read()
-    return stored if len(stored) >= 32 else fresh
+        return None
+    try:
+        os.write(descriptor, os.urandom(32))
+        os.fsync(descriptor)
+    except OSError:
+        return None
+    finally:
+        try:
+            os.close(descriptor)
+        except OSError:
+            pass
+    try:
+        os.chmod(path, 0o600)
+    except OSError:
+        return None
+    return _read_installed(path)
 
 
 def seal_hex(domain, payload):
     """Hex HMAC for one domain. domain is a short label such as b'readiness'."""
+    secret = install_secret()
+    if not secret:
+        raise OSError("data/seal.key is missing or unreadable.")
     if isinstance(domain, str):
         domain = domain.encode("utf-8")
     if isinstance(payload, str):
         payload = payload.encode("utf-8")
-    return hmac.new(install_secret(), domain + b"\0" + payload, hashlib.sha256).hexdigest()
+    return hmac.new(secret, domain + b"\0" + payload, hashlib.sha256).hexdigest()

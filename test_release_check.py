@@ -142,6 +142,20 @@ def test_main_exits_nonzero_and_writes_the_reason(tmp_path, capsys):
     assert main(str(repo), "v0.1.0") == 0
     assert capsys.readouterr().err == ""
 
+    tracked = tmp_path / "tracked-key"
+    tracked.mkdir()
+    _git(tracked, "init")
+    (tracked / "README.md").write_text("hello\n", encoding="utf-8")
+    (tracked / "data").mkdir()
+    (tracked / "data" / "seal.key").write_bytes(b"k" * 32)
+    _git(tracked, "add", "README.md", "data/seal.key")
+    _git(tracked, "commit", "-m", "start")
+    _git(tracked, "tag", "v0.1.0")
+    code = main(str(tracked), "v0.1.0")
+    err = capsys.readouterr().err
+    assert code != 0
+    assert "seal.key" in err
+
     (repo / "extra.txt").write_text("edit\n", encoding="utf-8")
     code = main(str(repo), "v0.1.0")
     err = capsys.readouterr().err
@@ -187,3 +201,4 @@ def test_the_check_does_not_delete_or_reset():
         assert forbidden not in source
     assert '["describe", "--tags", "--exact-match"]' in source
     assert '["status", "--porcelain"]' in source
+    assert '["ls-files", "--", "data/seal.key"]' in source

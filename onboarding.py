@@ -210,50 +210,79 @@ def _polarity(clause):
     return None
 
 
-def bare_all_no(text):
-    """True when 'all no' has only ordinary punctuation or whitespace after it.
+_CLEAN_ALL_NO = {"all no", "no to all", "none", "nope all no"}
+_ALL_NO_FILLERS = {"honestly", "thanks", "lol"}
+_THUMB = re.compile("👍[\U0001F3FB-\U0001F3FF]?")
 
-    None means this is not an all-no reply. False means all no was followed
-    by something else, so the reply is unclear and nothing is stored as no.
-    A negated 'not all no' is not this phrase.
-    """
+
+def _all_no_tokens(text):
+    """Words left after punctuation, whitespace, and the small filler list."""
     if not isinstance(text, str):
         return None
-    raw = text.strip().lower().replace("'", "")
-    match = None
-    for found in re.finditer(r"\ball\s+no\b", raw):
-        before = raw[:found.start()]
-        if re.search(r"\b(?:not|never|no)\s*$", before):
-            continue
-        match = found
-        break
-    if match is None:
-        return None
-    rest = raw[match.end():]
-    if "?" in rest or "？" in rest:
-        return False
-    trailing = True
-    for char in rest:
+    raw = text.strip().lower().replace("'", "").replace("’", "")
+    raw = _THUMB.sub(" ", raw)
+    raw = raw.replace(":)", " ")
+    cleaned = []
+    for char in raw:
         if char.isspace():
+            cleaned.append(" ")
             continue
         if ord(char) < 128 and unicodedata.category(char).startswith("P"):
+            cleaned.append(" ")
             continue
-        trailing = False
-        break
-    if trailing:
+        cleaned.append(char)
+    return [token for token in "".join(cleaned).split() if token not in _ALL_NO_FILLERS]
+
+
+def _all_no_attempt(tokens):
+    for index, token in enumerate(tokens):
+        if token == "all" and index + 1 < len(tokens) and tokens[index + 1] == "no":
+            return True
+        if tokens[index:index + 3] == ["no", "to", "all"]:
+            return True
+        if tokens[index:index + 3] == ["nope", "all", "no"]:
+            return True
+    return False
+
+
+def bare_all_no(text):
+    """True only when the whole reply is an all-no phrase.
+
+    Fillers, a thumb emoji, punctuation, and whitespace may sit beside it.
+    None means this is not an all-no reply. False means the reply tried to
+    say all no and also said something else, so nothing is stored as no.
+    """
+    tokens = _all_no_tokens(text)
+    if tokens is None:
+        return None
+    if " ".join(tokens) in _CLEAN_ALL_NO:
         return True
-    if raw[:match.start()].strip() == "":
+    if _all_no_attempt(tokens):
         return False
     return None
 
 
+def _without_all_no(text):
+    """Drop the all-no phrase so it cannot flip an item that was marked yes."""
+    if not isinstance(text, str):
+        return ""
+    raw = re.sub(r"\bnope\s+all\s+no\b", " ", text, flags=re.IGNORECASE)
+    raw = re.sub(r"\bno\s+to\s+all\b", " ", raw, flags=re.IGNORECASE)
+    raw = re.sub(r"\ball\s+no\b", " ", raw, flags=re.IGNORECASE)
+    return raw
+
+
 def read_par_q(text):
-    """('all_no', answers), ('unclear', {}), or ('items', answers)."""
+    """('all_no', answers), ('unclear', explicit), or ('items', answers).
+
+    Explicit item answers are parsed first. An all-no phrase never supplies
+    the answers for an unclear reply.
+    """
     kind = bare_all_no(text)
     if kind is True:
         return "all_no", {key: False for key, _question in PAR_Q}
     if kind is False:
-        return "unclear", {}
+        return "unclear", _parse_par_q_items(_without_all_no(text))
     return "items", _parse_par_q_items(text)
 
 
@@ -345,17 +374,28 @@ def _parse_par_q_items(text):
     return found
 
 
+def _store_par_q(state, parsed, unclear):
+    """Keep an item that is already yes. All no cannot flip it."""
+    state["par_q_unclear"] = unclear
+    for key, value in parsed.items():
+        if state["par_q"].get(key) is True and value is not True:
+            continue
+        state["par_q"][key] = value
+
+
 def _parse_explicit(state, reply):
     answers = state["answers"]
     folded = _fold(reply)
     status, parsed = read_par_q(reply)
     if status == "unclear":
-        state["par_q_unclear"] = True
+        _store_par_q(state, parsed, True)
         state["par_q_reply"] = reply if isinstance(reply, str) else folded
-        return
-    if parsed:
+    elif status == "all_no":
+        _store_par_q(state, parsed, False)
+        state["par_q_reply"] = reply if isinstance(reply, str) else folded
+    elif parsed:
         state["par_q_unclear"] = False
-        state["par_q"].update(parsed)
+        _store_par_q(state, parsed, False)
         state["par_q_reply"] = reply if isinstance(reply, str) else folded
     for goal in ("cut", "lose", "gain", "hold"):
         if re.search(rf"\b{goal}\b", folded):

@@ -345,22 +345,31 @@ class Outreach:
             "proactive_count": self.proactive_count(day),
         }
 
-    def accept(self, day, reply, proposal_hash=None):
-        """Apply one delivered proposal after plan_check. The hash has to match."""
+    def accept(self, day, reply, proposal_hash=None, record=None):
+        """Apply one delivered proposal after a sealed confirmation covers it."""
         from plan_check import PlanValidator
-        from record_confirmation import is_plan_yes
+        from record_confirmation import ConfirmationRecorder, is_plan_yes
 
         day = self._day(day)
         if not is_plan_yes(reply, proposal_hash):
             return False
         changed = False
+        recorder = ConfirmationRecorder()
         for item in self._proactive.get(day, []):
             if not item["needs_yes"] or item["applied"]:
                 continue
-            if item.get("hash") != proposal_hash or not isinstance(item.get("plan"), dict):
+            plan = item.get("plan")
+            if item.get("hash") != proposal_hash or not isinstance(plan, dict):
+                continue
+            sealed = record
+            if sealed is None:
+                sealed = recorder.record(plan, reply, "user", item.get("check_in"))
+            if not recorder.covers(sealed, plan):
+                continue
+            if getattr(sealed, "plan_hash", None) != proposal_hash:
                 continue
             checked = PlanValidator().validate_plan(
-                item.get("plan"),
+                plan,
                 check_in_result=item.get("check_in"),
                 readiness_result=item.get("readiness"),
             )

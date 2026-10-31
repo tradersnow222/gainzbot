@@ -138,10 +138,22 @@ def test_everything_at_once_skips_questions_already_answered():
         "general training, 3 days, 45 min, bodyweight, beginner, no injuries, all no"
     )
     state, bots = run_chat([blob, "yes"])
-    assert state["confirmed"] is True
-    assert len(bots) == 2
-    assert "par-q" not in bots[0].lower()
-    assert "one yes confirms the plan" in bots[0].lower()
+    assert state["confirmed"] is False
+    assert state["answers"]["goal"] == "hold"
+    assert state["answers"]["sex"] == "male"
+    assert state["answers"]["age"] == "30"
+    assert state["answers"]["weight"] == "80 kg"
+    assert state["answers"]["height"] == "180 cm"
+    assert state["answers"]["sport"] == "general training"
+    assert state["answers"]["training_days"] == "3"
+    assert all(value is not False for value in state["par_q"].values())
+    assert bots[-1].startswith("Still need a yes or no:")
+    assert "one yes confirms the plan" not in bots[-1].lower()
+    done, later = run_chat([blob, "all no", "yes"])
+    assert done["confirmed"] is True
+    assert len(done["par_q"]) == len(PAR_Q)
+    assert all(value is False for value in done["par_q"].values())
+    assert "confirm" in later[-1].lower()
 
 
 def test_ok_does_not_invent_age_sex_weight_or_height():
@@ -210,7 +222,7 @@ def test_par_q_answers_are_kept_and_a_mixed_reply_asks_only_the_gap():
     assert not is_passing_check_in(refused)
 
 
-def test_all_no_counts_only_when_nothing_else_follows():
+def test_all_no_counts_only_when_the_whole_reply_is_that_phrase():
     body = ["hold, male, age 30, 80 kg, 180 cm", "ok"]
     unclear = (
         "all no except chest pain",
@@ -218,8 +230,11 @@ def test_all_no_counts_only_when_nothing_else_follows():
         "all no (I take blood pressure meds)",
         "all no apart from my knee",
         "all no 🫀",
-        "all no?",
         "all no, well maybe",
+        "it isn't all no",
+        "not quite all no",
+        "far from all no",
+        "i take medication, all no",
     )
     for reply in unclear:
         state, bots = run_chat(body + [reply, "yes"])
@@ -229,7 +244,42 @@ def test_all_no_counts_only_when_nothing_else_follows():
         assert bots[-2].startswith("Still need a yes or no:"), reply
         assert "\n" not in bots[-2]
         assert bots[-1].startswith("Still need a yes or no:")
-    for reply in ("all no.", "all no!", "all no,", "  all no  "):
+    kept = (
+        ("medication yes, all no", "currently_taking_medications"),
+        ("joint problem yes, all no", "bone_joint_problem_worsened_by_activity"),
+        ("supervised only yes, otherwise all no", "doctor_advised_supervised_only"),
+    )
+    for reply, key in kept:
+        state, bots = run_chat(body + [reply, "yes"])
+        assert state["confirmed"] is False, reply
+        assert state["par_q"].get(key) is True, reply
+        assert all(value is not False for value in state["par_q"].values()), reply
+        assert bots[-1].startswith("Still need a yes or no:"), reply
+        assert "\n" not in bots[-1]
+    chest, chest_bots = run_chat(body + ["chest pain yes. all no", "yes"])
+    assert chest["confirmed"] is False
+    assert chest["par_q"]["chest_pain_at_rest"] is True
+    assert chest["par_q"]["chest_pain_during_activity"] is True
+    assert all(value is not False for value in chest["par_q"].values())
+    assert chest_bots[-1].startswith("Still need a yes or no:")
+    assert "\n" not in chest_bots[-1]
+    accepted = (
+        "all no.",
+        "all no!",
+        "all no,",
+        "  all no  ",
+        "all no?",
+        "all no thanks",
+        "all no lol",
+        "all no 👍",
+        "all no 👍🏻",
+        "no to all",
+        "none",
+        "nope all no",
+        "honestly all no",
+        "all no :)",
+    )
+    for reply in accepted:
         state, _bots = run_chat(body + [reply, "yes"])
         assert state["confirmed"] is True, reply
         assert len(state["par_q"]) == len(PAR_Q)

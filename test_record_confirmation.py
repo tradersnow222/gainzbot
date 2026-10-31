@@ -392,3 +392,50 @@ def test_seal_keys_live_in_a_gitignored_install_file():
     assert seal_hex(b"confirmation", "payload") == seal_hex("confirmation", "payload")
     readme = (root / "README.md").read_text(encoding="utf-8")
     assert "tamper-evidence, not security" in readme
+    assert "mode 0600" in readme
+
+
+def test_seal_key_is_mode_0600_and_an_unreadable_key_is_not_overwritten(tmp_path, monkeypatch):
+    import os
+
+    from seal_secret import install_secret, seal_hex
+
+    path = tmp_path / "seal.key"
+    monkeypatch.setattr("seal_secret._key_path", lambda: str(path))
+    key = install_secret()
+    assert key is not None and len(key) >= 32
+    assert path.stat().st_mode & 0o777 == 0o600
+    assert install_secret() == key
+
+    short = tmp_path / "short.key"
+    short.write_bytes(b"tiny")
+    monkeypatch.setattr("seal_secret._key_path", lambda: str(short))
+    assert install_secret() is None
+    assert short.read_bytes() == b"tiny"
+
+    blocked = tmp_path / "blocked.key"
+    original = b"k" * 32
+    blocked.write_bytes(original)
+    monkeypatch.setattr("seal_secret._key_path", lambda: str(blocked))
+    real_open = open
+
+    def guarded(file, *args, **kwargs):
+        target = file if isinstance(file, (str, bytes)) else getattr(file, "name", None)
+        if target is not None and os.path.abspath(str(target)) == os.path.abspath(blocked):
+            raise PermissionError("blocked")
+        return real_open(file, *args, **kwargs)
+
+    monkeypatch.setattr("builtins.open", guarded)
+    assert install_secret() is None
+    descriptor = os.open(blocked, os.O_RDONLY)
+    try:
+        assert os.read(descriptor, 64) == original
+    finally:
+        os.close(descriptor)
+    monkeypatch.setattr("seal_secret.install_secret", lambda: None)
+    try:
+        seal_hex(b"confirmation", "payload")
+        raised = False
+    except OSError:
+        raised = True
+    assert raised

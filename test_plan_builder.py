@@ -901,10 +901,10 @@ def test_a_bad_backup_does_not_replace_the_live_log(tmp_path):
     })
     (tmp_path / "log.json.bak").write_bytes((json.dumps(newer) + "\n").encode("utf-8"))
     again = LogStore(log_path)
-    assert again.data["confirmations"][0]["record_id"] == "kept"
-    assert all(row.get("record_id") != "newer-than-live" for row in again.data["confirmations"])
-    assert log_path.read_bytes() == raw
-    assert (tmp_path / "log.json.bak").exists()
+    ids = [row.get("record_id") for row in again.data["confirmations"]]
+    assert "kept" in ids
+    assert "newer-than-live" in ids
+    assert not (tmp_path / "log.json.bak").exists()
 
 
 def test_a_crashed_save_is_recovered_on_the_next_load(tmp_path):
@@ -934,8 +934,9 @@ def test_a_crashed_save_is_recovered_on_the_next_load(tmp_path):
     log_path.write_text(json.dumps(crashed) + "\n", encoding="utf-8")
     restored = LogStore(log_path)
     assert restored.data["confirmations"]
-    assert all(row.get("record_id") != "crashed-yes" for row in restored.data["confirmations"])
-    assert not (tmp_path / "log.json.bak").exists()
+    assert any(row.get("record_id") == "crashed-yes" for row in restored.data["confirmations"])
+    assert any(row.get("record_id") == record_id for row in restored.data["confirmations"])
+    assert (tmp_path / "log.json.bak").exists()
     assert json.loads(path.read_text(encoding="utf-8"))["confirmation"]["record_id"] == record_id
     (tmp_path / "log.json.bak").write_bytes(b'{"confirmations": []}\n')
     kept = LogStore(log_path)
@@ -1100,3 +1101,36 @@ def test_an_orphan_backup_cannot_replace_a_log_with_more_rows(tmp_path):
     read = _read_log(str(plan_log))
     assert read["meals"][0]["calories"] == 500
     assert len(read["checkins"]) == 1
+
+    missing_meal = json.loads(json.dumps(live))
+    missing_meal["confirmations"].append({"record_id": "extra", "confirmed": True})
+    missing_meal["meals"] = []
+    missing_bytes = (json.dumps(missing_meal) + "\n").encode("utf-8")
+    assert log_replace(missing_bytes, live_bytes) is False
+    assert plan_replace(missing_bytes, live_bytes) is False
+    same = json.loads(json.dumps(live))
+    same_bytes = (json.dumps(same) + "\n").encode("utf-8")
+    assert log_replace(same_bytes, live_bytes) is False
+    assert plan_replace(same_bytes, live_bytes) is False
+
+    fuller = json.loads(json.dumps(live))
+    fuller["sets"].append({"exercise": "squat", "reps": 5})
+    fuller["weights"].append({"kg": 80})
+    fuller["meals"].append({"date": "2026-10-31", "calories": 600})
+    fuller["checkins"].append({"date": "2026-10-31", "sleep": 7})
+    fuller["confirmations"].append({"record_id": "extra", "confirmed": True})
+    full_bytes = (json.dumps(fuller) + "\n").encode("utf-8")
+    assert log_replace(full_bytes, live_bytes) is True
+    assert plan_replace(full_bytes, live_bytes) is True
+    (tmp_path / "log.json.bak").write_bytes(full_bytes)
+    replaced = LogStore(log_path)
+    assert len(replaced.data["meals"]) == 2
+    assert replaced.data["sets"][0]["exercise"] == "squat"
+    assert not (tmp_path / "log.json.bak").exists()
+    plan_full = folder / "log.json"
+    plan_full.write_bytes(live_bytes)
+    (folder / "log.json.bak").write_bytes(full_bytes)
+    restored_plan = _read_log(str(plan_full))
+    assert len(restored_plan["meals"]) == 2
+    assert restored_plan["weights"][0]["kg"] == 80
+    assert not (folder / "log.json.bak").exists()
