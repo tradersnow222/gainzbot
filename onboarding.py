@@ -435,7 +435,11 @@ def _parse_explicit(state, reply):
         answers["target"] = target.group(1) + " kg"
     weight = re.search(r"\b(\d+(?:\.\d+)?)\s*kg\b", folded)
     if weight and "weight" not in answers:
-        answers["weight"] = weight.group(1) + " kg"
+        value = float(weight.group(1))
+        if _kg_in_range(value):
+            answers["weight"] = weight.group(1) + " kg"
+        else:
+            state["error"] = _WEIGHT_ASK
     if re.search(r"\b(female|woman)\b", folded):
         answers["sex"] = "female"
     elif re.search(r"\b(male|man)\b", folded):
@@ -495,25 +499,158 @@ _CLOCK = re.compile(
 
 
 def _mask_clocks(reply):
-    """A clock is not an age. 6:30, 9pm, and at 7 drop out before the age read."""
+    """Drop a parsed routine time so its digits are not an age hint."""
     if not isinstance(reply, str):
         return ""
     return _CLOCK.sub(lambda match: re.sub(r"\d", " ", match.group(0)), reply)
 
 
-def _age_candidates(reply):
-    """Bare ages left after clocks and units are removed. 1 through 120 only."""
-    text = _mask_clocks(reply)
-    text = re.sub(r"\b\d+(?:\.\d+)?\s*kg\b", " ", text, flags=re.IGNORECASE)
-    text = re.sub(r"\b\d+(?:\.\d+)?\s*cm\b", " ", text, flags=re.IGNORECASE)
-    text = re.sub(r"\b\d+\s+min(?:ute)?s?\b", " ", text, flags=re.IGNORECASE)
-    text = re.sub(r"\b\d+\s+days?\b", " ", text, flags=re.IGNORECASE)
-    found = []
-    for token in re.findall(r"\b\d{1,3}\b", _fold(text)):
-        value = int(token)
-        if 1 <= value <= 120:
-            found.append(value)
-    return found
+_AGE_ASK = "How old are you? Please type the number."
+_WEIGHT_ASK = "What is your weight in kg? Please type a number from 30 to 300."
+_UNCLEAR = "I didn't catch that. What should I change?"
+_NUMBER_WORDS = frozenset({
+    "zero", "one", "two", "three", "four", "five", "six", "seven", "eight", "nine",
+    "ten", "eleven", "twelve", "thirteen", "fourteen", "fifteen", "sixteen",
+    "seventeen", "eighteen", "nineteen", "twenty", "thirty", "forty", "fifty",
+    "sixty", "seventy", "eighty", "ninety", "hundred",
+    "first", "second", "third", "fourth", "fifth", "sixth", "seventh", "eighth",
+    "ninth", "tenth", "eleventh", "twelfth", "thirteenth", "fourteenth",
+    "fifteenth", "sixteenth", "seventeenth", "eighteenth", "nineteenth", "twentieth",
+})
+_AGE_WORDS = frozenset({
+    "under", "over", "minor", "grade", "school", "yo", "years", "old", "teen",
+    "teens", "teenage", "teenager",
+})
+_WEIGHT_EDIT = re.compile(
+    r"^(?:(?:wait|actually|please|sorry|just)\s+)*"
+    r"(?:my\s+)?(?:weight(?:\s+is)?\s+)?(\d+(?:\.\d+)?)\s+kg$"
+)
+_DAYS_EDIT = re.compile(
+    r"^(?:(?:wait|actually|please|sorry|just)\s+)*"
+    r"(?:make\s+it\s+|change\s+(?:it\s+)?to\s+)?"
+    r"([1-7])\s+days?$"
+)
+_HEIGHT_EDIT = re.compile(
+    r"^(?:(?:wait|actually|please|sorry|just)\s+)*"
+    r"(?:my\s+)?height(?:\s+is)?\s+(\d{2,3})\s+cm$"
+)
+
+
+def _kg_in_range(value):
+    from plan_check import PlanValidator
+
+    return PlanValidator.MIN_BODY_WEIGHT_KG <= float(value) <= PlanValidator.MAX_BODY_WEIGHT_KG
+
+
+def _non_latin_letter(reply):
+    if not isinstance(reply, str):
+        return False
+    for char in reply:
+        if not char.isalpha():
+            continue
+        try:
+            name = unicodedata.name(char)
+        except ValueError:
+            return True
+        if "LATIN" not in name:
+            return True
+    return False
+
+
+def _hints_age(reply):
+    """True when the reply hints at age. The number itself is not read."""
+    if not isinstance(reply, str) or not reply.strip():
+        return False
+    if _non_latin_letter(reply):
+        return True
+    folded = _fold(_mask_clocks(reply))
+    if re.search(r"\d", folded):
+        return True
+    for token in folded.split():
+        if token in _AGE_WORDS or token in _NUMBER_WORDS or token.startswith("teen"):
+            return True
+    return False
+
+
+def _explicit_edit(reply):
+    """A profile edit that uses the whole reply, or None."""
+    folded = _fold(reply)
+    weight = _WEIGHT_EDIT.fullmatch(folded)
+    if weight:
+        return ("weight", weight.group(1) + " kg")
+    days = _DAYS_EDIT.fullmatch(folded)
+    if days:
+        return ("days", days.group(1))
+    height = _HEIGHT_EDIT.fullmatch(folded)
+    if height:
+        return ("height", height.group(1) + " cm")
+    return None
+
+
+def _apply_edit(state, edit):
+    kind, value = edit
+    state["confirmed"] = False
+    state["record"] = None
+    state["awaiting"] = None
+    if kind == "weight":
+        number = float(value.split()[0])
+        if not _kg_in_range(number):
+            state["awaiting"] = "weight"
+            state["error"] = _WEIGHT_ASK
+            return True
+        state["answers"]["weight"] = value
+    elif kind == "days":
+        state["answers"]["training_days"] = value
+        state["answers"]["days"] = _dates(value)
+    elif kind == "height":
+        state["answers"]["height"] = value
+    state["error"] = None
+    return True
+
+
+def _typed_int(reply):
+    folded = _fold(reply)
+    if not re.fullmatch(r"\d{1,3}", folded):
+        return None
+    return int(folded)
+
+
+def _take_age_number(state, reply):
+    """Readiness runs on the typed number. Leftover text is not an age."""
+    state["confirmed"] = False
+    state["record"] = None
+    number = _typed_int(reply)
+    if number is None or not 1 <= number <= 120:
+        state["awaiting"] = "age"
+        state["error"] = _AGE_ASK
+        return True
+    state["answers"]["age"] = str(number)
+    state["awaiting"] = None
+    _apply_age_readiness(state)
+    return True
+
+
+def _take_weight_number(state, reply):
+    state["confirmed"] = False
+    state["record"] = None
+    folded = _fold(reply)
+    match = re.fullmatch(r"(\d+(?:\.\d+)?)(?:\s+kg)?", folded)
+    if match is None:
+        state["awaiting"] = "weight"
+        state["error"] = _WEIGHT_ASK
+        return True
+    number = float(match.group(1))
+    if not _kg_in_range(number):
+        state["awaiting"] = "weight"
+        state["error"] = _WEIGHT_ASK
+        return True
+    shown = match.group(1)
+    if shown.endswith(".0"):
+        shown = shown[:-2]
+    state["answers"]["weight"] = shown + " kg"
+    state["awaiting"] = None
+    state["error"] = None
+    return True
 
 
 def _intake_age(folded):
@@ -528,34 +665,8 @@ def _intake_age(folded):
     return None
 
 
-def _changed_age(reply, stored_text):
-    """An age in this reply that is not the stored age, or None."""
-    stored = _number(stored_text)
-    candidates = _age_candidates(reply)
-    if stored is None:
-        differing = candidates
-    else:
-        differing = [age for age in candidates if age != int(stored)]
-    if not differing:
-        return None
-    return differing[-1]
-
-
-def _changed_weight(reply, stored_text):
-    """An explicit weight correction, such as 'my weight is 60 kg'."""
-    folded = _fold(reply)
-    match = re.search(r"\bweight\s+is\s+(\d+(?:\.\d+)?)\s*kg\b", folded)
-    if not match:
-        match = re.search(r"\bweight\s+(\d+(?:\.\d+)?)\s*kg\b", folded)
-    if not match:
-        return None
-    stated = match.group(1) + " kg"
-    if _number(stated) == _number(stored_text):
-        return None
-    return stated
-
-
 def apply_reply(state, reply):
+    state["error"] = None
     folded = _fold(reply)
     if state["phase"] == "confirm" and _handle_confirm(state, reply):
         return
@@ -571,38 +682,40 @@ def apply_reply(state, reply):
 
 
 def _handle_confirm(state, reply):
-    """Confirm only when this reply does not correct age or weight.
+    """Confirm only when the whole reply is a plan-yes.
 
-    A different age updates the profile and never confirms on this turn.
-    Under 18, readiness refuses the plan. A pause wins the message.
-    A weight correction re-proposes, the same way a day-count edit does.
+    Anything else is an edit. A clear weight or profile edit updates the
+    profile and the proposal is shown again. A hint of age asks for the
+    number. Readiness runs on that typed number, and this turn never
+    confirms. Leftover text that is not an edit asks a short question.
     """
     from record_confirmation import reply_pause
 
     paused = reply_pause(reply)
-    age = _changed_age(reply, state["answers"].get("age"))
-    weight = _changed_weight(reply, state["answers"].get("weight"))
-    if age is not None:
-        state["answers"]["age"] = str(age)
-    if weight is not None:
-        state["answers"]["weight"] = weight
     if paused is not None:
         state["confirmed"] = False
         state["record"] = None
         state["error"] = paused.message
         return True
-    if age is not None:
-        _apply_age_readiness(state)
-        return True
-    if weight is not None:
-        state["confirmed"] = False
-        state["record"] = None
-        state["error"] = None
-        return True
+    if state.get("awaiting") == "age":
+        return _take_age_number(state, reply)
+    if state.get("awaiting") == "weight":
+        return _take_weight_number(state, reply)
     if _is_plan_yes(reply):
+        state["awaiting"] = None
         _confirm(state, reply)
         return True
-    return False
+    edit = _explicit_edit(reply)
+    if edit is not None:
+        return _apply_edit(state, edit)
+    state["confirmed"] = False
+    state["record"] = None
+    if _hints_age(reply):
+        state["awaiting"] = "age"
+        state["error"] = _AGE_ASK
+        return True
+    state["error"] = _UNCLEAR
+    return True
 
 
 def _apply_age_readiness(state):

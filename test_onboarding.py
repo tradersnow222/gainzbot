@@ -153,7 +153,14 @@ def test_a_yes_with_only_a_schedule_edit_confirms_in_the_same_turn():
 
 
 def test_an_age_correction_under_18_at_confirm_refuses_the_plan():
-    state, bots = run_chat(list(HAPPY_PATH[:-1]) + ["wait, I'm actually 15"])
+    from onboarding import _AGE_ASK
+
+    asked, asked_bots = run_chat(list(HAPPY_PATH[:-1]) + ["wait, I'm actually 15"])
+    assert asked["confirmed"] is False
+    assert asked["answers"]["age"] == "30"
+    assert asked["record"] is None
+    assert asked_bots[-1] == _AGE_ASK
+    state, bots = run_chat(list(HAPPY_PATH[:-1]) + ["wait, I'm actually 15", "15"])
     assert state["confirmed"] is False
     assert state["answers"]["age"] == "15"
     assert state["record"] is None
@@ -163,7 +170,7 @@ def test_an_age_correction_under_18_at_confirm_refuses_the_plan():
     assert "calorie" in text
     assert "protein" in text
     assert "one yes confirms the plan" not in text
-    later, later_bots = run_chat(list(HAPPY_PATH[:-1]) + ["wait, I'm actually 15", "yes"])
+    later, later_bots = run_chat(list(HAPPY_PATH[:-1]) + ["wait, I'm actually 15", "15", "yes"])
     assert later["confirmed"] is False
     assert later["answers"]["age"] == "15"
     assert later["record"] is None or later["record"].confirmed is False
@@ -179,24 +186,57 @@ _AGE_25 = (
 )
 
 
-@pytest.mark.parametrize("reply, age", [
-    ("actually 16", "16"),
-    ("im 17 not 25", "17"),
-    ("yes, im 15", "15"),
-    ("yes but im 15", "15"),
-    ("I'm 15", "15"),
-    ("i am 15", "15"),
-    ("im 15", "15"),
-    ("15", "15"),
-    ("my age is 15", "15"),
-    ("I lied, im 15", "15"),
-    ("wait, 17", "17"),
-    ("yes, morning 6:30, im 15", "15"),
-])
-def test_a_different_age_at_confirm_never_confirms(reply, age):
+_AGE_HINTS = (
+    "actually 16",
+    "im 17 not 25",
+    "yes, im 15",
+    "yes but im 15",
+    "I'm 15",
+    "i am 15",
+    "im 15",
+    "15",
+    "my age is 15",
+    "I lied, im 15",
+    "wait, 17",
+    "yes, morning 6:30, im 15",
+    "im 15 at 6:30",
+    "im under 18",
+    "not 18 yet",
+    "turning 18 next month",
+    "fifteen",
+    "im fifteen",
+    "yes im sixteen",
+    "seventeen years old",
+    "under eighteen",
+    "15yo",
+    "15歳",
+    "minor",
+    "i'm a minor",
+    "im in 10th grade",
+)
+
+
+@pytest.mark.parametrize("reply", _AGE_HINTS)
+def test_an_age_hint_at_confirm_asks_and_never_confirms(reply):
+    from onboarding import _AGE_ASK
+
     state, bots = run_chat(list(_AGE_25) + [reply])
-    assert state["answers"]["age"] == age, reply
     assert state["confirmed"] is False, reply
+    assert state["answers"]["age"] == "25", reply
+    assert state["record"] is None, reply
+    assert bots[-1] == _AGE_ASK, reply
+    assert "one yes confirms the plan" not in bots[-1].lower(), reply
+    later, later_bots = run_chat(list(_AGE_25) + [reply, "yes"])
+    assert later["confirmed"] is False, reply
+    assert later["answers"]["age"] == "25", reply
+    assert later_bots[-1] == _AGE_ASK, reply
+
+
+@pytest.mark.parametrize("reply", _AGE_HINTS)
+def test_readiness_runs_on_the_typed_age_not_the_hint(reply):
+    state, bots = run_chat(list(_AGE_25) + [reply, "15"])
+    assert state["confirmed"] is False, reply
+    assert state["answers"]["age"] == "15", reply
     assert state["record"] is None, reply
     text = bots[-1].lower()
     assert "under 18" in text, reply
@@ -204,42 +244,124 @@ def test_a_different_age_at_confirm_never_confirms(reply, age):
     assert "calorie" in text, reply
     assert "protein" in text, reply
     assert "one yes confirms the plan" not in text, reply
-    later, later_bots = run_chat(list(_AGE_25) + [reply, "yes"])
+    later, later_bots = run_chat(list(_AGE_25) + [reply, "15", "yes"])
     assert later["confirmed"] is False, reply
-    assert later["answers"]["age"] == age, reply
-    assert later["record"] is None or later["record"].confirmed is False, reply
+    assert later["answers"]["age"] == "15", reply
     assert "calorie" in later_bots[-1].lower(), reply
     assert "protein" in later_bots[-1].lower(), reply
 
 
 def test_a_schedule_clock_is_not_read_as_an_age():
-    morning, _bots = run_chat(list(_AGE_25) + ["yes, morning 6:30"])
+    from onboarding import _AGE_ASK, _UNCLEAR
+
+    morning, morning_bots = run_chat(list(_AGE_25) + ["yes, morning 6:30"])
     assert morning["confirmed"] is True
     assert morning["answers"]["age"] == "25"
     assert morning["times"]["daily_checkin"] == "06:30"
-    at_seven, _bots = run_chat(list(_AGE_25) + ["at 7"])
+    assert _AGE_ASK not in morning_bots[-1]
+    at_seven, at_bots = run_chat(list(_AGE_25) + ["at 7"])
     assert at_seven["confirmed"] is False
     assert at_seven["answers"]["age"] == "25"
-    evening, _bots = run_chat(list(_AGE_25) + ["yes, evening 9pm"])
+    assert at_bots[-1] == _UNCLEAR
+    assert _AGE_ASK not in at_bots[-1]
+    evening, evening_bots = run_chat(list(_AGE_25) + ["yes, evening 9pm"])
     assert evening["confirmed"] is True
     assert evening["answers"]["age"] == "25"
     assert evening["times"]["evening_followup"] == "21:00"
-    review, _bots = run_chat(list(_AGE_25) + ["yes, review sunday 7pm"])
+    assert _AGE_ASK not in evening_bots[-1]
+    review, review_bots = run_chat(list(_AGE_25) + ["yes, review sunday 7pm"])
     assert review["confirmed"] is True
     assert review["answers"]["age"] == "25"
     assert "19:00" in review["times"]["weekly_review"]
+    assert _AGE_ASK not in review_bots[-1]
 
 
 def test_a_weight_correction_at_confirm_reproposes():
-    state, bots = run_chat(list(_AGE_25) + ["wait my weight is 60 kg"])
+    from onboarding import _AGE_ASK
+
+    for reply in ("wait my weight is 60 kg", "actually 60 kg"):
+        state, bots = run_chat(list(_AGE_25) + [reply])
+        assert state["confirmed"] is False, reply
+        assert state["answers"]["weight"] == "60 kg", reply
+        assert state["answers"]["age"] == "25", reply
+        assert "one yes confirms the plan" in bots[-1].lower(), reply
+        assert _AGE_ASK not in bots[-1], reply
+        done, _bots = run_chat(list(_AGE_25) + [reply, "yes"])
+        assert done["confirmed"] is True, reply
+        assert _profile(done)["weight_kg"] == 60, reply
+
+
+def test_a_typed_adult_age_shows_the_plan_again():
+    state, bots = run_chat(list(_AGE_25) + ["minor", "26"])
     assert state["confirmed"] is False
-    assert state["answers"]["weight"] == "60 kg"
-    assert state["answers"]["age"] == "25"
-    assert "60" in bots[-1] or "one yes confirms the plan" in bots[-1].lower()
+    assert state["answers"]["age"] == "26"
     assert "one yes confirms the plan" in bots[-1].lower()
-    done, _bots = run_chat(list(_AGE_25) + ["wait my weight is 60 kg", "yes"])
+    assert "How old are you?" not in bots[-1]
+    done, _bots = run_chat(list(_AGE_25) + ["minor", "26", "yes"])
     assert done["confirmed"] is True
-    assert _profile(done)["weight_kg"] == 60
+    assert done["answers"]["age"] == "26"
+
+
+def test_a_weight_outside_30_to_300_asks_again():
+    from onboarding import _WEIGHT_ASK
+
+    state, bots = run_chat(list(_AGE_25) + ["actually 20 kg"])
+    assert state["confirmed"] is False
+    assert state["answers"]["weight"] == "80 kg"
+    assert state["answers"]["age"] == "25"
+    assert bots[-1] == _WEIGHT_ASK
+    still, still_bots = run_chat(list(_AGE_25) + ["actually 20 kg", "yes"])
+    assert still["confirmed"] is False
+    assert still["answers"]["weight"] == "80 kg"
+    assert still_bots[-1] == _WEIGHT_ASK
+    fixed, fixed_bots = run_chat(list(_AGE_25) + ["actually 20 kg", "60"])
+    assert fixed["confirmed"] is False
+    assert fixed["answers"]["weight"] == "60 kg"
+    assert "one yes confirms the plan" in fixed_bots[-1].lower()
+    low, low_bots = run_chat(["hello", "hold, male, age 30, 20 kg, 180 cm"])
+    assert low["answers"].get("weight") != "20 kg"
+    assert "age" in low["answers"]
+    assert low_bots[-1] == _WEIGHT_ASK
+    high, high_bots = run_chat(list(_AGE_25) + ["wait my weight is 301 kg"])
+    assert high["answers"]["weight"] == "80 kg"
+    assert high["confirmed"] is False
+    assert high_bots[-1] == _WEIGHT_ASK
+
+
+def test_an_unknown_confirm_reply_asks_and_does_not_confirm():
+    from onboarding import _UNCLEAR
+
+    state, bots = run_chat(list(_AGE_25) + ["sounds maybe"])
+    assert state["confirmed"] is False
+    assert state["answers"]["age"] == "25"
+    assert state["record"] is None
+    assert bots[-1] == _UNCLEAR
+    assert "one yes confirms the plan" not in bots[-1].lower()
+
+
+def test_the_onboarding_first_plan_record_saves(tmp_path):
+    from onboarding import _check_in, _profile
+    from plan_builder import PlanBuilder
+
+    state, _bots = run_chat(HAPPY_PATH)
+    assert state["confirmed"] is True
+    assert state["record"].confirmed is True
+    profile = _profile(state)
+    check_in = _check_in(state)
+    built = PlanBuilder().propose(
+        profile, check_in, readiness_result=state["readiness"],
+    )
+    assert built["ok"] is True, built.get("message")
+    saved = PlanBuilder().save(
+        built["plan"],
+        state["record"],
+        tmp_path / "week.json",
+        built["sessions"],
+        check_in_result=check_in,
+        readiness_result=state["readiness"],
+    )
+    assert saved["saved"] is True, saved.get("message")
+    assert "record_confirmation" not in saved["message"]
 
 
 def test_make_it_4_days_at_confirm_updates_the_profile_and_reproposes():

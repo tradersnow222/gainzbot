@@ -35,8 +35,15 @@ CLEAR_YES = {
 
 
 def hash_plan(plan) -> str:
-    """Stable hash of one exact plan version."""
-    payload = json.dumps(plan, sort_keys=True, separators=(",", ":"), default=str)
+    """Stable hash of one exact plan version.
+
+    first_plan is the onboarding marker that allows a routine-time yes.
+    It is not part of the week PlanBuilder.save checks.
+    """
+    body = plan
+    if isinstance(plan, dict) and "first_plan" in plan:
+        body = {key: value for key, value in plan.items() if key != "first_plan"}
+    payload = json.dumps(body, sort_keys=True, separators=(",", ":"), default=str)
     return hashlib.sha256(payload.encode("utf-8")).hexdigest()
 
 
