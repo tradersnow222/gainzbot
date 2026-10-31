@@ -6,6 +6,7 @@ import os
 import tempfile
 
 from photo_food_log import GROK_VISION_PROMPT, FoodLog
+from usual_meals import plan_to_confirm
 from plan_check import PlanValidator
 from record_confirmation import ConfirmationRecorder
 from red_flag_check import RedFlagChecker, is_passing_check_in
@@ -41,6 +42,12 @@ def fresh_log():
 
 def store(log, meal, day="2026-10-30"):
     return log.store_estimate(meal, day, recorded(meal))
+
+
+def remember(log, name, items, calories, protein_g):
+    ready = plan_to_confirm(log, name, items, calories, protein_g)
+    assert ready["ok"] is True
+    return log.remember_usual(name, items, calories, protein_g, recorded(ready["plan"]))
 
 
 def usual_plan(name, meal):
@@ -208,9 +215,16 @@ class TestPhotoEstimate:
 
 
 class TestUsualMeals:
+    def test_remember_usual_without_a_yes_stores_nothing(self):
+        log = fresh_log()
+        missed = log.remember_usual("breakfast", ["oats", "eggs"], 450, 30)
+        assert missed["stored"] is False
+        assert log.usuals == {}
+        assert "record_confirmation" in missed["message"]
+
     def test_usual_breakfast_logs_in_one_line(self):
         log = fresh_log()
-        remembered = log.remember_usual("breakfast", ["oats", "eggs"], 450, 30)
+        remembered = remember(log, "breakfast", ["oats", "eggs"], 450, 30)
         assert remembered["stored"] is True
         plan = usual_plan("breakfast", remembered["meal"])
         logged = log.log_line("usual breakfast", "2026-10-30", recorded(plan))
@@ -222,7 +236,7 @@ class TestUsualMeals:
 
     def test_usual_breakfast_needs_a_confirmation(self):
         log = fresh_log()
-        remembered = log.remember_usual("breakfast", ["oats", "eggs"], 450, 30)
+        remembered = remember(log, "breakfast", ["oats", "eggs"], 450, 30)
         plan = usual_plan("breakfast", remembered["meal"])
         missed = log.log_line("usual breakfast", "2026-10-30")
         bare = log.log_line("usual breakfast", "2026-10-30", True)
@@ -240,7 +254,7 @@ class TestUsualMeals:
 
     def test_other_lines_are_not_usual_meals(self):
         log = fresh_log()
-        log.remember_usual("breakfast", ["oats"], 400, 20)
+        remember(log, "breakfast", ["oats"], 400, 20)
         result = log.log_line("breakfast please", "2026-10-30")
         assert result["stored"] is False
         assert log.entries == []
@@ -260,7 +274,7 @@ class TestLeftToday:
     def test_meals_on_the_same_day_add_up(self):
         log = fresh_log()
         store(log, estimate())
-        remembered = log.remember_usual("breakfast", ["oats"], 400, 20)
+        remembered = remember(log, "breakfast", ["oats"], 400, 20)
         plan = usual_plan("breakfast", remembered["meal"])
         log.log_line("usual breakfast", "2026-10-30", recorded(plan))
         left = log.left_today("2026-10-30", ADULT, TARGETS)
