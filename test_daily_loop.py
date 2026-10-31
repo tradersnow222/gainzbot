@@ -215,6 +215,29 @@ def test_evening_food_does_not_invent_a_miss():
     assert food.phase[day] == "done"
 
 
+def test_the_onboarding_profile_opens_the_day():
+    from onboarding import HAPPY_PATH, _profile, run_chat
+
+    state, _bots = run_chat(HAPPY_PATH)
+    profile = _profile(state)
+    assert "days" in profile
+    day = "2026-10-26"
+    loop = DailyLoop(profile=profile)
+    opened = loop.open_morning(day)
+    assert opened.startswith("Morning.")
+    workout = loop.hear(day, "no 8 fine 45")
+    assert "Unknown key" not in workout
+    assert loop.phase[day] == "workout"
+    assert day in loop.workouts
+    junk = dict(profile)
+    junk["kcal"] = 1
+    blocked = DailyLoop(profile=junk)
+    blocked.open_morning(day)
+    refused = blocked.hear(day, "no 8 fine 45")
+    assert "Unknown key: 'kcal'" in refused
+    assert blocked.phase[day] == "paused"
+
+
 def test_a_no_with_anything_else_asks_the_symptom_line_again():
     from daily_loop import _SYMPTOM, adult_profile
 
