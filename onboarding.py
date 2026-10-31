@@ -333,21 +333,130 @@ def _paired_session_minutes(folded):
     return match.group(1)
 
 
+_SEX_WORD = r"(?:female|male|woman|man)"
+_OTHER_PERSON = (
+    "mom", "dad", "wife", "husband", "son", "daughter", "friend",
+    "partner", "brother", "sister", "kid",
+)
+_NOT_AN_AGE = {
+    "bench", "squat", "deadlift", "press", "row", "curl", "lunge", "rdl",
+    "pushup", "pushups", "rep", "reps", "set", "sets",
+    "min", "mins", "minute", "minutes", "day", "days",
+    "session", "sessions", "time", "times",
+    "kg", "lb", "lbs", "pound", "pounds",
+    "grade", "grader", "grades",
+}
+
+
+def _person_owns_number(folded, number_start):
+    """True when a nearby person word, not a sex or height token, owns this number."""
+    prefix = folded[:number_start]
+    person = None
+    for match in re.finditer(
+        r"\b(?:mom|dad|wife|husband|son|daughter|friend|partner|brother|sister|kid)s?\b",
+        prefix,
+    ):
+        person = match
+    if person is None:
+        return False
+    between = prefix[person.end():]
+    if re.search(rf"\bcm\b|\b{_SEX_WORD}\b", between):
+        return False
+    return True
+
+
+def _number_is_not_age(folded, start, end):
+    """A lift, a rep count, a unit, a grade, or someone else's age is not the user's age."""
+    if _person_owns_number(folded, start):
+        return True
+    before = folded[:start].split()
+    after = folded[end:].split()
+    prev = before[-1] if before else ""
+    nxt = after[0] if after else ""
+    if prev in _NOT_AN_AGE or prev in _OTHER_PERSON or prev.rstrip("s") in _OTHER_PERSON:
+        return True
+    if nxt in _NOT_AN_AGE or nxt in {"cm"}:
+        return True
+    return False
+
+
 def _bare_age(folded):
-    """One leftover number in 1 to 120. Kilograms, centimeters, and minutes are not ages."""
-    masked = re.sub(r"\b\d+(?:\.\d+)?\s*k\b", " ", folded)
-    masked = re.sub(r"\b\d+\s+to\s+\d+\b", " ", masked)
-    masked = re.sub(r"\b(?:want|target)\s+\d+(?:\.\d+)?\b", " ", masked)
-    masked = re.sub(r"\b\d+(?:\.\d+)?\s*(?:kg|cm)\b", " ", masked)
-    masked = re.sub(r"\b\d+\s+(?:min|mins|minutes|days?|weeks?|hours?|reps?|sets?)\b", " ", masked)
-    ages = []
-    for token in re.findall(r"\b(\d{1,3})\b", masked):
-        value = int(token)
-        if 1 <= value <= 120:
-            ages.append(value)
-    if len(ages) == 1:
-        return ages[0]
+    """A bare number is an age only beside a sex or height token.
+
+    '165 cm, 41, female', '41, female', and 'female, 41' count. A number on a
+    lift, a rep count, a unit, a grade, or another person does not. Any doubt
+    leaves the age blank.
+    """
+    patterns = (
+        re.compile(rf"\b\d{{2,3}}\s*cm\s+(\d{{1,3}})\b"),
+        re.compile(rf"\b(\d{{1,3}})\s+\d{{2,3}}\s*cm\b"),
+        re.compile(rf"\b(\d{{1,3}})\s+{_SEX_WORD}\b"),
+        re.compile(rf"\b{_SEX_WORD}\s+(\d{{1,3}})\b"),
+    )
+    wanted = re.search(r"\b(?:want|target)\s+(\d+(?:\.\d+)?)\b", folded)
+    wanted_span = wanted.span(1) if wanted is not None else None
+    found = []
+    for pattern in patterns:
+        for match in pattern.finditer(folded):
+            value = int(match.group(1))
+            if not 1 <= value <= 120:
+                continue
+            start, end = match.span(1)
+            if (start, end) == wanted_span:
+                continue
+            if _number_is_not_age(folded, start, end):
+                continue
+            found.append(value)
+    if len(set(found)) == 1:
+        return found[0]
     return None
+
+
+def _school_age_hint(folded):
+    """A grade or school word. It is not a typed age."""
+    if re.search(r"\b(?:high|middle)\s+school\b", folded):
+        return True
+    if re.search(r"\b(?:freshman|sophomore|teen|teens|teenage|teenager)\b", folded):
+        return True
+    if re.search(r"\bjunior\b", folded):
+        return True
+    if re.search(r"\bsenior\s+in\s+hs\b", folded):
+        return True
+    if re.search(r"\b\d+(?:st|nd|rd|th)\s+grad(?:e|er)s?\b", folded):
+        return True
+    if re.search(r"\b(?:grade|grader|grades)\b", folded):
+        return True
+    return False
+
+
+def _target_from_want(folded):
+    """'want N' is a target weight only beside a real current body weight.
+
+    N has to be from 30 to 300 kg. It is not a target when it is followed by
+    days, minutes, sets, reps, sessions, or times. None means the message
+    did not name a target. 'ask' means ask instead of guessing.
+    """
+    match = re.search(r"\b(?:want|target)\s+(\d+(?:\.\d+)?)\b", folded)
+    if match is None:
+        return None
+    raw = match.group(1)
+    after = folded[match.end():].strip()
+    if re.match(r"(?:days?|mins?|minutes?|sets?|reps?|sessions?|times?)\b", after):
+        return "ask"
+    value = float(raw)
+    if not _kg_in_range(value):
+        return "ask"
+    rest_after = re.sub(r"^(?:kg|lb|lbs|pounds?)\b", " ", after, count=1)
+    rest = folded[:match.start()] + " " + rest_after
+    rest = re.sub(
+        r"\b\d+(?:\.\d+)?\s+to\s+\d+(?:\.\d+)?\s*(?:kg|lb|lbs|pounds?)\b",
+        " ",
+        rest,
+    )
+    if re.search(r"\b\d+(?:\.\d+)?\s*(?:kg|lb|lbs|pounds?)\b", rest) is None:
+        return "ask"
+    shown = raw[:-2] if raw.endswith(".0") else raw
+    return shown + " kg"
 
 
 _SAFE_ALL_NO_WORDS = {
@@ -717,12 +826,23 @@ def _parse_explicit(state, reply):
         age = _bare_age(folded)
     if age is not None:
         answers["age"] = str(age)
+    elif "age" not in answers and _school_age_hint(folded):
+        state["phase"] = "age"
+        state["need_age"] = True
+        state["awaiting"] = None
+        state["error"] = _AGE_ASK
     height = re.search(r"\b(\d{2,3})\s*cm\b", folded)
     if height:
         answers["height"] = height.group(1) + " cm"
-    target = re.search(r"\b(?:target|want)\s+(\d+(?:\.\d+)?)(?:\s*kg)?\b", folded)
-    if target:
-        answers["target"] = target.group(1) + " kg"
+    target = _target_from_want(folded)
+    if target == "ask" and state.get("phase") != "age":
+        state["awaiting"] = "target"
+        if state.get("error") in (None, ""):
+            state["error"] = _TARGET_ASK
+    elif target is not None:
+        answers["target"] = target
+        if state.get("awaiting") == "target":
+            state["awaiting"] = None
     weight_text = re.sub(r"\b\d+(?:\.\d+)?\s+to\s+\d+(?:\.\d+)?\s*kg\b", " ", folded)
     weight = re.search(r"\b(\d+(?:\.\d+)?)\s*kg\b", weight_text)
     if weight and "weight" not in answers:
@@ -806,6 +926,7 @@ def _mask_clocks(reply):
 
 _AGE_ASK = "How old are you? Please type the number."
 _WEIGHT_ASK = "That weight looks off. What's your weight in kg?"
+_TARGET_ASK = "What's your target weight in kg?"
 _REST_LINE = "Rest today. Come back tomorrow, or after you see a doctor."
 _HOLD_CLOSED = (
     "Onboarding is held. The hold file is not usable. "
@@ -960,11 +1081,31 @@ def _take_age_number(state, reply):
     state["need_age"] = False
     _apply_age_readiness(state)
     if state.get("error"):
-        state["phase"] = "blocked"
+        if number < 18 or _first_missing(state) is None:
+            state["phase"] = "blocked"
+            return True
+        state["error"] = None
+        state["readiness"] = None
+        state["phase"] = "intake"
         return True
     state["hold_message"] = None
     state["phase"] = "confirm"
     return True
+
+
+def _take_target_number(state, reply):
+    """The reply after a target ask. A days or minutes phrase is not a weight."""
+    match = re.fullmatch(r"(\d+(?:\.\d+)?)(?:\s*kg)?", _soft(reply))
+    if match is None or not _kg_in_range(float(match.group(1))):
+        state["awaiting"] = "target"
+        state["error"] = _TARGET_ASK
+        return
+    shown = match.group(1)
+    if shown.endswith(".0"):
+        shown = shown[:-2]
+    state["answers"]["target"] = shown + " kg"
+    state["awaiting"] = None
+    state["error"] = None
 
 
 def _take_weight_number(state, reply):
@@ -1019,6 +1160,9 @@ def apply_reply(state, reply):
         return
     folded = _fold(reply)
     if phase == "confirm" and _handle_confirm(state, reply):
+        return
+    if state.get("awaiting") == "target":
+        _take_target_number(state, reply)
         return
     if folded == "skip":
         _remember_skip(state)
@@ -1761,6 +1905,12 @@ def speak(state):
         state["checks_again"] = False
     missing = _first_missing(state)
     if missing is not None:
+        if missing["id"] == "goal" and _missing_keys(state, missing) == ["age"]:
+            state["phase"] = "age"
+            state["need_age"] = True
+            state["asked"] = "goal"
+            state["error"] = _AGE_ASK
+            return _AGE_ASK
         state["phase"] = "intake"
         state["asked"] = missing["id"]
         if missing["id"] == "par_q" and (

@@ -1195,6 +1195,111 @@ def test_the_round3_transcript_confirms_in_four_turns(monkeypatch):
         assert all(item.get("reps") != "10 min" for item in row["exercises"])
 
 
+def test_a_bare_number_is_an_age_only_beside_sex_or_height():
+    from onboarding import _AGE_ASK, _bare_age, _fold
+
+    assert _bare_age(_fold("165 cm, 41, female")) == 41
+    assert _bare_age(_fold("41, female")) == 41
+    assert _bare_age(_fold("female, 41")) == 41
+    grader = (
+        "build muscle, 60 kg, 170 cm, male, 9th grader, full gym, "
+        "4 days a week, 45 min, bench 40"
+    )
+    state, bots = run_chat([grader])
+    assert state["answers"].get("age") in (None, "")
+    assert state["confirmed"] is False
+    assert state.get("record") is None
+    assert bots[-1] == _AGE_ASK
+    assert "one yes confirms the plan" not in bots[-1].lower()
+    still, still_bots = run_chat([grader, "yes"])
+    assert still["confirmed"] is False
+    assert still["answers"].get("age") in (None, "")
+    assert still_bots[-1] == _AGE_ASK
+    minor, minor_bots = run_chat([grader, "15"])
+    assert minor["confirmed"] is False
+    assert minor["answers"]["age"] == "15"
+    text = minor_bots[-1].lower()
+    assert "under 18" in text
+    assert "training" in text
+    assert "calorie" in text
+    assert "protein" in text
+    assert "one yes confirms the plan" not in text
+    later, later_bots = run_chat([grader, "15", "yes"])
+    assert later["confirmed"] is False
+    assert "one yes confirms the plan" not in later_bots[-1].lower()
+    push = "3 days a week, 30 min. I can do 20 pushups"
+    pushed, _bots = run_chat([push])
+    assert pushed["answers"].get("age") in (None, "")
+    assert pushed["confirmed"] is False
+    fuller = "lose fat, 70 kg, 165 cm, female, 3 days a week, 30 min. I can do 20 pushups"
+    asked, asked_bots = run_chat([fuller])
+    assert asked["answers"].get("age") in (None, "")
+    assert asked["confirmed"] is False
+    assert asked_bots[-1] == _AGE_ASK
+    mom = "my mom is 45 and trains with me"
+    parent, _bots = run_chat([mom])
+    assert parent["answers"].get("age") in (None, "")
+    assert parent["confirmed"] is False
+    fuller_mom = "lose fat, 70 kg, 165 cm, female. my mom is 45 and trains with me"
+    parent2, parent_bots = run_chat([fuller_mom])
+    assert parent2["answers"].get("age") in (None, "")
+    assert parent2["confirmed"] is False
+    assert parent_bots[-1] == _AGE_ASK
+
+
+def test_lift_reps_someone_else_and_a_grade_never_become_the_age():
+    from onboarding import _AGE_ASK
+
+    samples = (
+        "bench 40",
+        "male, bench 40",
+        "bench 40, male",
+        "I can do 20 pushups",
+        "20 reps",
+        "my dad is 50",
+        "my wife is 33",
+        "my son is 12",
+        "9th grader",
+        "10th grade",
+        "high school",
+        "freshman",
+        "sophomore",
+        "junior",
+        "senior in HS",
+        "middle school",
+        "I'm a teen",
+    )
+    for text in samples:
+        state, bots = run_chat([text])
+        assert state["answers"].get("age") in (None, ""), text
+        assert state["confirmed"] is False, text
+        assert "one yes confirms the plan" not in "\n".join(bots).lower(), text
+    teen, teen_bots = run_chat(["I'm a teen"])
+    assert teen_bots[-1] == _AGE_ASK
+    grown, grown_bots = run_chat(["I'm a teen", "19"])
+    assert grown["answers"]["age"] == "19"
+    assert grown["confirmed"] is False
+    assert grown_bots[-1] != _AGE_ASK
+    child, child_bots = run_chat(["I'm a teen", "16", "yes"])
+    assert child["confirmed"] is False
+    assert child["answers"]["age"] == "16"
+    assert "one yes confirms the plan" not in child_bots[-1].lower()
+
+
+def test_want_days_is_not_a_target_weight():
+    from onboarding import _TARGET_ASK
+
+    state, bots = run_chat(["I want 3 days"])
+    assert state["answers"].get("target") in (None, "")
+    assert bots[-1] == _TARGET_ASK
+    weighed, weighed_bots = run_chat(["70 kg now, I want 3 days"])
+    assert weighed["answers"].get("target") in (None, "")
+    assert weighed_bots[-1] == _TARGET_ASK
+    kept, _bots = run_chat(["70 kg now, want 64. 165 cm, 41, female"])
+    assert kept["answers"]["target"] == "64 kg"
+    assert kept["answers"]["age"] == "41"
+
+
 def test_all_no_phrases_need_the_message_to_stay_free_of_symptoms():
     from onboarding import read_par_q
 
