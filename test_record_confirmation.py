@@ -355,11 +355,14 @@ class TestClearYes:
         assert copied.confirmed is False
         assert hash_plan(forged) != hash_plan(later)
         assert not ConfirmationRecorder().covers(record, later)
+        from record_confirmation import first_plan_seal
+
+        assert first_plan_seal(later) == ""
         sealed = _mark_first_plan(later)
-        assert hash_plan(sealed) != hash_plan(later)
+        assert not sealed.get("first_plan_seal")
         assert ConfirmationRecorder().record(
             sealed, "yes, morning 6:30", "user", passing_check_in()
-        ).confirmed is True
+        ).confirmed is False
 
     def test_a_schedule_yes_with_a_symptom_stays_a_red_flag(self):
         reply = "yes, morning 6:30, but my chest hurts"

@@ -2,6 +2,7 @@
 """Grouped onboarding. A few short messages, then one yes."""
 
 from datetime import datetime, timedelta, timezone
+import json
 import os
 import re
 import unicodedata
@@ -108,6 +109,10 @@ def _fold(reply):
     for char in text:
         cleaned.append(char if char.isalnum() or char.isspace() else " ")
     return " ".join("".join(cleaned).split())
+
+
+def _today():
+    return datetime.now(timezone.utc).date()
 
 
 def _dates(count):
@@ -507,6 +512,7 @@ def _mask_clocks(reply):
 
 _AGE_ASK = "How old are you? Please type the number."
 _WEIGHT_ASK = "That weight looks off. What's your weight in kg?"
+_REST_LINE = "Rest today. Come back tomorrow, or after you see a doctor."
 _AGE_EMOJI = "\U0001F9D2\U0001F476\U0001F466\U0001F467"
 _NUMBER_WORDS = frozenset({
     "zero", "one", "two", "three", "four", "five", "six", "seven", "eight", "nine",
@@ -720,16 +726,73 @@ def apply_reply(state, reply):
         _review_confirm_edit(state, reply)
 
 
-def _hold_symptom(state, reply, paused):
-    """Leave confirm. The stored proposal cannot be accepted on a later yes."""
+def _symptom_hold_message(paused):
+    text = (getattr(paused, "message", None) or "").strip()
+    if _REST_LINE not in text:
+        text = (text + " " + _REST_LINE).strip()
+    return text
+
+
+def onboarding_state_path():
+    """Dated symptom hold and the answers to resume the next day."""
+    return os.path.join(os.path.dirname(os.path.abspath(__file__)), "data", "onboarding_state.json")
+
+
+def _write_onboarding_state(state):
+    payload = {
+        "answers": state.get("answers") if isinstance(state.get("answers"), dict) else {},
+        "checks_again": True,
+        "hold": {
+            "date": _today().isoformat(),
+            "message": state.get("hold_message") or _REST_LINE,
+        },
+    }
+    path = onboarding_state_path()
+    temporary = path + ".tmp"
+    try:
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        with open(temporary, "w", encoding="utf-8") as handle:
+            json.dump(payload, handle)
+            handle.write("\n")
+        os.replace(temporary, path)
+    except OSError:
+        return False
+    return True
+
+
+def _load_onboarding_state():
+    try:
+        with open(onboarding_state_path(), encoding="utf-8") as handle:
+            loaded = json.load(handle)
+    except (OSError, json.JSONDecodeError):
+        return None
+    return loaded if isinstance(loaded, dict) else None
+
+
+def _clear_onboarding_state():
+    path = onboarding_state_path()
+    if os.path.isfile(path):
+        os.remove(path)
+        return True
+    return False
+
+
+def _end_onboarding_for_today(state, paused):
+    """A symptom happening now ends onboarding until the next calendar day."""
     _clear_proposal(state)
     state["phase"] = "symptom"
     state["awaiting"] = None
-    state["hold_message"] = paused.message
-    state["error"] = paused.message
-    if _hints_age(reply):
-        state["need_age"] = True
+    state["need_age"] = False
+    state["checks_again"] = True
+    state["hold_message"] = _symptom_hold_message(paused)
+    state["error"] = state["hold_message"]
+    _write_onboarding_state(state)
     return True
+
+
+def _hold_symptom(state, reply, paused):
+    """Leave confirm for the rest of the day. Nothing in this conversation resumes it."""
+    return _end_onboarding_for_today(state, paused)
 
 
 def _hold_age(state):
@@ -742,52 +805,33 @@ def _hold_age(state):
     return True
 
 
-def _symptom_check_cleared(reply):
-    """A clear no on the safety line, issued by red_flag_check. A yes is not this."""
-    from red_flag_check import RedFlagChecker, clear_safety_no, is_passing_check_in
-
-    if not clear_safety_no(reply):
-        return False
-    checker = RedFlagChecker()
-    scanned = checker.scan_text(reply)
-    if scanned.pause_plan:
-        return False
-    answers = {aliases[0]: "no" for _flag, aliases in checker.CHECKLIST_GROUPS}
-    result = checker.scan_check_in({"symptom_checklist": answers, "notes": reply})
-    return is_passing_check_in(result)
-
-
 def _handle_symptom(state, reply):
-    """Stay off the proposal until red_flag_check or readiness clears.
-
-    A bare yes never confirms and never clears the hold.
-    """
+    """The day is over. A typed age can only block a minor. It never resumes."""
     from record_confirmation import reply_pause
 
     _clear_proposal(state)
+    state["phase"] = "symptom"
     paused = reply_pause(reply)
     if paused is not None:
-        return _hold_symptom(state, reply, paused)
-    if _is_plan_yes(reply):
-        state["phase"] = "symptom"
-        state["error"] = state.get("hold_message") or _AGE_ASK
-        return True
-    if state.get("need_age") and _typed_int(reply) is not None:
-        return _take_age_number(state, reply)
-    if state.get("need_age"):
-        state["phase"] = "symptom"
-        state["error"] = _AGE_ASK
-        return True
-    if _symptom_check_cleared(reply):
+        return _end_onboarding_for_today(state, paused)
+    number = _typed_int(reply)
+    if number is not None and 1 <= number <= 120:
+        state["answers"]["age"] = str(number)
+    age = _number(state["answers"].get("age"))
+    if number is not None and age is not None and age < 18:
         _apply_age_readiness(state)
-        if state.get("error"):
-            state["phase"] = "blocked"
-            return True
-        state["hold_message"] = None
-        state["phase"] = "confirm"
+        state["phase"] = "symptom"
+        _clear_proposal(state)
+        _write_onboarding_state(state)
         return True
-    state["phase"] = "symptom"
-    state["error"] = state.get("hold_message") or _AGE_ASK
+    if age is not None and age < 18:
+        _apply_age_readiness(state)
+        state["phase"] = "symptom"
+        _clear_proposal(state)
+        _write_onboarding_state(state)
+        return True
+    state["error"] = state.get("hold_message") or _REST_LINE
+    _write_onboarding_state(state)
     return True
 
 
@@ -822,9 +866,9 @@ def _handle_confirm(state, reply):
     """Confirm only when the whole reply is a plan-yes.
 
     Anything else is an edit. A clear weight or profile edit updates the
-    profile and the proposal is shown again. A symptom or an age hint leaves
-    this step and clears the pending proposal. A later bare yes cannot
-    confirm. Readiness runs on a typed age before the plan is shown again.
+    profile and the proposal is shown again. A symptom ends onboarding for
+    the day. An age hint asks for a typed age, and readiness runs on that
+    number before the plan is shown again.
     """
     from record_confirmation import reply_pause
 
@@ -978,7 +1022,7 @@ def _check_in(state):
 def _confirm(state, reply):
     from plan_builder import PlanBuilder
     from readiness_screen import ReadinessScreen, passing_readiness
-    from record_confirmation import ConfirmationRecorder, _mark_first_plan
+    from record_confirmation import ConfirmationRecorder, _mark_first_plan, _store_onboarding_record
     from red_flag_check import is_passing_check_in
 
     if _first_missing(state) is not None:
@@ -1005,6 +1049,13 @@ def _confirm(state, reply):
     if not record.confirmed:
         state["error"] = record.message
         return
+    if not _store_onboarding_record(record, built["confirm"]):
+        from seal_secret import DATA_FILE_MESSAGE
+
+        state["error"] = DATA_FILE_MESSAGE
+        state["confirmed"] = False
+        state["record"] = None
+        return
     from routines import first_checkin_day, start_daily_loop
 
     state["error"] = None
@@ -1017,6 +1068,7 @@ def _confirm(state, reply):
     if days:
         state["first_checkin"] = first_checkin_day(min(days))
     clear_pending_profile()
+    _clear_onboarding_state()
 
 
 def _proposal(state):
@@ -1106,6 +1158,22 @@ def speak(state):
         state["error"] = _AGE_ASK
         return _AGE_ASK
     missing = _first_missing(state)
+    if missing is None and state.get("checks_again"):
+        _apply_age_readiness(state)
+        if state.get("error"):
+            state["phase"] = "blocked"
+            _clear_proposal(state)
+            return state["error"]
+        from red_flag_check import is_passing_check_in
+
+        check_in = _check_in(state)
+        if not is_passing_check_in(check_in):
+            state["phase"] = "intake"
+            state["asked"] = "par_q"
+            state["error"] = check_in.message
+            return check_in.message
+        state["checks_again"] = False
+    missing = _first_missing(state)
     if missing is not None:
         state["phase"] = "intake"
         state["asked"] = missing["id"]
@@ -1117,6 +1185,45 @@ def speak(state):
     state["phase"] = "confirm"
     state["asked"] = None
     return _proposal(state)
+
+
+def _resume_attempt():
+    """A same-day symptom hold stays closed. The next day reopens on the red-flag check."""
+    saved = _load_onboarding_state()
+    if not isinstance(saved, dict):
+        return _blank()
+    answers = saved.get("answers") if isinstance(saved.get("answers"), dict) else {}
+    hold = saved.get("hold") if isinstance(saved.get("hold"), dict) else None
+    today = _today().isoformat()
+    if hold and hold.get("date") == today:
+        state = _blank()
+        state["answers"] = answers
+        state["phase"] = "symptom"
+        state["hold_message"] = hold.get("message") or _REST_LINE
+        state["error"] = state["hold_message"]
+        state["checks_again"] = True
+        state["confirmed"] = False
+        state["record"] = None
+        return state
+    if saved.get("checks_again") and answers:
+        state = _blank()
+        state["answers"] = answers
+        state["par_q"] = {}
+        state["phase"] = "intake"
+        state["asked"] = "par_q"
+        state["checks_again"] = True
+        state["readiness"] = None
+        state["par_q_reply"] = ""
+        state["confirmed"] = False
+        state["record"] = None
+        return state
+    return _blank()
+
+
+def open_chat():
+    """Start the next attempt from the dated hold, if one was saved."""
+    state = _resume_attempt()
+    return state, speak(state)
 
 
 def run_chat(replies):

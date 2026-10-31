@@ -389,28 +389,69 @@ def test_a_pause_at_confirm_leaves_and_a_later_yes_cannot_confirm(reply):
     assert "one yes confirms the plan" not in later_bots[-1].lower(), reply
 
 
-def test_a_symptom_at_confirm_stays_held_until_the_check_clears():
-    held, held_bots = run_chat(list(_AGE_25) + ["my chest hurts", "yes"])
-    assert held["phase"] == "symptom"
-    assert held["confirmed"] is False
-    assert "one yes confirms the plan" not in held_bots[-1].lower()
-    minor, minor_bots = run_chat(list(_AGE_25) + ["im 15 and dizzy", "15"])
-    assert minor["confirmed"] is False
-    assert minor["answers"]["age"] == "15"
-    assert minor["phase"] == "blocked"
-    assert "calorie" in minor_bots[-1].lower()
-    assert "protein" in minor_bots[-1].lower()
-    still, still_bots = run_chat(list(_AGE_25) + ["im 15 and dizzy", "15", "yes"])
-    assert still["confirmed"] is False
-    assert still["phase"] != "confirm"
-    assert "one yes confirms the plan" not in still_bots[-1].lower()
-    cleared, cleared_bots = run_chat(list(_AGE_25) + ["my chest hurts", "no"])
-    assert cleared["confirmed"] is False
-    assert cleared["phase"] == "confirm"
-    assert "one yes confirms the plan" in cleared_bots[-1].lower()
-    done, _bots = run_chat(list(_AGE_25) + ["my chest hurts", "no", "yes"])
-    assert done["confirmed"] is True
-    assert done["answers"]["age"] == "25"
+@pytest.mark.parametrize("replies", [
+    ["im 15 and dizzy", "25", "yes"],
+    ["yes, im 15, chest pain", "25", "yes"],
+    ["yes \U0001F9D2 my chest hurts", "30", "yes"],
+    ["my chest hurts", "no", "yes"],
+    ["my chest hurts", "nope", "yes"],
+    ["my chest hurts", "no, 7, 2", "yes"],
+])
+def test_a_symptom_ends_onboarding_for_the_day(replies):
+    state, bots = run_chat(list(_AGE_25) + replies)
+    assert state["confirmed"] is False, replies
+    assert state["phase"] == "symptom", replies
+    assert state["record"] is None or state["record"].confirmed is False, replies
+    for bot in bots[-len(replies):]:
+        assert "one yes confirms the plan" not in bot.lower(), replies
+    assert "tomorrow" in bots[-len(replies)].lower(), replies
+    assert "tomorrow" in bots[-1].lower(), replies
+
+
+def test_a_minor_age_during_a_symptom_hold_blocks_and_does_not_resume():
+    state, bots = run_chat(list(_AGE_25) + ["im 15 and dizzy", "15", "yes"])
+    assert state["confirmed"] is False
+    assert state["answers"]["age"] == "15"
+    assert state["phase"] == "symptom"
+    assert "calorie" in bots[-1].lower()
+    assert "protein" in bots[-1].lower()
+    assert "one yes confirms the plan" not in bots[-1].lower()
+    assert "one yes confirms the plan" not in bots[-2].lower()
+
+
+def test_the_next_day_starts_at_the_red_flag_check(monkeypatch):
+    import onboarding
+    from datetime import timedelta
+
+    fixed = onboarding._today()
+    monkeypatch.setattr(onboarding, "_today", lambda: fixed)
+    state, bots = run_chat(list(_AGE_25) + ["my chest hurts"])
+    assert state["confirmed"] is False
+    assert "tomorrow" in bots[-1].lower()
+    assert "medical emergency" in bots[-1].lower()
+    same, line = onboarding.open_chat()
+    assert same["confirmed"] is False
+    assert same["phase"] == "symptom"
+    assert "tomorrow" in line.lower()
+    assert "one yes confirms the plan" not in line.lower()
+    monkeypatch.setattr(onboarding, "_today", lambda: fixed + timedelta(days=1))
+    nxt, opening = onboarding.open_chat()
+    assert nxt["confirmed"] is False
+    assert nxt["phase"] != "confirm"
+    assert nxt["par_q"] == {}
+    assert nxt.get("readiness") is None
+    assert "PAR-Q" in opening
+    assert "all no" in opening.lower()
+    assert "one yes confirms the plan" not in opening.lower()
+    assert "tomorrow" not in opening.lower()
+    onboarding.apply_reply(nxt, "all no")
+    shown = onboarding.speak(nxt)
+    assert nxt["confirmed"] is False
+    assert nxt["readiness"] is not None
+    assert "one yes confirms the plan" in shown.lower()
+    onboarding.apply_reply(nxt, "yes")
+    onboarding.speak(nxt)
+    assert nxt["confirmed"] is True
 
 
 def test_an_unknown_confirm_reply_asks_for_age_and_does_not_confirm():

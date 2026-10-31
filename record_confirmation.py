@@ -52,10 +52,46 @@ def _first_plan_body(plan):
     }
 
 
+def _is_later_week(plan):
+    """A raised load or a calorie change is not the one first plan."""
+    if not isinstance(plan, dict):
+        return True
+    body = _first_plan_body(plan)
+    plan_body = body.get("plan")
+    sessions = body.get("sessions")
+    if not isinstance(plan_body, dict) or not isinstance(sessions, list) or not sessions:
+        return True
+    if any(not isinstance(row, dict) for row in sessions):
+        return True
+    training = plan_body.get("training") if isinstance(plan_body.get("training"), dict) else None
+    previous = training.get("previous_load") if training else None
+    current = training.get("current_load") if training else None
+    if previous not in (None, "") and current not in (None, "") and previous != current:
+        return True
+    changes = body.get("changes")
+    if isinstance(changes, dict):
+        if "load" in changes:
+            if training is None or changes.get("load") != current or current != previous:
+                return True
+        if "calories" in changes:
+            nutrition = plan_body.get("nutrition")
+            if not isinstance(nutrition, dict) or nutrition.get("calories") != changes.get("calories"):
+                return True
+        if set(changes) - {"load", "calories"}:
+            return True
+    if previous not in (None, ""):
+        for row in sessions:
+            if row.get("load") != previous:
+                return True
+    return False
+
+
 def first_plan_seal(plan):
-    """HMAC over the week without the marker. A copied flag does not match."""
+    """HMAC over the first week. A later week gets no seal."""
     from seal_secret import seal_hex
 
+    if _is_later_week(plan):
+        return ""
     payload = json.dumps(
         _first_plan_body(plan),
         sort_keys=True,
@@ -68,12 +104,13 @@ def first_plan_seal(plan):
 def _mark_first_plan(plan):
     """Seal the first plan. Only onboarding, and tests, call this.
 
-    A bare first_plan flag is not this. Other callers check
-    covers_first_plan instead of marking a week themselves.
+    A later week is returned unmarked. A bare first_plan flag is not this.
     """
     if not isinstance(plan, dict):
         return plan
     marked = _first_plan_body(plan)
+    if _is_later_week(marked):
+        return marked
     marked["first_plan"] = True
     try:
         marked["first_plan_seal"] = first_plan_seal(marked)
@@ -82,14 +119,89 @@ def _mark_first_plan(plan):
     return marked
 
 
-def covers_first_plan(record, week) -> bool:
-    """True when the record covers the week or the onboarding-sealed copy."""
-    recorder = ConfirmationRecorder()
-    if recorder.covers(record, week):
-        return True
-    if not isinstance(week, dict):
+def _canonical(value):
+    return json.dumps(value, sort_keys=True, separators=(",", ":"), default=str)
+
+
+def onboarding_record_path():
+    """The one first-plan confirmation for this install."""
+    return os.path.join(os.path.dirname(os.path.abspath(__file__)), "data", "onboarding_record.json")
+
+
+def _store_onboarding_record(record, week):
+    """Remember the onboarding confirmation. A later week is not stored."""
+    if not isinstance(record, ConfirmationRecord) or record.confirmed is not True:
         return False
-    return recorder.covers(record, _mark_first_plan(week))
+    if _is_later_week(week):
+        return False
+    marked = _mark_first_plan(week)
+    seal = marked.get("first_plan_seal") if isinstance(marked, dict) else ""
+    if not isinstance(seal, str) or not seal:
+        return False
+    try:
+        if hash_plan(marked) != record.plan_hash:
+            return False
+    except (TypeError, ValueError):
+        return False
+    payload = {
+        "plan_hash": record.plan_hash,
+        "record_id": record.record_id,
+        "week": json.loads(_canonical(week)),
+        "first_plan_seal": seal,
+    }
+    path = onboarding_record_path()
+    folder = os.path.dirname(path)
+    temporary = path + ".tmp"
+    try:
+        os.makedirs(folder, exist_ok=True)
+        with open(temporary, "w", encoding="utf-8") as handle:
+            json.dump(payload, handle)
+            handle.write("\n")
+        os.replace(temporary, path)
+    except OSError:
+        return False
+    return True
+
+
+def _read_onboarding_record():
+    try:
+        with open(onboarding_record_path(), encoding="utf-8") as handle:
+            loaded = json.load(handle)
+    except (OSError, json.JSONDecodeError):
+        return None
+    return loaded if isinstance(loaded, dict) else None
+
+
+def covers_first_plan(record, week) -> bool:
+    """True when this record is the stored onboarding first plan for this week.
+
+    The week is not sealed here. A later week does not match the stored record.
+    """
+    stored = _read_onboarding_record()
+    if not isinstance(stored, dict) or not isinstance(record, ConfirmationRecord):
+        return False
+    if record.confirmed is not True or not confirmation_seal_matches(record):
+        return False
+    if record.plan_hash != stored.get("plan_hash") or record.record_id != stored.get("record_id"):
+        return False
+    if not isinstance(week, dict) or _canonical(week) != _canonical(stored.get("week")):
+        return False
+    seal = stored.get("first_plan_seal")
+    if not isinstance(seal, str) or not seal:
+        return False
+    try:
+        expected = first_plan_seal(week)
+    except OSError:
+        return False
+    if not expected or len(seal) != len(expected) or not hmac.compare_digest(seal, expected):
+        return False
+    marked = _first_plan_body(week)
+    marked["first_plan"] = True
+    marked["first_plan_seal"] = seal
+    try:
+        return hash_plan(marked) == record.plan_hash
+    except (TypeError, ValueError):
+        return False
 
 
 # Emoji that may sit beside a bare yes. Every other symbol stays and refuses.
