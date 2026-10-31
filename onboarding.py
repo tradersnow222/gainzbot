@@ -355,14 +355,22 @@ def _paired_session_minutes(reply):
 
 
 def _school_age_hint(folded):
-    """A grade or school word. It is not a typed age."""
-    if re.search(r"\b(?:high|middle)\s+school\b", folded):
+    """A grade, school, or parent word. It is not a typed age."""
+    if re.search(r"\bschool\b", folded):
         return True
     if re.search(r"\b(?:freshman|sophomore|teen|teens|teenage|teenager)\b", folded):
         return True
-    if re.search(r"\bjunior\b", folded):
+    if re.search(r"\bjunior(?:\s+high)?\b", folded):
         return True
-    if re.search(r"\bsenior\s+in\s+hs\b", folded):
+    if re.search(r"\bhs\b", folded):
+        return True
+    if re.search(r"\bclass\s+of\b", folded):
+        return True
+    if re.search(r"\b(?:mom|dad)\s+signed\b", folded):
+        return True
+    if re.search(r"\bparents?\b", folded):
+        return True
+    if re.search(r"\bguardian\b", folded):
         return True
     if re.search(r"\b\d+(?:st|nd|rd|th)\s+grad(?:e|er)s?\b", folded):
         return True
@@ -385,12 +393,22 @@ def _kg_text(number):
     return f"{shown:.1f}"
 
 
+def _without_target_clause(text):
+    """'want 64 kg' is a target. It is not the current weight."""
+    return re.sub(
+        r"\b(?:want|target)\s+\d+(?:\.\d+)?(?:\s*(?:kg|lb|lbs|pounds?))?\b",
+        " ",
+        text,
+    )
+
+
 def _current_weight(text):
     """A current body weight in kg or lb. 'ask' means the number is out of range."""
+    cleaned = _without_target_clause(text)
     cleaned = re.sub(
         r"\b\d+(?:\.\d+)?\s+to\s+\d+(?:\.\d+)?\s*(?:kg|lb|lbs|pounds?)\b",
         " ",
-        text,
+        cleaned,
     )
     match = re.search(r"\b(\d+(?:\.\d+)?)\s*(pounds?|lbs|lb|kg)\b", cleaned)
     if match is None:
@@ -419,13 +437,14 @@ def _weight_kg_in(text):
 
 
 def _target_from_want(folded):
-    """'want N' is a target only after a current weight, inside 60 to 140 percent.
+    """'want N kg' is a target. A bare 'want N' still needs a current weight.
 
-    Pounds are converted to kg. N has to land from 30 to 300 kg and within
-    60 to 140 percent of the current weight in this message. The current
-    weight has to come before 'want' or 'target'. Days, minutes, sets, reps,
-    sessions, or times after N are not a target. None means no target was
-    named. 'ask' means ask instead of guessing.
+    Pounds are converted to kg. N has to land from 30 to 300 kg. When a
+    current weight comes before 'want' or 'target', N also has to sit within
+    60 to 140 percent of it. Days, minutes, sets, reps, sessions, or times
+    after N are not a target. None means no target was named. 'ask' means
+    ask for the target instead of guessing. ('need_weight', 'N kg') means
+    the target is stored and the current weight is still missing.
     """
     match = re.search(
         r"\b(?:want|target)\s+(\d+(?:\.\d+)?)(?:\s*(kg|lb|lbs|pounds?))?\b",
@@ -436,15 +455,19 @@ def _target_from_want(folded):
     after = folded[match.end():].strip()
     if re.match(r"(?:days?|mins?|minutes?|sets?|reps?|sessions?|times?)\b", after):
         return "ask"
-    value = _as_kg(match.group(1), match.group(2))
+    unit = match.group(2)
+    value = _as_kg(match.group(1), unit)
     if not _kg_in_range(value):
         return "ask"
+    shown = _kg_text(value) + " kg"
     current = _weight_kg_in(folded[:match.start()])
     if current is None or current <= 0 or not _kg_in_range(current):
+        if unit:
+            return ("need_weight", shown)
         return "ask"
     if value < current * 0.6 - 1e-6 or value > current * 1.4 + 1e-6:
         return "ask"
-    return _kg_text(value) + " kg"
+    return shown
 
 
 _SAFE_ALL_NO_WORDS = {
@@ -463,7 +486,7 @@ def _safe_all_no(text):
     negation of the phrase does not. 'all no i', 'all no and', and 'all no ...'
     are not all-no.
     """
-    if not isinstance(text, str) or _asks_instead(text) or _ellipsis_tail(text):
+    if not isinstance(text, str) or _asks_instead(text) or _ellipsis_tail(text) or _long_punct_tail(text):
         return False
     for char in text:
         if char.isspace() or char.isalnum() or char in "👍":
@@ -493,7 +516,8 @@ def _safe_all_no(text):
     rest = re.sub(r"\bno\s+injur(?:y|ies)\b", " ", rest)
     rest = re.sub(r"\binjur(?:y|ies)\s+none\b", " ", rest)
     rest = re.sub(
-        r"\bparkrun\s+is\s+about\s+\d+(?:\.\d+)?\s+min(?:ute)?s?\b",
+        r"\bparkrun\b(?:\s+(?:is|about|on|every|this|saturdays|saturday|sat|"
+        r"minutes|minute|mins|min|\d+(?:\.\d+)?))*",
         " ",
         rest,
     )
@@ -647,6 +671,21 @@ def _ellipsis_tail(text):
     return "..." in text or "…" in text
 
 
+def _long_punct_tail(text):
+    """'all no..' is not a single final . ! or ?. A smile such as :) stays."""
+    if not isinstance(text, str):
+        return False
+    run = 0
+    for char in reversed(text.rstrip()):
+        if char.isspace():
+            break
+        if char in ".!?":
+            run += 1
+            continue
+        break
+    return run >= 2
+
+
 def bare_all_no(text):
     """True only when the whole reply is an all-no phrase.
 
@@ -659,7 +698,7 @@ def bare_all_no(text):
     """
     if not isinstance(text, str):
         return None
-    if _ellipsis_tail(text):
+    if _ellipsis_tail(text) or _long_punct_tail(text):
         folded = _fold(text)
         if re.search(r"\ball\s+no\b|\bno\s+to\s+all\b|\ball\s+clear\b|\bnone\b", folded):
             return False
@@ -831,7 +870,11 @@ def _parse_explicit(state, reply):
         answers["height"] = height.group(1) + " cm"
     soft = _soft(reply)
     target = _target_from_want(soft)
-    if target == "ask" and state.get("phase") != "age":
+    need_weight = False
+    if isinstance(target, tuple) and target[0] == "need_weight":
+        answers["target"] = target[1]
+        need_weight = True
+    elif target == "ask" and state.get("phase") != "age":
         state["awaiting"] = "target"
         if state.get("error") in (None, ""):
             state["error"] = _TARGET_ASK
@@ -848,6 +891,10 @@ def _parse_explicit(state, reply):
                 state["awaiting"] = None
     elif weight is not None and "weight" not in answers:
         answers["weight"] = weight
+        need_weight = False
+    if need_weight and "weight" not in answers and state.get("phase") != "age":
+        state["awaiting"] = "weight"
+        state["error"] = _WEIGHT_ASK
     if re.search(r"\b(female|woman)\b", folded):
         answers["sex"] = "female"
     elif re.search(r"\b(male|man)\b", folded):
@@ -1118,12 +1165,46 @@ _MINOR_WORDS = {
 }
 
 
-def _minor_cue(folded):
-    """A later reply that says the person is under 18. It does not store the number."""
-    if re.fullmatch(r"\d{1,2}", folded):
-        return 1 <= int(folded) <= 17
-    if folded in _MINOR_WORDS:
-        return True
+_MINOR_UNITS = frozenset({
+    "days", "day", "x", "reps", "rep", "sets", "set", "min", "mins", "minutes",
+    "hr", "hours", "kg", "kgs", "lb", "lbs", "km", "mi", "miles", "times",
+    "sessions", "am", "pm", "%",
+})
+
+
+def _minor_tokens(reply):
+    """Words for a minor-age scan. A clock such as 6:15 is not one of them."""
+    if not isinstance(reply, str):
+        return []
+    text = reply.strip().lower().replace("'", "").replace("\u2019", "")
+    text = _CLOCK.sub(" ", text)
+    text = re.sub(r"\b\d{1,2}:\d{2}\s*(?:am|pm)?\b", " ", text)
+    text = text.replace("%", " % ")
+    cleaned = []
+    for char in text:
+        if char.isalnum() or char.isspace() or char == "%":
+            cleaned.append(char)
+        else:
+            cleaned.append(" ")
+    return "".join(cleaned).split()
+
+
+def _minor_value(token):
+    if re.fullmatch(r"\d{1,2}", token):
+        number = int(token)
+        if 1 <= number <= 17:
+            return number
+        return None
+    return _MINOR_WORDS.get(token)
+
+
+def _minor_cue(reply):
+    """A later reply that says the person is under 18. It does not store the number.
+
+    A number from 1 to 17, or a word from one to seventeen, clears the age
+    unless the next word is a unit or the number is inside a clock time.
+    """
+    folded = _fold(reply) if isinstance(reply, str) else ""
     if re.search(r"\bminor\b", folded):
         return True
     if re.search(r"\bunder\s+18\b", folded):
@@ -1132,14 +1213,41 @@ def _minor_cue(folded):
         return True
     if re.search(r"\b(?:im|i am)\s+only\s+\d{1,3}\b", folded):
         return True
+    tokens = _minor_tokens(reply)
+    for index, token in enumerate(tokens):
+        if _minor_value(token) is None:
+            continue
+        nxt = tokens[index + 1] if index + 1 < len(tokens) else ""
+        if nxt in _MINOR_UNITS:
+            continue
+        return True
     return False
 
 
-def _age_correction(folded):
+def _counted_training(reply):
+    """A days, reps, or minutes count. It does not ask for an age again."""
+    tokens = _minor_tokens(reply)
+    saw_unit = False
+    for index, token in enumerate(tokens):
+        if not re.fullmatch(r"\d+(?:\.\d+)?", token):
+            continue
+        nxt = tokens[index + 1] if index + 1 < len(tokens) else ""
+        if nxt in _MINOR_UNITS:
+            saw_unit = True
+            continue
+        if _minor_value(token) is not None:
+            return False
+    if _school_age_hint(_fold(reply) if isinstance(reply, str) else ""):
+        return False
+    return saw_unit
+
+
+def _age_correction(reply):
     """A mention of age. It asks again. It does not store the number."""
+    folded = _fold(reply) if isinstance(reply, str) else ""
     if not folded or _nonblocking_stat(folded):
         return False
-    if _school_age_hint(folded) or _minor_cue(folded):
+    if _school_age_hint(folded) or _minor_cue(reply):
         return True
     if re.search(r"\bage\b", folded) and re.search(r"\b\d{1,3}\b", folded):
         return True
@@ -1281,15 +1389,57 @@ def _leg_emoji_only(reply):
     return bool(stripped) and all(ch == _LEG_EMOJI for ch in stripped)
 
 
-_INJURY_ONLY_FLAGS = {"injury", "sharp_joint_pain", "tendon_snap"}
+# A past injury can skip the hold. 'healed' and a bare 'achilles' cannot.
+_STRUCTURAL_PHRASES = (
+    "old sprained ankle",
+    "torn rotator cuff",
+    "sprained ankle",
+    "pulled hamstring",
+    "shin splints",
+    "shin splint",
+    "slipped disc",
+    "groin strain",
+    "calf tear",
+    "torn acl",
+)
+_ACUTE_MARKER = re.compile(
+    r"\bpop(?:ped)?\b"
+    r"|\bsnap(?:ped)?\b"
+    r"|\bswell(?:ing|ed)?\b|\bswollen\b"
+    r"|\b(?:cant|cannot|can\s+not)\s+(?:walk|bear\s+weight|put\s+(?:any\s+)?weight)\b"
+    r"|\bgave\s+out\b|\bgiving\s+way\b"
+    r"|\bsharp\s+pain\b"
+    r"|\bnumb(?:ness)?\b"
+    r"|\btingling\b"
+    r"|\blocked\b"
+    r"|\bdeformed\b"
+    r"|\bbruised\s+badly\b"
+    r"|\btoday\b|\btonight\b|\byesterday\b|\bjust\b"
+    r"|\bthis\s+morning\b|\bthis\s+week\b"
+    r"|\ban\s+hour\s+ago\b|\blast\s+night\b"
+)
 
 
-def _structural_injury(folded):
-    return re.search(
-        r"\b(?:torn\s+acl|pulled\s+hamstring|sprained\s+ankle|healed|calf\s+tear|"
-        r"achilles|groin\s+strain|slipped\s+disc|shin\s+splints?)\b",
-        folded,
-    ) is not None
+def _structural_remainder(reply):
+    """The reply with each matched structural phrase removed.
+
+    False means none of those phrases were present.
+    """
+    if not isinstance(reply, str):
+        return False, ""
+    text = reply
+    matched = False
+    for phrase in _STRUCTURAL_PHRASES:
+        pattern = re.compile(rf"\b{re.escape(phrase)}\b", re.IGNORECASE)
+        if pattern.search(text):
+            matched = True
+            text = pattern.sub(" ", text)
+    return matched, text
+
+
+def _acute_marker(reply):
+    folded = _fold(reply) if isinstance(reply, str) else ""
+    return _ACUTE_MARKER.search(folded) is not None
 
 
 def _pain_happening_now(folded):
@@ -1301,11 +1451,11 @@ def _pain_happening_now(folded):
 
 
 def _symptom_hold(reply):
-    """Scan first. Hold a current symptom. A structural injury stays an injury.
+    """Scan first. Hold a current symptom.
 
-    A pause whose flags are only an injury does not hold the day when the
-    words are a past or structural injury. Chest pain, fainting, or any other
-    symptom in the same message still holds.
+    A structural phrase skips the hold only when the rest of the message
+    does not pause and the message has no acute marker. Healed and a bare
+    achilles are not structural phrases.
     """
     from record_confirmation import reply_pause
 
@@ -1322,8 +1472,8 @@ def _symptom_hold(reply):
         )
     if paused is None:
         return None
-    flags = set(getattr(paused, "flags_detected", []) or [])
-    if _structural_injury(folded) and flags and flags <= _INJURY_ONLY_FLAGS:
+    matched, rest = _structural_remainder(reply)
+    if matched and reply_pause(rest) is None and not _acute_marker(reply):
         return None
     return paused
 
@@ -1400,7 +1550,7 @@ def _injury_clause(injuries):
 
 def _note_age_correction(state, reply):
     """A mention of age clears the stored number and asks again."""
-    if not _age_correction(_fold(reply)):
+    if not _age_correction(reply):
         return False
     _clear_age(state)
     if state.get("error") == _WEIGHT_ASK:
@@ -1429,7 +1579,7 @@ def apply_reply(state, reply):
         _handle_symptom(state, reply)
         return
     if phase == "age":
-        if _age_correction(_fold(reply)) and _reply_age(reply) is None:
+        if _age_correction(reply) and _reply_age(reply) is None:
             _clear_age(state)
             state["phase"] = "age"
             state["awaiting"] = None
@@ -1862,9 +2012,13 @@ def _handle_confirm(state, reply):
         state["error"] = None
         state["phase"] = "confirm"
         return True
-    if _age_correction(_fold(reply)):
+    if _age_correction(reply):
         _clear_age(state)
         return _hold_age(state)
+    if _counted_training(reply):
+        state["error"] = None
+        state["phase"] = "confirm"
+        return True
     return _hold_age(state)
 
 

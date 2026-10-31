@@ -1009,6 +1009,8 @@ def test_all_no_counts_only_when_the_whole_reply_is_that_phrase():
         "all no ?",
         "all no??",
         "all no?!",
+        "all no..",
+        "all no!!",
         "no to all?",
         "none?",
         "all no？",
@@ -1057,6 +1059,7 @@ def test_all_no_counts_only_when_the_whole_reply_is_that_phrase():
         "honestly all no",
         "all no :)",
         "all no :-)",
+        "all no, parkrun saturdays 30 min",
     )
     for reply in accepted:
         state, _bots = run_chat(body + [reply, "yes"])
@@ -1430,6 +1433,13 @@ def test_a_minor_cue_after_the_age_clears_the_adult_age():
         "teen",
         "15",
         "fifteen",
+        "16 actually",
+        "sixteen lol",
+        "im just 17",
+        "15 years old",
+        "i am fifteen",
+        "still in school",
+        "my parents signed up for me",
     )
     for cue in cues:
         state, bots = run_chat(body + [cue])
@@ -1445,6 +1455,103 @@ def test_a_minor_cue_after_the_age_clears_the_adult_age():
         assert minor["answers"]["age"] == "15", cue
         assert "under 18" in minor_bots[-1].lower(), cue
         assert "one yes confirms the plan" not in minor_bots[-1].lower(), cue
+    for plain in ("3 days 45 min", "12 reps"):
+        kept, kept_bots = run_chat(body + [plain])
+        assert kept["answers"]["age"] == "25", plain
+        assert kept_bots[-1] != _AGE_ASK, plain
+        assert "one yes confirms the plan" in kept_bots[-1].lower(), plain
+        done, _done_bots = run_chat(body + [plain, "yes"])
+        assert done["confirmed"] is True, plain
+        assert done["answers"]["age"] == "25", plain
+
+
+def _drop_hold():
+    import os
+
+    import onboarding
+
+    path = onboarding.onboarding_state_path()
+    if os.path.exists(path):
+        os.remove(path)
+    onboarding._memory_hold = None
+
+
+def test_an_acute_structural_injury_holds_and_a_later_chat_stays_held():
+    from onboarding import hold_is_active
+
+    body = [
+        "hello",
+        "cut, male, 60 kg, 170 cm, no injuries",
+        "25",
+        "general training, 3 days 45 min, dumbbells, beginner, no injuries, none",
+        "all no",
+    ]
+    phrases = (
+        "sprained ankle today, cant walk, heard a pop",
+        "snapped my achilles",
+        "achilles snapped yesterday",
+        "torn acl yesterday, knee swollen",
+        "torn acl today, knee gave out, heard a pop",
+        "pulled hamstring today, heard a pop",
+        "sprained ankle, its swollen and i cant walk",
+        "healed, knee swollen today",
+        "healed, sharp pain in knee",
+        "tore my acl yesterday",
+    )
+    for phrase in phrases:
+        state, bots = run_chat(body + [phrase, "yes"])
+        assert state["confirmed"] is False, phrase
+        assert state["phase"] == "symptom", phrase
+        assert hold_is_active(), phrase
+        assert "one yes confirms the plan" not in bots[-1].lower(), phrase
+        again, again_bots = run_chat(["hello", "yes"])
+        assert again["confirmed"] is False, phrase
+        assert again["phase"] == "symptom", phrase
+        assert hold_is_active(), phrase
+        assert "one yes confirms the plan" not in "\n".join(again_bots).lower(), phrase
+        _drop_hold()
+
+
+def test_an_emergency_sign_holds_with_an_emergency_line():
+    from record_confirmation import reply_pause
+    from onboarding import hold_is_active
+
+    body = [
+        "hello",
+        "cut, male, 60 kg, 170 cm, no injuries",
+        "25",
+        "ok",
+        "all no",
+    ]
+    phrases = (
+        "loss of bladder or bowel control",
+        "numb legs",
+        "can't feel my legs",
+        "saddle numbness",
+        "chest injury",
+        "broken rib",
+        "broken ribs",
+        "hurt my back today, sharp pain",
+        "slipped disc, lost bladder control",
+        "slipped disc, cant feel my legs",
+    )
+    for phrase in phrases:
+        paused = reply_pause(phrase)
+        assert paused is not None, phrase
+        blob = (paused.message + " " + " ".join(paused.recommendations)).lower()
+        assert "emergency" in blob or "urgent" in blob, phrase
+        state, bots = run_chat(body + [phrase])
+        assert state["confirmed"] is False, phrase
+        assert state["phase"] == "symptom", phrase
+        assert hold_is_active(), phrase
+        spoken = bots[-1].lower()
+        assert "emergency" in spoken or "urgent" in spoken, phrase
+        again, again_bots = run_chat(["hello", "yes"])
+        assert again["confirmed"] is False, phrase
+        assert again["phase"] == "symptom", phrase
+        assert hold_is_active(), phrase
+        assert "one yes confirms the plan" not in "\n".join(again_bots).lower(), phrase
+        _drop_hold()
 
 
 def test_a_structural_injury_is_stored_and_does_not_hold_the_day():
@@ -1460,6 +1567,10 @@ def test_a_structural_injury_is_stored_and_does_not_hold_the_day():
         ("groin strain", "hip"),
         ("slipped disc", "back"),
         ("shin splints", "ankle"),
+        ("torn acl 2 years ago", "knee"),
+        ("calf tear last year", "calf"),
+        ("slipped disc in 2020", "back"),
+        ("torn rotator cuff", "shoulder"),
     )
     for phrase, area in samples:
         state, bots = run_chat([
@@ -1510,6 +1621,10 @@ def test_a_decimal_kg_and_a_pound_weight_convert():
     bare, bare_bots = run_chat(["want 64"])
     assert bare["answers"].get("target") in (None, "")
     assert bare_bots[-1] == _TARGET_ASK
+    named, named_bots = run_chat(["want 64 kg"])
+    assert named["answers"].get("weight") in (None, "")
+    assert named["answers"]["target"] == "64 kg"
+    assert named_bots[-1] == _WEIGHT_ASK
 
 
 def test_a_symptom_at_the_par_q_step_holds_the_day():
@@ -1596,7 +1711,7 @@ def test_want_days_is_not_a_target_weight():
 
 
 def test_all_no_phrases_need_the_message_to_stay_free_of_symptoms():
-    from onboarding import read_par_q
+    from onboarding import _AGE_ASK, read_par_q
 
     for phrase in ("all no", "no to all", "none", "all clear"):
         status, parsed = read_par_q(phrase)
@@ -1621,11 +1736,19 @@ def test_all_no_phrases_need_the_message_to_stay_free_of_symptoms():
         "all no i",
         "all no and",
         "all no ...",
+        "all no..",
+        "all no!!",
     )
+    assert read_par_q("all no, parkrun saturdays 30 min")[0] == "all_no"
     for reply in impure:
         assert read_par_q(reply)[0] != "all_no", reply
         state, bots = run_chat(body + [reply, "yes"])
         assert state["confirmed"] is False, reply
         assert "one yes confirms the plan" not in bots[-1].lower(), reply
+        if any(token in {"1", "2", "3", "5", "6"} for token in reply.split()):
+            assert state["answers"].get("age") in (None, ""), reply
+            assert bots[-2] == _AGE_ASK, reply
+            assert bots[-1] == _AGE_ASK, reply
+            continue
         assert bots[-2].startswith("Still need a yes or no:"), reply
         assert bots[-1].startswith("Still need a yes or no:"), reply
