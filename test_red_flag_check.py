@@ -862,6 +862,9 @@ class TestNewStemsAndIdioms:
         "it snapped and I can't put any weight on it",
         "I've barely eaten for days",
         "I only ate 500 calories today",
+        "this is the worst headache of my life",
+        "my throat is closing",
+        "throat closing",
     ]
 
     SHOULD_NOT = [
@@ -876,6 +879,8 @@ class TestNewStemsAndIdioms:
         "sore legs after squats",
         "leg day was brutal",
         "I have a headache today",
+        "sore throat after practice",
+        "I cleared my throat",
         "hot yoga, then a normal lift",
         "back pain from sitting all day",
     ]
@@ -889,6 +894,27 @@ class TestNewStemsAndIdioms:
         result = RedFlagChecker().scan_text(text)
         assert not result.pause_plan
         assert result.flags_detected == []
+
+    def test_free_text_red_flags_do_not_replace_the_checklist(self):
+        checker = RedFlagChecker()
+        for notes in ("worst headache of my life", "throat closing"):
+            notes_only = checker.scan_check_in({"notes": notes})
+            assert notes_only.pause_plan
+            assert "checklist" in notes_only.message.lower()
+        clear = checker.scan_check_in({
+            "symptom_checklist": all_no_checklist(),
+            "notes": "Easy lift, slept fine.",
+        })
+        assert not clear.pause_plan
+        flagged = checker.scan_check_in({
+            "symptom_checklist": all_no_checklist(),
+            "notes": "worst headache of my life",
+        })
+        assert flagged.pause_plan
+        assert "head_injury" in flagged.flags_detected
+        closing = checker.scan_text("my throat is closing")
+        assert "breathing_difficulty" in closing.flags_detected
+        assert "disordered_eating" not in closing.flags_detected
 
     def test_text_backstop_does_not_continue_the_plan(self):
         result = RedFlagChecker().scan_text("Had a great workout today!")

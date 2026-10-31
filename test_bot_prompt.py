@@ -126,7 +126,7 @@ def test_first_run_clones_the_repo_and_uses_that_path():
     assert "https://github.com/tradersnow222/gainzbot" in QUICKSTART
     assert "/workspace/gainzbot" in PROMPT
     assert "/workspace/gainzbot" in QUICKSTART
-    import_line = "import red_flag_check, readiness_screen, plan_check, record_confirmation"
+    import_line = "import red_flag_check, readiness_screen, plan_check, record_confirmation, release_check"
     assert import_line in PROMPT
     assert import_line in QUICKSTART
     assert "if the clone or the import fails, stop" in PROMPT.lower()
@@ -157,6 +157,9 @@ def test_first_run_clones_the_repo_and_uses_that_path():
         assert "any local edits mean stop and ask" in lowered
         assert "never discard them" in lowered
         assert "to upgrade an existing install to a newer tag" in lowered
+        if text is not PROMPT:
+            assert "it does not prove this is the newest release" in lowered
+            assert "clean, self-consistent install" in lowered
         assert "do not delete `/workspace/gainzbot/data/`" in lowered
         assert "git clean -x" in lowered
         assert "v<semver>" in text

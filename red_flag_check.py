@@ -218,6 +218,13 @@ class RedFlagChecker:
     )
     _POP_OR_SNAP = re.compile(r"\b(?:pop(?:ped)?|snap(?:ped)?)\b")
     _HEADACHE = re.compile(r"\bheadaches?\b")
+    _WORST_HEADACHE = re.compile(
+        r"\bworst\s+headaches?\b|\bheadaches?\s+of\s+my\s+life\b"
+    )
+    _THROAT_CLOSING = re.compile(
+        r"\bthroat\b(?:\s+\w+){0,3}\s+clos(?:e|ing|ed)\b|"
+        r"\bclos(?:e|ing|ed)\b(?:\s+\w+){0,2}\s+throat\b"
+    )
     _WORSE = re.compile(r"\b(?:worse|worsening)\b")
     _POPPED = re.compile(r"\bpopped\b")
     _POP = re.compile(r"\bpop\b")
@@ -414,6 +421,7 @@ class RedFlagChecker:
             or self._same_sentence(text, self._HEAD, self._NEURO)
             or self._same_sentence(text, self._HEAD, self._VOMIT)
             or self._in_same_sentence(text, self._HEAD, self._HEADACHE, self._WORSE)
+            or self._active(text, self._WORST_HEADACHE)
         ):
             flags.add("head_injury")
         if self._active(text, self._STOPPED_SWEAT) or self._same_sentence(text, self._HEAT, self._NEURO):
@@ -449,6 +457,8 @@ class RedFlagChecker:
         return False
 
     def _breath_hit(self, text: str) -> bool:
+        if self._active(text, self._THROAT_CLOSING):
+            return True
         for match in self._active(text, self._BREATH):
             if match.group(0) in {"gasping", "gasp"} and self._is_benign(text, match.end()):
                 continue

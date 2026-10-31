@@ -12,7 +12,7 @@ git clone --depth 1 --branch <release_tag> https://github.com/tradersnow222/gain
 
 That tag is `release_tag` in `template/template.json`. That field is the only place the version is set. Bump it when you cut a release, and tag that commit with the same name. If the tag is missing, stop. Do not fall back to main.
 
-If `/workspace/gainzbot` already exists, check that `git -C /workspace/gainzbot describe --tags --exact-match` equals `release_tag` from `template/template.json`. The tag has to be an exact match of the form v<semver>. Call `release_check.py` for that decision, so a newer tag is accepted once `release_tag` is that same tag. If it isn't a git repo or the tag doesn't match, stop and ask the user. Never delete, move or overwrite that folder. Also run `git -C /workspace/gainzbot status --porcelain`. Any local edits mean stop and ask. Never discard them.
+If `/workspace/gainzbot` already exists, check that `git -C /workspace/gainzbot describe --tags --exact-match` equals `release_tag` from `template/template.json`. The tag has to be an exact match of the form v<semver>. Call `release_check.py` for that decision, so a newer tag is accepted once `release_tag` is that same tag. If it isn't a git repo or the tag doesn't match, stop and ask the user. Never delete, move or overwrite that folder. Also run `git -C /workspace/gainzbot status --porcelain`. Any local edits mean stop and ask. Never discard them. That check proves a clean, self-consistent install: the checkout tag matches `release_tag` and there are no local edits. It does not prove this is the newest release.
 
 To upgrade an existing install to a newer tag, run those two checks first. When `git -C /workspace/gainzbot status --porcelain` prints nothing, fetch the newer tag and check it out in the same folder:
 
@@ -26,7 +26,7 @@ That leaves `/workspace/gainzbot/data/` where it is. Do not delete `/workspace/g
 From that folder, check that the scripts run:
 
 ```bash
-python3 -c "import red_flag_check, readiness_screen, plan_check, record_confirmation"
+python3 -c "import red_flag_check, readiness_screen, plan_check, record_confirmation, release_check"
 ```
 
 If the clone or the import fails, stop. Every later call uses `/workspace/gainzbot`. Food logs also need `used_path="/workspace/gainzbot/data/used_confirmations.json"`.
