@@ -2,6 +2,8 @@
 """Tests for photo_food_log.py."""
 
 import copy
+import os
+import tempfile
 
 from photo_food_log import GROK_VISION_PROMPT, FoodLog
 from plan_check import PlanValidator
@@ -32,6 +34,11 @@ def recorded(plan):
     return ConfirmationRecorder().record(plan, "yes", "user", passing_check_in())
 
 
+def fresh_log():
+    folder = tempfile.mkdtemp()
+    return FoodLog(os.path.join(folder, "used.json"))
+
+
 def store(log, meal, day="2026-10-30"):
     return log.store_estimate(meal, day, recorded(meal))
 
@@ -55,14 +62,14 @@ class TestPhotoEstimate:
 
     def test_estimate_is_stored(self):
         meal = estimate()
-        result = FoodLog().store_estimate(meal, "2026-10-30", recorded(meal))
+        result = fresh_log().store_estimate(meal, "2026-10-30", recorded(meal))
         assert result["stored"] is True
         assert result["applied"] is False
         assert result["entry"]["calories"] == 600
         assert result["entry"]["items"] == ["rice", "chicken"]
 
     def test_store_estimate_requires_confirmation_of_that_estimate(self):
-        log = FoodLog()
+        log = fresh_log()
         meal = estimate()
         other = estimate()
         other["calories"] = 700
@@ -76,7 +83,7 @@ class TestPhotoEstimate:
         assert log.entries == []
 
     def test_one_confirmation_logs_only_one_meal(self):
-        log = FoodLog()
+        log = fresh_log()
         meal = estimate()
         yes = recorded(meal)
         first = log.store_estimate(meal, "2026-10-30", yes)
@@ -89,7 +96,7 @@ class TestPhotoEstimate:
         assert again["stored"] is True
 
     def test_a_copy_of_the_confirmation_cannot_log_the_meal_again(self):
-        log = FoodLog()
+        log = fresh_log()
         meal = estimate()
         yes = recorded(meal)
         clone = copy.copy(yes)
@@ -116,8 +123,33 @@ class TestPhotoEstimate:
         fresh = restarted.store_estimate(meal, "2026-10-31", recorded(meal))
         assert fresh["stored"] is True
 
+    def test_a_log_without_a_used_list_path_fails_closed(self):
+        meal = estimate()
+        result = FoodLog().store_estimate(meal, "2026-10-30", recorded(meal))
+        assert result["ok"] is False
+        assert result["stored"] is False
+        assert result["applied"] is False
+        assert "path is required" in result["message"]
+
+    def test_a_missing_used_list_after_the_first_log_fails_closed(self, tmp_path):
+        meal = estimate()
+        path = tmp_path / "used.json"
+        log = FoodLog(path)
+        assert log.store_estimate(meal, "2026-10-30", recorded(meal))["stored"] is True
+        os.remove(path)
+        blocked = log.store_estimate(meal, "2026-10-31", recorded(meal))
+        assert blocked["stored"] is False
+        assert blocked["applied"] is False
+        assert "missing" in blocked["message"].lower()
+        restarted = FoodLog(path)
+        again = restarted.store_estimate(meal, "2026-10-31", recorded(meal))
+        assert again["stored"] is False
+        assert again["applied"] is False
+        assert "missing" in again["message"].lower()
+        assert restarted.entries == []
+
     def test_a_day_stops_at_10000_kcal(self):
-        log = FoodLog()
+        log = fresh_log()
         feast = {"items": ["feast"], "calories": 3000, "protein_g": 10}
         for _ in range(3):
             assert store(log, feast)["stored"] is True
@@ -130,7 +162,7 @@ class TestPhotoEstimate:
         assert sum(entry["calories"] for entry in log.entries) == 10000
 
     def test_a_single_item_over_3000_kcal_is_rejected(self):
-        log = FoodLog()
+        log = fresh_log()
         meal = {"items": ["cake"], "calories": 3001, "protein_g": 10}
         result = log.store_estimate(meal, "2026-10-30", recorded(meal))
         assert result["stored"] is False
@@ -138,7 +170,7 @@ class TestPhotoEstimate:
         assert log.entries == []
 
     def test_a_single_item_over_300_g_protein_is_rejected(self):
-        log = FoodLog()
+        log = fresh_log()
         meal = {"items": ["powder"], "calories": 400, "protein_g": 301}
         result = log.store_estimate(meal, "2026-10-30", recorded(meal))
         assert result["stored"] is False
@@ -147,13 +179,13 @@ class TestPhotoEstimate:
 
     def test_the_upper_bound_itself_can_be_logged(self):
         meal = {"items": ["feast"], "calories": 3000, "protein_g": 300}
-        result = FoodLog().store_estimate(meal, "2026-10-30", recorded(meal))
+        result = fresh_log().store_estimate(meal, "2026-10-30", recorded(meal))
         assert result["stored"] is True
         assert result["entry"]["calories"] == 3000
         assert result["entry"]["protein_g"] == 300
 
     def test_bad_calories_store_nothing(self):
-        log = FoodLog()
+        log = fresh_log()
         result = log.store_estimate(
             {"items": ["rice"], "calories": "lots", "protein_g": 10},
             "2026-10-30",
@@ -162,14 +194,14 @@ class TestPhotoEstimate:
         assert log.entries == []
 
     def test_missing_items_store_nothing(self):
-        result = FoodLog().store_estimate(
+        result = fresh_log().store_estimate(
             {"items": [], "calories": 100, "protein_g": 10},
             "2026-10-30",
         )
         assert result["stored"] is False
 
     def test_bad_day_stores_nothing(self):
-        log = FoodLog()
+        log = fresh_log()
         result = log.store_estimate(estimate(), "yesterday")
         assert result["stored"] is False
         assert log.entries == []
@@ -177,7 +209,7 @@ class TestPhotoEstimate:
 
 class TestUsualMeals:
     def test_usual_breakfast_logs_in_one_line(self):
-        log = FoodLog()
+        log = fresh_log()
         remembered = log.remember_usual("breakfast", ["oats", "eggs"], 450, 30)
         assert remembered["stored"] is True
         plan = usual_plan("breakfast", remembered["meal"])
@@ -189,7 +221,7 @@ class TestUsualMeals:
         assert logged["applied"] is False
 
     def test_usual_breakfast_needs_a_confirmation(self):
-        log = FoodLog()
+        log = fresh_log()
         remembered = log.remember_usual("breakfast", ["oats", "eggs"], 450, 30)
         plan = usual_plan("breakfast", remembered["meal"])
         missed = log.log_line("usual breakfast", "2026-10-30")
@@ -201,13 +233,13 @@ class TestUsualMeals:
         assert log.log_line("usual breakfast", "2026-10-30", recorded(plan))["stored"] is True
 
     def test_unknown_usual_does_not_store(self):
-        log = FoodLog()
+        log = fresh_log()
         result = log.log_line("usual breakfast", "2026-10-30")
         assert result["stored"] is False
         assert log.entries == []
 
     def test_other_lines_are_not_usual_meals(self):
-        log = FoodLog()
+        log = fresh_log()
         log.remember_usual("breakfast", ["oats"], 400, 20)
         result = log.log_line("breakfast please", "2026-10-30")
         assert result["stored"] is False
@@ -216,7 +248,7 @@ class TestUsualMeals:
 
 class TestLeftToday:
     def test_one_meal_subtracts_from_the_targets(self):
-        log = FoodLog()
+        log = fresh_log()
         store(log, estimate())
         left = log.left_today("2026-10-30", ADULT, TARGETS)
         assert left["eaten_calories"] == 600
@@ -226,7 +258,7 @@ class TestLeftToday:
         assert left["applied"] is False
 
     def test_meals_on_the_same_day_add_up(self):
-        log = FoodLog()
+        log = fresh_log()
         store(log, estimate())
         remembered = log.remember_usual("breakfast", ["oats"], 400, 20)
         plan = usual_plan("breakfast", remembered["meal"])
@@ -236,14 +268,14 @@ class TestLeftToday:
         assert left["eaten_protein_g"] == 60
 
     def test_another_day_is_not_counted(self):
-        log = FoodLog()
+        log = fresh_log()
         store(log, estimate(), "2026-10-29")
         left = log.left_today("2026-10-30", ADULT, TARGETS)
         assert left["eaten_calories"] == 0
         assert left["calories_left"] == 2200
 
     def test_under_18_gets_no_calorie_target(self):
-        log = FoodLog()
+        log = fresh_log()
         store(log, estimate())
         left = log.left_today(
             "2026-10-30",
@@ -256,7 +288,7 @@ class TestLeftToday:
         assert "protein" in left["message"].lower()
 
     def test_missing_age_blocks_the_calorie_target(self):
-        log = FoodLog()
+        log = fresh_log()
         store(log, estimate())
         left = log.left_today("2026-10-30", {"sex": "M", "weight_kg": 80}, TARGETS)
         assert left["calories_left"] is None
@@ -265,7 +297,7 @@ class TestLeftToday:
         assert "age" in left["message"].lower()
 
     def test_calorie_target_under_the_floor_is_not_used(self):
-        log = FoodLog()
+        log = fresh_log()
         left = log.left_today(
             "2026-10-30",
             ADULT,
@@ -275,7 +307,7 @@ class TestLeftToday:
         assert "floor" in left["message"].lower()
 
     def test_protein_target_outside_the_range_is_not_used(self):
-        log = FoodLog()
+        log = fresh_log()
         left = log.left_today(
             "2026-10-30",
             ADULT,
