@@ -84,7 +84,7 @@ class PlanValidator:
         return errors
 
     def _age_policy_errors(self, age_value: float, readiness_result) -> List[str]:
-        """Reject children, implausible ages, and minors without a passing screen."""
+        """Reject children, implausible ages, and anyone under 18."""
         if age_value < self.MIN_AGE:
             return [
                 f"Age {age_value:g} is under {self.MIN_AGE}. "
@@ -94,10 +94,9 @@ class PlanValidator:
             return [
                 f"Age {age_value:g} is over {self.MAX_AGE} and is not a plausible age."
             ]
-        if age_value < self.ADULT_AGE and not self._readiness_passes(readiness_result):
+        if age_value < self.ADULT_AGE:
             return [
-                f"Age {age_value:g} is under {self.ADULT_AGE}. "
-                "A passing readiness screen result is required."
+                "There is no training plan and no calorie target for anyone under 18."
             ]
         return []
 
@@ -150,11 +149,6 @@ class PlanValidator:
             return ValidationResult(valid=False, errors=[str(e)])
 
         age_errors = self._age_policy_errors(age_value, readiness_result)
-        if age_value < self.ADULT_AGE:
-            return ValidationResult(
-                valid=False,
-                errors=["Calorie targets are not set for anyone under 18."],
-            )
         if age_errors:
             return ValidationResult(valid=False, errors=age_errors)
         age = int(age_value)
@@ -380,9 +374,9 @@ class PlanValidator:
         errors = []
         
         known_top_level = {"user", "nutrition", "goals", "training", "par_q"}
-        known_user = {"sex", "weight_kg", "age", "height_cm", "medical_clearance"}
+        known_user = {"sex", "weight_kg", "age", "height_cm", "medical_clearance", "experience"}
         known_nutrition = {"calories", "protein_g", "previous_calories"}
-        known_goals = {"weight_loss_kg_per_week"}
+        known_goals = {"weight_loss_kg_per_week", "goal"}
         known_training = {"previous_load", "current_load", "weeks_since_deload", "structured_hours", "sport_hours"}
         
         for key in plan.keys():
@@ -547,6 +541,10 @@ class PlanValidator:
         if "goals" in plan:
             goals = plan["goals"]
             
+            if "goal" in goals:
+                label = goals.get("goal")
+                if not isinstance(label, str) or label.strip().lower() not in {"cut", "lose", "gain", "hold"}:
+                    all_errors.append("The goal has to be cut, lose, gain, or hold.")
             if "weight_loss_kg_per_week" in goals:
                 if not user_validated:
                     all_errors.append("Weight loss validation requires user.weight_kg.")

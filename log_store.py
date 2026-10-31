@@ -28,6 +28,177 @@ def _blank():
     return {kind: [] for kind in KINDS}
 
 
+def _confirmation_ids(raw):
+    if not raw:
+        return set()
+    try:
+        data = json.loads(raw.decode("utf-8"))
+    except (UnicodeDecodeError, json.JSONDecodeError):
+        return set()
+    if not isinstance(data, dict):
+        return set()
+    found = set()
+    for row in data.get("confirmations") or []:
+        if isinstance(row, dict) and isinstance(row.get("record_id"), str):
+            found.add(row["record_id"])
+    return found
+
+
+def _week_landed(folder, new_ids):
+    """True when a week file in this folder already holds one of the new ids."""
+    if not new_ids or not folder or not os.path.isdir(folder):
+        return False
+    for name in os.listdir(folder):
+        if not name.endswith(".json") or name == "log.json":
+            continue
+        path = os.path.join(folder, name)
+        try:
+            with open(path, encoding="utf-8") as handle:
+                data = json.load(handle)
+        except (OSError, json.JSONDecodeError):
+            continue
+        if not isinstance(data, dict):
+            continue
+        confirmation = data.get("confirmation")
+        if isinstance(confirmation, dict) and confirmation.get("record_id") in new_ids:
+            return True
+    return False
+
+
+def _replace_bytes(path, raw):
+    folder = os.path.dirname(path)
+    if folder:
+        os.makedirs(folder, exist_ok=True)
+    temporary = path + ".tmp"
+    with open(temporary, "wb") as handle:
+        handle.write(raw)
+        handle.flush()
+        os.fsync(handle.fileno())
+    os.replace(temporary, path)
+
+
+def _log_bytes_valid(raw):
+    """True when these bytes are a log this store can keep."""
+    if not raw:
+        return False
+    try:
+        data = json.loads(raw.decode("utf-8"))
+    except (UnicodeDecodeError, json.JSONDecodeError, AttributeError):
+        return False
+    if not isinstance(data, dict):
+        return False
+    for key, value in data.items():
+        if key not in KINDS or not isinstance(value, list):
+            return False
+        if any(not isinstance(item, dict) for item in value):
+            return False
+    return True
+
+
+def reconcile_log_backup(log_path):
+    """Recover a crashed log only after the recovered bytes validate.
+
+    A plain read never removes log.json.bak. The backup is removed only
+    after those bytes have been validated and written over the live log.
+    """
+    if not isinstance(log_path, str) or not log_path:
+        return
+    backup_path = log_path + ".bak"
+    if not os.path.exists(backup_path):
+        return
+    try:
+        with open(backup_path, "rb") as handle:
+            backup_bytes = handle.read()
+        live_bytes = b""
+        if os.path.exists(log_path):
+            with open(log_path, "rb") as handle:
+                live_bytes = handle.read()
+    except OSError:
+        return
+    new_ids = _confirmation_ids(live_bytes) - _confirmation_ids(backup_bytes)
+    landed = _week_landed(os.path.dirname(log_path), new_ids)
+    try:
+        if landed or backup_bytes == live_bytes:
+            return
+        if not _backup_can_replace(backup_bytes, live_bytes):
+            return
+        if not _log_bytes_valid(backup_bytes):
+            return
+        _replace_bytes(log_path, backup_bytes)
+        with open(log_path, "rb") as handle:
+            written = handle.read()
+        if written == backup_bytes and _log_bytes_valid(written) and os.path.exists(backup_path):
+            os.remove(backup_path)
+    except OSError:
+        return
+
+
+_LOG_ROW_TYPES = ("sets", "weights", "meals", "checkins", "confirmations")
+
+
+def _row_list(data, key):
+    if not isinstance(data, dict):
+        return []
+    value = data.get(key)
+    return list(value) if isinstance(value, list) else []
+
+
+def _row_counts(rows):
+    counts = {}
+    for item in rows:
+        try:
+            token = json.dumps(item, sort_keys=True, ensure_ascii=False)
+        except (TypeError, ValueError):
+            token = repr(item)
+        counts[token] = counts.get(token, 0) + 1
+    return counts
+
+
+def _counts_cover(backup_rows, live_rows):
+    live_counts = _row_counts(live_rows)
+    backup_counts = _row_counts(backup_rows)
+    for token, count in live_counts.items():
+        if backup_counts.get(token, 0) < count:
+            return False
+    return True
+
+
+def _backup_can_replace(backup_bytes, live_bytes):
+    """Replace only when the backup is a strict superset of every record type.
+
+    sets, weights, meals, check-ins, and confirmations each have to cover the
+    live rows, and the backup has to hold at least one extra row. An empty or
+    unparseable backup never replaces the live log. A missing or unparseable
+    live log is treated as empty, so a parseable backup can restore it.
+    """
+    if not backup_bytes:
+        return False
+    try:
+        backup = json.loads(backup_bytes.decode("utf-8"))
+    except (UnicodeDecodeError, json.JSONDecodeError, AttributeError):
+        return False
+    if not isinstance(backup, dict):
+        return False
+    live = {}
+    if live_bytes:
+        try:
+            parsed = json.loads(live_bytes.decode("utf-8"))
+        except (UnicodeDecodeError, json.JSONDecodeError, AttributeError):
+            parsed = None
+        if isinstance(parsed, dict):
+            live = parsed
+    backup_total = 0
+    live_total = 0
+    for key in _LOG_ROW_TYPES:
+        backup_rows = _row_list(backup, key)
+        live_rows = _row_list(live, key)
+        if not _counts_cover(backup_rows, live_rows):
+            return False
+        backup_total += len(backup_rows)
+        live_total += len(live_rows)
+    return backup_total > live_total
+
+
 def _trusted_change(row, changes):
     """History only when this row is a record that covers the stored proposal."""
     proposal = row.get("proposal")
@@ -41,6 +212,9 @@ def _trusted_change(row, changes):
         return None
     from record_confirmation import ConfirmationRecord, ConfirmationRecorder
 
+    stamp = row.get("timestamp") if isinstance(row.get("timestamp"), str) else ""
+    if not stamp and isinstance(row.get("date"), str):
+        stamp = row["date"]
     record = ConfirmationRecord(
         confirmed=True,
         plan_hash=plan_hash,
@@ -49,6 +223,8 @@ def _trusted_change(row, changes):
         message=row.get("message") if isinstance(row.get("message"), str) else "",
         errors=row.get("errors") if isinstance(row.get("errors"), list) else [],
         record_id=record_id,
+        timestamp=stamp,
+        issuer_seal=row.get("issuer_seal") if isinstance(row.get("issuer_seal"), str) else "",
     )
     if not ConfirmationRecorder().covers(record, proposal):
         return None
@@ -230,6 +406,7 @@ class LogStore:
         return logs
 
     def _read(self):
+        reconcile_log_backup(self.path)
         if not os.path.exists(self.path):
             return _blank()
         try:

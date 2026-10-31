@@ -8,7 +8,6 @@ immediate plan pause and professional consultation.
 
 from dataclasses import dataclass
 from typing import Dict, List, Set
-import hashlib
 import hmac
 import json
 import os
@@ -19,11 +18,13 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from guardrails.validate import InputValidator, ValidationError
 
 
-_CHECKIN_SECRET = b"gainzbot-scan-check-in-v1"
+def _check_in_seal(message: str):
+    from seal_secret import seal_hex
 
-
-def _check_in_seal(message: str) -> str:
-    return hmac.new(_CHECKIN_SECRET, message.encode("utf-8"), hashlib.sha256).hexdigest()
+    try:
+        return seal_hex(b"check-in", message)
+    except OSError:
+        return None
 
 
 def is_passing_check_in(result) -> bool:
@@ -36,6 +37,10 @@ def is_passing_check_in(result) -> bool:
         return False
     expected = _check_in_seal(result.message)
     seal = getattr(result, "issuer_seal", "") or ""
+    if not isinstance(expected, str) or not expected or not seal:
+        return False
+    if len(seal) != len(expected):
+        return False
     return hmac.compare_digest(seal, expected)
 
 
@@ -265,7 +270,11 @@ class RedFlagChecker:
         ),
         "cardiac": "Medical emergency. Stop all activity and seek immediate medical attention.",
         "neurological": "Serious concern. Please see a doctor as soon as possible.",
-        "fainting": "Stop training immediately. Call emergency services if accompanied by chest pain, trouble breathing, or confusion. Otherwise see a doctor before resuming training.",
+        "fainting": (
+            "Stop training immediately. Pause today and check in with a doctor. "
+            "Call emergency services if accompanied by chest pain, trouble breathing, or confusion. "
+            "This does not block the account."
+        ),
         "injury": "Training pause required. Professional evaluation recommended.",
         "psychological": "Please speak with a healthcare professional about these concerns.",
         "general": "Plan paused. Professional consultation recommended before continuing.",
@@ -669,7 +678,7 @@ class RedFlagChecker:
                 "Call emergency services immediately (911 in US)."
             )
             recommendations.append(
-                "Do not attempt any physical activity until cleared by a physician."
+                "Pause today and check in with a doctor. This does not block the account."
             )
         
         if severity == "fainting":
@@ -736,7 +745,8 @@ class RedFlagChecker:
             )
         
         recommendations.append(
-            "Do not resume training until the issue is addressed and you have clearance."
+            "Pause today and check in with a doctor before you resume. "
+            "This does not block the account."
         )
         
         return recommendations
@@ -900,7 +910,15 @@ class RedFlagChecker:
         if questions:
             return self._with_question(result, " ".join(questions))
         if not result.pause_plan and not result.flags_detected:
-            result.issuer_seal = _check_in_seal(result.message)
+            from seal_secret import DATA_FILE_MESSAGE
+
+            seal = _check_in_seal(result.message)
+            if not seal:
+                result.pause_plan = True
+                result.message = DATA_FILE_MESSAGE
+                result.issuer_seal = ""
+                return result
+            result.issuer_seal = seal
         return result
 
     def _flatten(self, value) -> str:

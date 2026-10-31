@@ -1,6 +1,8 @@
 # Daily check-in
 
-Send this in two messages. Do not split the checklist into one question at a time.
+The bot opens the morning. The user does not start it and does not remember a command. The symptom line is always asked: Any chest pain, dizziness or new pain? no / yes. One word no is the answer. Then ask 1 or 2 short questions: sleep and energy, soreness, minutes today, and weight if they track it. Each answer is one word or a number. Then give today's workout and food target. Very sore or bad sleep makes an easier day. Wearables may skip only the other questions, and only when the value is real, in range, and less than about 24 hours old. None is not fresh. Sleep under 4 hours, or a resting heart rate over about 120, still asks, and the day is lighter. Never assume a connection exists. A stale source falls back to one short question. Call `red_flag_check.scan_check_in` and readiness_screen before any workout. The evening follow-up asks whether they did it, easy/right/hard, and what they ate. Every free-text answer is scanned.
+
+The checklist below still runs before that workout. Send it in two messages. Do not split the checklist into one question at a time.
 
 ## Message 1
 

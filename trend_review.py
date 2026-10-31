@@ -223,6 +223,8 @@ class TrendReview:
             "plan_hash": confirmation.plan_hash,
             "quoted_words": confirmation.quoted_words,
             "speaker": confirmation.speaker,
+            "timestamp": confirmation.timestamp,
+            "issuer_seal": confirmation.issuer_seal,
         }
         saved = LogStore(log_path).append("confirmations", row)
         if not saved.get("ok"):

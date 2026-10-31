@@ -3,7 +3,17 @@
 
 import pytest
 from readiness_screen import ReadinessScreen
-from record_confirmation import ConfirmationRecorder, hash_plan, normalize_reply
+from datetime import datetime, timedelta, timezone
+
+from record_confirmation import (
+    ConfirmationRecord,
+    ConfirmationRecorder,
+    hash_plan,
+    is_clear_yes,
+    is_plan_yes,
+    normalize_reply,
+    timestamp_is_current,
+)
 from red_flag_check import RedFlagChecker, RedFlagResult, is_passing_check_in
 from plan_check import PlanValidator
 
@@ -69,9 +79,7 @@ class TestClearYes:
         "sure I guess",
         "looks fine",
         "whatever",
-        "ok",
         "yeah maybe",
-        "sounds good",
         "yes I guess",
         "I think so",
     ])
@@ -155,6 +163,135 @@ class TestClearYes:
         assert normalize_reply("YES") == "yes"
         assert normalize_reply("sure I guess") == "sure i guess"
 
+    @pytest.mark.parametrize("reply", [
+        "yes",
+        "yep",
+        "yeah",
+        "confirm",
+        "confirmed",
+        "lock it in",
+        "I confirm this plan",
+        "Yes!",
+        "yes.",
+        "lock it in!",
+        "yes 👍",
+        "yes 💪",
+        "yes 🔥",
+        "yes ✅",
+        "yes ✔",
+        "👍",
+        "👍\U0001F3FB",
+        "👍\U0001F3FC",
+        "👍\U0001F3FD",
+        "👍\U0001F3FE",
+        "👍\U0001F3FF",
+        "yes <3",
+        "yes \u2714\uFE0F",
+        "sounds good",
+        "sounds good!",
+        "let's go",
+        "Let's go!",
+        "lets gooo",
+        "ok",
+        "ok.",
+        "ok fine",
+        "do it",
+        "do it 👍",
+    ])
+    def test_bare_yes_words_are_accepted(self, reply):
+        assert is_clear_yes(reply)
+        record = ConfirmationRecorder().record(
+            ADULT_PLAN, reply, "user", passing_check_in()
+        )
+        assert record.confirmed
+        assert record.quoted_words == reply
+
+    @pytest.mark.parametrize("reply", [
+        "yes, I have chest pain",
+        "yes, my knee hurts",
+        "yes stop",
+        "yes cancel",
+        "yes undo",
+        "yes never mind",
+        "yes, wait",
+        "yes later",
+        "yeah right",
+        "yes make it six days",
+        "yes, without squats",
+        "yes lighter please",
+        "yes to the old plan",
+        "yes for next week",
+        "yeah, though make it heavier",
+        "sure I guess",
+        "looks fine",
+        "whatever",
+        "maybe",
+        "ok, my knee hurts",
+        "sounds good?",
+        "do it tomorrow",
+        "yes, what's for dinner?",
+        "yes, болит грудь",
+        "yes 胸が痛い",
+        "yes 我胸口疼",
+        "yes, ألم في الصدر",
+        "yes 😊 चक्कर आ रहा है",
+        "yes 🤕",
+        "yes 🚑",
+        "yes 🤮",
+        "yes 🫀💔",
+        "yes?",
+        "yes??",
+        "yes\u200b",
+        "ok fine?",
+        "lets gooo unless I'm sore",
+        "yes ✔ my knee hurts",
+        "yes <3 but change the days",
+        "yes </3",
+        "👍 and make it heavier",
+    ])
+    def test_anything_past_a_bare_yes_is_refused(self, reply):
+        assert not is_clear_yes(reply)
+        record = ConfirmationRecorder().record(
+            ADULT_PLAN, reply, "user", passing_check_in()
+        )
+        assert record.confirmed is False
+        assert record.quoted_words == reply
+
+    def test_a_red_flag_in_the_reply_is_the_pause(self):
+        reply = "yes, I have chest pain"
+        scanned = RedFlagChecker().scan_text(reply)
+        assert scanned.pause_plan
+        record = ConfirmationRecorder().record(
+            ADULT_PLAN, reply, "user", passing_check_in()
+        )
+        assert record.confirmed is False
+        assert scanned.message in record.message
+
+    def test_a_built_record_a_bumped_copy_and_a_future_stamp_do_not_cover(self):
+        forged = ConfirmationRecord(
+            confirmed=True,
+            plan_hash=hash_plan(ADULT_PLAN),
+            quoted_words="yes",
+            speaker="user",
+            message="Confirmed. Quoted words: yes",
+            errors=[],
+            timestamp="2099-01-01T00:00:00Z",
+        )
+        assert ConfirmationRecorder().covers(forged, ADULT_PLAN) is False
+        real = ConfirmationRecorder().record(ADULT_PLAN, "yes", "user", passing_check_in())
+        assert ConfirmationRecorder().covers(real, ADULT_PLAN) is True
+        real.record_id = "forged-id"
+        real.timestamp = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+        assert ConfirmationRecorder().covers(real, ADULT_PLAN) is False
+        future = ConfirmationRecorder().record(ADULT_PLAN, "yes", "user", passing_check_in())
+        future.timestamp = "2099-01-01T00:00:00Z"
+        assert ConfirmationRecorder().covers(future, ADULT_PLAN) is False
+        now = datetime(2026, 10, 31, 12, 0, tzinfo=timezone.utc)
+        assert timestamp_is_current(now.strftime("%Y-%m-%dT%H:%M:%SZ"), now)
+        assert timestamp_is_current((now + timedelta(minutes=4)).strftime("%Y-%m-%dT%H:%M:%SZ"), now)
+        assert timestamp_is_current((now + timedelta(minutes=6)).strftime("%Y-%m-%dT%H:%M:%SZ"), now) is False
+        assert timestamp_is_current("2099-01-01T00:00:00Z", now) is False
+
 
 class TestPlanCheckFollowUps:
     def test_valid_plan_needs_a_passing_check_in(self):
@@ -185,12 +322,13 @@ class TestPlanCheckFollowUps:
             passing_check_in(),
         )
         assert not forged.valid
-        assert "readiness" in " ".join(forged.errors).lower()
+        assert "under 18" in " ".join(forged.errors).lower()
 
         real = PlanValidator().validate_plan(
             plan, minor_screen(15), passing_check_in()
         )
-        assert real.valid
+        assert real.valid is False
+        assert "under 18" in " ".join(real.errors).lower()
 
     def test_user_block_alone_is_not_a_plan(self):
         plan = {
@@ -218,3 +356,102 @@ class TestPlanCheckFollowUps:
         blob = " ".join(result.errors).lower()
         assert "under 18" in blob
         assert "floor" not in blob
+
+
+def test_is_plan_yes_is_tied_to_the_proposal_hash():
+    import inspect
+
+    from signals import Outreach
+
+    assert is_clear_yes("yes") is True
+    assert is_plan_yes("yes", None) is False
+    assert is_plan_yes("yes", "") is False
+    assert is_plan_yes("yes", "abc") is True
+    assert is_plan_yes("ok", "abc") is True
+    source = inspect.getsource(Outreach.accept)
+    assert "is_plan_yes" in source
+    assert "is_clear_yes" not in source
+
+
+def test_seal_keys_live_in_a_gitignored_install_file():
+    from pathlib import Path
+
+    from seal_secret import install_secret, seal_hex
+
+    root = Path(__file__).resolve().parent
+    for name in ("red_flag_check.py", "readiness_screen.py", "record_confirmation.py"):
+        text = (root / name).read_text(encoding="utf-8")
+        assert "gainzbot-scan-check-in-v1" not in text
+        assert "gainzbot-readiness-screen-v1" not in text
+        assert "gainzbot-record-confirmation-v1" not in text
+    key = install_secret()
+    assert len(key) >= 32
+    assert (root / "data" / "seal.key").is_file()
+    assert install_secret() == key
+    assert "data/" in (root / ".gitignore").read_text(encoding="utf-8")
+    assert seal_hex(b"confirmation", "payload") == seal_hex("confirmation", "payload")
+    readme = (root / "README.md").read_text(encoding="utf-8")
+    assert "tamper-evidence, not security" in readme
+    assert "mode 0600" in readme
+
+
+def test_seal_key_is_mode_0600_and_an_unreadable_key_is_not_overwritten(tmp_path, monkeypatch):
+    import os
+
+    from seal_secret import install_secret, seal_hex
+
+    path = tmp_path / "seal.key"
+    monkeypatch.setattr("seal_secret._key_path", lambda: str(path))
+    key = install_secret()
+    assert key is not None and len(key) >= 32
+    assert path.stat().st_mode & 0o777 == 0o600
+    assert install_secret() == key
+
+    loose = tmp_path / "loose.key"
+    loose.write_bytes(b"m" * 32)
+    os.chmod(loose, 0o644)
+    monkeypatch.setattr("seal_secret._key_path", lambda: str(loose))
+    assert install_secret() == b"m" * 32
+    assert loose.stat().st_mode & 0o777 == 0o600
+    assert loose.read_bytes() == b"m" * 32
+
+    short = tmp_path / "short.key"
+    short.write_bytes(b"tiny")
+    monkeypatch.setattr("seal_secret._key_path", lambda: str(short))
+    assert install_secret() is None
+    assert short.read_bytes() == b"tiny"
+
+    blocked = tmp_path / "blocked.key"
+    original = b"k" * 32
+    blocked.write_bytes(original)
+    blocked_mode = blocked.stat().st_mode
+    monkeypatch.setattr("seal_secret._key_path", lambda: str(blocked))
+    real_open = open
+
+    def guarded(file, *args, **kwargs):
+        target = file if isinstance(file, (str, bytes)) else getattr(file, "name", None)
+        if target is not None and os.path.abspath(str(target)) == os.path.abspath(blocked):
+            raise PermissionError("blocked")
+        return real_open(file, *args, **kwargs)
+
+    monkeypatch.setattr("builtins.open", guarded)
+    assert install_secret() is None
+    descriptor = os.open(blocked, os.O_RDONLY)
+    try:
+        assert os.read(descriptor, 64) == original
+    finally:
+        os.close(descriptor)
+    monkeypatch.setattr("seal_secret.install_secret", lambda: None)
+    try:
+        seal_hex(b"confirmation", "payload")
+        raised = False
+    except OSError:
+        raised = True
+    assert raised
+    assert blocked.stat().st_mode == blocked_mode
+    from record_confirmation import ConfirmationRecorder
+    from seal_secret import DATA_FILE_MESSAGE
+
+    record = ConfirmationRecorder().record({"changes": {"load": 80}}, "yes", "user", None)
+    assert record.confirmed is False
+    assert record.message == DATA_FILE_MESSAGE

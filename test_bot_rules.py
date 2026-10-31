@@ -99,7 +99,9 @@ def test_accepts_none_only_after_the_full_red_flag_list():
 
 def test_checks_catch_mistakes_and_name_the_public_limits():
     assert "catch mistakes" in RULES.lower()
-    assert "signing key is in the public repo" in RULES
+    assert "data/seal.key" in RULES
+    assert "tamper-evidence, not security" in RULES
+    assert "signing key is in the public repo" not in RULES
     assert "caller-supplied string" in RULES
     assert "tamper-proof" not in RULES.lower()
     assert "tamper proof" not in RULES.lower()

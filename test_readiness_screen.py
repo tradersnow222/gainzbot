@@ -1,8 +1,10 @@
 #!/usr/bin/env python3
 """Tests for readiness_screen.py screening guardrails."""
 
+from datetime import datetime, timedelta, timezone
+
 import pytest
-from readiness_screen import ReadinessScreen, ClearanceLevel
+from readiness_screen import ReadinessScreen, ClearanceLevel, passing_readiness
 
 
 def complete_par_q(**overrides):
@@ -31,12 +33,14 @@ class TestAgeCheck:
         assert "under 18" in result.reasons[0]
     
     def test_minor_with_consent_caution(self):
-        """Minors with parental consent get caution status."""
+        """Consent does not unlock a plan for anyone under 18."""
         screener = ReadinessScreen()
         result = screener.check_age(16, has_parental_consent=True)
-        assert result.clearance == ClearanceLevel.CAUTION
-        assert not result.blocked
-        assert "parental consent" in result.reasons[0]
+        assert result.clearance == ClearanceLevel.NEEDS_DOCTOR_CLEARANCE
+        assert result.blocked
+        assert "under 18" in result.reasons[0]
+        assert "parental consent" not in result.reasons[0].lower()
+        assert passing_readiness(result) is False
 
 
 class TestPARQ:
@@ -328,10 +332,10 @@ class TestMessyInput:
         }
         result = screener.screen_intake(intake)
         assert result.blocked
-        assert "parental" in result.reasons[0].lower()
+        assert "under 18" in result.reasons[0].lower()
     
     def test_age_15_with_consent_caution(self):
-        """Age 15 with consent gets caution."""
+        """Age 15 stays blocked even with consent."""
         screener = ReadinessScreen()
         intake = {
             "age": 15,
@@ -340,8 +344,11 @@ class TestMessyInput:
             "medical_conditions": []
         }
         result = screener.screen_intake(intake)
-        assert result.clearance == ClearanceLevel.CAUTION
-        assert not result.blocked
+        assert result.clearance == ClearanceLevel.NEEDS_DOCTOR_CLEARANCE
+        assert result.blocked
+        assert passing_readiness(result) is False
+        assert result.age == 15
+        assert "under 18" in " ".join(result.reasons).lower()
     
     def test_comma_separated_conditions(self):
         """Comma-separated conditions string is parsed."""
@@ -468,7 +475,7 @@ class TestReviewerProbes:
     def test_age_15_without_consent_blocks(self):
         result, text = self._reasons({"age": 15})
         assert result.blocked
-        assert "without parental consent" in text
+        assert "under 18" in text
 
     def test_age_9_with_consent_blocks(self):
         result, text = self._reasons({"age": 9, "parental_consent": True})
@@ -478,13 +485,13 @@ class TestReviewerProbes:
     def test_age_15_consent_no_string_blocks(self):
         result, text = self._reasons({"age": 15, "parental_consent": "no"})
         assert result.blocked
-        assert "without parental consent" in text
+        assert "under 18" in text
         assert "has parental consent" not in text
 
     def test_age_string_16_without_consent_blocks(self):
         result, text = self._reasons({"age": "16"})
         assert result.blocked
-        assert "without parental consent" in text
+        assert "under 18" in text
 
     def test_age_none_blocks(self):
         result, text = self._reasons({"age": None})
@@ -738,8 +745,10 @@ class TestP2bProbes:
         result, _ = self._screen(
             {"age": 15, "par_q": self.pq, "parental_consent": "yes"}
         )
-        assert result.clearance == ClearanceLevel.CAUTION
-        assert not result.blocked
+        assert result.blocked
+        assert result.clearance != ClearanceLevel.CAUTION
+        assert passing_readiness(result) is False
+        assert "under 18" in " ".join(result.reasons).lower()
 
     def test_age_200_blocks(self):
         result, text = self._screen({"age": 200, "par_q": self.pq})
@@ -783,6 +792,152 @@ class TestP2bProbes:
     def test_intake_none_blocks(self):
         result, _ = self._screen(None)
         assert result.blocked
+
+
+class TestDoctorClearance:
+    """A doctor's clearance passes a PAR-Q yes. Acute proof is not required."""
+
+    def setup_method(self):
+        self.screen = ReadinessScreen()
+        self.pq = {flag: False for flag in ReadinessScreen.PAR_Q_RED_FLAGS}
+
+    def _chest(self, **extra):
+        intake = {
+            "age": 34,
+            "par_q": {**self.pq, "chest_pain_at_rest": True, "chest_pain_during_activity": "yes"},
+        }
+        intake.update(extra)
+        return self.screen.screen_intake(intake)
+
+    def test_a_spoken_clearance_passes_chest_pain_and_keeps_the_answers(self):
+        result = self._chest(
+            medical_clearance="my doctor cleared me for exercise",
+            clearance_date="2026-10-01",
+        )
+        assert result.blocked is False
+        assert result.clearance == ClearanceLevel.CAUTION
+        assert passing_readiness(result)
+        assert result.doctor_cleared is True
+        assert result.clearance_date == "2026-10-01"
+        assert result.par_q["chest_pain_at_rest"] is True
+        assert result.par_q["chest_pain_during_activity"] is True
+        assert result.par_q["loss_of_consciousness"] is False
+        text = " ".join(result.reasons).lower()
+        assert "chest pain at rest: yes" in text
+        assert "chest pain during activity: yes" in text
+        assert "loss of consciousness: no" in text
+        follows = [
+            rec for rec in result.recommendations
+            if rec == "The plan follows the doctor's clearance."
+        ]
+        assert follows == ["The plan follows the doctor's clearance."]
+        blob = " ".join(result.reasons + result.recommendations).lower()
+        assert "proof" not in blob
+        assert "document" not in blob
+        assert "doctor's note" not in blob
+        changed = result
+        changed.par_q = dict(result.par_q)
+        changed.par_q["chest_pain_at_rest"] = False
+        assert passing_readiness(changed) is False
+
+    def test_a_boolean_clearance_records_today_when_no_date_is_given(self):
+        result = self._chest(medical_clearance=True)
+        assert passing_readiness(result)
+        assert result.clearance_date == datetime.now(timezone.utc).date().isoformat()
+        assert result.recommendations.count("The plan follows the doctor's clearance.") == 1
+
+    def test_chest_pain_without_clearance_still_blocks(self):
+        result = self._chest(medical_clearance=False)
+        assert result.blocked
+        assert result.doctor_cleared is False
+        assert passing_readiness(result) is False
+        assert "The plan follows the doctor's clearance." not in result.recommendations
+
+    def test_a_denied_clearance_does_not_pass(self):
+        result = self._chest(medical_clearance="the doctor has not cleared me")
+        assert result.blocked
+        assert result.doctor_cleared is False
+        assert "chest pain at rest" in " ".join(result.reasons).lower()
+
+    def test_a_conditional_or_garbled_clearance_does_not_count(self):
+        today = datetime.now(timezone.utc).date()
+        for words in (
+            "my doctor cleared me unless I get chest pain",
+            "cleared unless chest pain",
+            "doctor clear",
+            "my doctor cleared me only if the pain stays away",
+            "my doctor cleared me as long as I feel fine",
+            "the doctor clears me until the pain returns",
+        ):
+            result = self._chest(medical_clearance=words)
+            assert result.blocked, words
+            assert result.doctor_cleared is False
+            assert passing_readiness(result) is False
+        future = self._chest(
+            medical_clearance="my doctor cleared me for exercise",
+            clearance_date=(today + timedelta(days=1)).isoformat(),
+        )
+        assert future.blocked
+        assert future.doctor_cleared is False
+        assert "clearance_date cannot be in the future." in future.reasons
+        expired_on = today.replace(year=today.year - 1) - timedelta(days=1)
+        expired = self._chest(
+            medical_clearance="my doctor cleared me for exercise",
+            clearance_date=expired_on.isoformat(),
+        )
+        assert expired.blocked
+        assert expired.doctor_cleared is False
+        assert "That clearance is more than 12 months old. Ask again." in expired.reasons
+
+    def test_pregnancy_still_needs_its_own_clearance(self):
+        result = self.screen.screen_intake({
+            "age": 30,
+            "par_q": self.pq,
+            "pregnant": True,
+            "medical_clearance": "my doctor cleared me for exercise",
+        })
+        assert result.blocked
+        assert "without medical clearance" in " ".join(result.reasons).lower()
+        assert "The plan follows the doctor's clearance." not in result.recommendations
+
+    def test_a_year_in_the_clearance_sentence_is_that_date(self):
+        today = datetime.now(timezone.utc).date().isoformat()
+        for words in ("cleared in 2009", "my doctor cleared me in 2009", "cleared in 2025"):
+            result = self._chest(medical_clearance=words)
+            assert result.blocked, words
+            assert result.doctor_cleared is False
+            assert result.clearance_date != today
+            assert "That clearance is more than 12 months old. Ask again." in result.reasons
+            assert passing_readiness(result) is False
+
+    def test_a_year_without_a_month_asks_for_the_month(self):
+        today = datetime.now(timezone.utc).date().isoformat()
+        for words in ("cleared in 2026", "my doctor cleared me in 2026"):
+            result = self._chest(medical_clearance=words)
+            assert result.blocked, words
+            assert result.doctor_cleared is False
+            assert result.clearance_date != today
+            blob = " ".join(result.reasons).lower()
+            assert "month" in blob, words
+            assert "more than 12 months" not in blob
+            assert passing_readiness(result) is False
+
+    def test_a_minor_does_not_pass_with_consent_and_clearance(self):
+        result = self.screen.screen_intake({
+            "age": 16,
+            "parental_consent": True,
+            "par_q": self.pq,
+            "pregnant": False,
+            "medical_conditions": [],
+            "medical_clearance": "my doctor cleared me for exercise",
+            "clearance_date": "2026-10-01",
+        })
+        assert result.age == 16
+        assert result.blocked is True
+        assert passing_readiness(result) is False
+        blob = " ".join(result.reasons).lower()
+        assert "under 18" in blob
+        assert "training plan" in blob
 
 
 if __name__ == "__main__":

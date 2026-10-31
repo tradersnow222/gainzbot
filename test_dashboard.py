@@ -116,6 +116,32 @@ class TestCharts:
         assert chart(result, "calories")["points"][0]["target"] is None
         assert "age" in result["message"].lower()
 
+    def test_a_thin_log_still_shows_the_first_day(self):
+        week = {
+            "plan": {
+                "nutrition": {"calories": 2200, "protein_g": 144},
+                "goals": {"goal": "cut"},
+            },
+            "sessions": [
+                {
+                    "date": "2026-10-28",
+                    "name": "Full body A",
+                    "exercises": [{"name": "Squat", "sets": 3, "reps": "8-12", "rest": "90 sec", "effort": "Leave 3 reps in reserve"}],
+                },
+            ],
+        }
+        result = Dashboard().build({}, ADULT, 28, "2026-10-28", week=week)
+        assert result["message"] == NOT_ENOUGH
+        assert result["enough_data"] is False
+        assert chart(result, "weight")["points"] == []
+        day = result["first_day"]
+        assert day["today"]["name"] == "Full body A"
+        assert day["week"] == week["sessions"]
+        assert day["targets"]["calories"] == 2200
+        assert day["targets"]["protein_g"] == 144
+        assert day["targets"]["goal"] == "cut"
+        assert day["next"] == "Log today's session."
+
     def test_a_single_log_is_not_dashboard_ready(self):
         one = {"intake": [{"date": "2026-10-28", "calories": 2000, "protein_g": 140}]}
         result = Dashboard().build(one, ADULT, 28, "2026-10-28", TARGETS)

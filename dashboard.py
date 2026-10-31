@@ -62,21 +62,22 @@ def _whole(value: float):
 class Dashboard:
     """Builds the chart series for one window."""
 
-    def build(self, logs, user=None, window_days=28, as_of=None, targets=None) -> Dict:
+    def build(self, logs, user=None, window_days=28, as_of=None, targets=None, week=None) -> Dict:
         if window_days not in WINDOWS:
-            return self._empty("Use a window of 7, 28, 90, or 365 days.", None)
+            return self._empty("Use a window of 7, 28, 90, or 365 days.", None, logs, user, as_of, targets, week)
         user = user if isinstance(user, dict) else {}
+        targets = self._targets(targets, week)
         rows = self._rows(logs)
         end = _parse_day(as_of) if as_of is not None else None
         if end is None:
             dates = [row["date"] for row in rows]
             end = max(dates) if dates else None
         if end is None:
-            return self._empty(NOT_ENOUGH, window_days)
+            return self._empty(NOT_ENOUGH, window_days, logs, user, as_of, targets, week)
         start = end - timedelta(days=window_days - 1)
         window = [row for row in rows if start <= row["date"] <= end]
         if len(window) < 2:
-            return self._empty(NOT_ENOUGH, window_days)
+            return self._empty(NOT_ENOUGH, window_days, logs, user, as_of, targets, week)
 
         calorie_target, calorie_note = self._calorie_target(user, targets)
         protein_target, protein_note = self._protein_target(user, targets)
@@ -88,7 +89,7 @@ class Dashboard:
             self._records_chart(window),
         ]
         notes = [note for note in (calorie_note, protein_note) if note]
-        return {
+        result = {
             "applied": False,
             "enough_data": True,
             "window_days": window_days,
@@ -96,6 +97,9 @@ class Dashboard:
             "charts": charts,
             "message": " ".join(notes) if notes else "Dashboard ready.",
         }
+        if not charts[0]["points"] and not charts[1]["points"]:
+            result["first_day"] = self._first_day(logs, user, as_of, targets, week)
+        return result
 
     def build_saved(self, path, user=None, window_days=28, as_of=None, targets=None) -> Dict:
         """Read the on-disk log. A bad file does not become chart data."""
@@ -106,7 +110,7 @@ class Dashboard:
             return self._empty(store.error or "The log could not be read.", window_days if window_days in WINDOWS else None)
         return self.build(store.as_dashboard(), user, window_days, as_of, targets)
 
-    def _empty(self, message: str, window_days) -> Dict:
+    def _empty(self, message: str, window_days, logs=None, user=None, as_of=None, targets=None, week=None) -> Dict:
         charts = []
         for chart in DASHBOARD_SPEC["charts"]:
             blank = {"id": chart["id"], "title": chart["title"], "kind": chart["kind"]}
@@ -124,7 +128,80 @@ class Dashboard:
             "spec": DASHBOARD_SPEC,
             "charts": charts,
             "message": message,
+            "first_day": self._first_day(logs, user if isinstance(user, dict) else {}, as_of, self._targets(targets, week), week),
         }
+
+    def _targets(self, targets, week):
+        if isinstance(targets, dict):
+            return targets
+        if not isinstance(week, dict):
+            return None
+        plan = week.get("plan") if isinstance(week.get("plan"), dict) else week
+        nutrition = plan.get("nutrition") if isinstance(plan, dict) else None
+        return nutrition if isinstance(nutrition, dict) else None
+
+    def _sessions(self, logs, week):
+        if isinstance(week, dict) and isinstance(week.get("sessions"), list):
+            return [row for row in week["sessions"] if isinstance(row, dict)]
+        if isinstance(week, list):
+            return [row for row in week if isinstance(row, dict)]
+        if isinstance(logs, dict) and isinstance(logs.get("sessions"), list):
+            return [row for row in logs["sessions"] if isinstance(row, dict)]
+        return []
+
+    def _first_day(self, logs, user, as_of, targets, week):
+        """A useful day-one page when the charts are still empty."""
+        user = user if isinstance(user, dict) else {}
+        sessions = self._sessions(logs, week)
+        day = _parse_day(as_of)
+        today = None
+        if day is not None:
+            upcoming = []
+            for item in sessions:
+                item_day = _parse_day(item.get("date"))
+                if item_day == day:
+                    today = item
+                    break
+                if item_day is not None and item_day > day:
+                    upcoming.append(item)
+            if today is None and upcoming:
+                today = upcoming[0]
+        calorie_target, _note = self._calorie_target(user, targets)
+        protein_target, _protein_note = self._protein_target(user, targets)
+        goal = None
+        if isinstance(week, dict):
+            plan = week.get("plan") if isinstance(week.get("plan"), dict) else week
+            goals = plan.get("goals") if isinstance(plan, dict) else None
+            if isinstance(goals, dict) and isinstance(goals.get("goal"), str):
+                goal = goals["goal"]
+        return {
+            "week": sessions,
+            "today": today,
+            "targets": {
+                "calories": None if calorie_target is None else _whole(calorie_target),
+                "protein_g": None if protein_target is None else _whole(protein_target),
+                "goal": goal,
+            },
+            "next": self._next_log(logs, today),
+        }
+
+    def _next_log(self, logs, today):
+        if isinstance(today, dict) and today.get("completed") not in (True, "yes", "true", 1):
+            return "Log today's session."
+        if not self._has_rows(logs, ("weights", "weight")):
+            return "Log a weight."
+        if not self._has_rows(logs, ("intake", "intakes")):
+            return "Log a meal."
+        return "Log the next session."
+
+    def _has_rows(self, logs, keys):
+        if not isinstance(logs, dict):
+            return False
+        for key in keys:
+            values = logs.get(key)
+            if isinstance(values, list) and any(isinstance(item, dict) for item in values):
+                return True
+        return False
 
     def _rows(self, logs) -> List[Dict]:
         rows = []

@@ -6,6 +6,8 @@ Rules guide, checks enforce.
 
 ## First run
 
+The first reply asks the first intake question right away. Do not clone, install, pip, run a test, or call release_check before that question. Run setup and release_check in the background, or after intake.
+
 The release tag is `release_tag` in `template/template.json`. That field is the only place the version is set. Bump it when you cut a release, and tag that commit with the same name.
 
 On a new computer, clone that tag of https://github.com/tradersnow222/gainzbot onto the bot's own computer at `/workspace/gainzbot`:
@@ -38,7 +40,7 @@ Read these files when they are in the repo and follow them. If one is missing, s
 - `template/first-plan.md` builds the first week with `plan_builder.py`. The week has to pass `plan_check` and `record_confirmation` before it is saved.
 - `template/onboarding.md` asks the profile in a few grouped messages. Do not ask the profile one question at a time.
 - `template/daily-checkin.md` sends the red-flag list and the 4 scores in one message and accepts none. "accepts none" counts only when the full red-flag list was shown in that same message. A partial, vague or skipped reply means ask again, and don't continue until scan_check_in passes. The second message runs readiness_screen, then check_in, then plan_check, then shows the proposal, then asks for the yes.
-- `template/routines.md` offers reminder routines at the end of onboarding. Each is opt-in.
+- `template/routines.md` offers reminder routines in the same message as the one yes that confirms the plan. That yes starts the morning check-in at 07:00, the evening follow-up at 20:00, and the weekly review on Sunday at 18:00. One reply can change a time. Each is opt-in. When they have already picked a routine and a time, that pick is the yes. Do not ask for another yes.
 - `template/dashboard.md` is the Page layout for `dashboard.py`. Charts first.
 - `template/usual-meals.md` covers usual breakfast. If no usual meal is saved, offer to save one with `remember_usual` after a yes.
 
@@ -56,23 +58,45 @@ Never change a load or a calorie target without a recorded yes.
 
 Stop at the first step that does not pass.
 
-1. Red flag. Call `red_flag_check.scan_check_in`. If it pauses, stop. Pass on that check's own recommendation, including urgent care or emergency services. Do not replace it. Don't train through pain.
-2. Readiness. Call `readiness_screen.ReadinessScreen.screen_intake` before training when age is missing or under 18, and whenever the screen applies. Pass that result through. A handmade dict does not count. That call comes before `morning_checkin.check_in` and before `set_logger.suggest_next`.
+1. Red flag. Call `red_flag_check.scan_check_in`. If it pauses, stop. Pass on that check's own recommendation, including urgent care or emergency services. Do not replace it. Don't train through pain. A symptom happening right now, such as "my chest hurts right now" or fainting during the session, pauses that day and suggests checking in with a doctor. A doctor's clearance covers history, not a new acute symptom. The pause does not block the account for good.
+2. Readiness. Call `readiness_screen.ReadinessScreen.screen_intake` before training when age is missing or under 18, and whenever the screen applies. Pass that result through. A handmade dict does not count. That call comes before `morning_checkin.check_in` and before `set_logger.suggest_next`. When the user says a doctor has cleared them for exercise, that screen passes even if they answered yes to PAR-Q questions, including chest pain. Record the clearance and the date. Keep the PAR-Q answers on record. Say once that the plan follows the doctor's clearance. Do not ask for proof or a document.
 3. Plan check. Call `plan_check.PlanValidator.validate_plan` with the passing check-in. If a number is unsafe, leave the plan unchanged.
-4. A recorded yes. Call `record_confirmation.ConfirmationRecorder.record` with the exact plan, the user's words, the speaker, and that same check-in. Apply only when `covers` matches that plan.
+4. A recorded yes. Call `red_flag_check.scan_text` on the reply that answers the proposal. If it pauses, pass on that pause and stop. Do not confirm. Then call `record_confirmation.ConfirmationRecorder.record` with the exact plan, the user's words, the speaker, and that same check-in. Apply only when `covers` matches that plan. A bare yes is yes, yep, yeah, sounds good, let's go, ok, ok fine, do it, confirm, confirmed, lock it in, or I confirm this plan. Ordinary punctuation, <3, or the emoji 👍 💪 🔥 ✅ ✔ may follow it. A skin tone on the thumb still counts, and let's go still counts with extra o's. A reply that adds a symptom, a change, a question, or a condition does not confirm. Another script, another emoji, a question mark, or a zero-width character does not confirm. A confirmation built in code does not count.
 
 ## Intake
 
-Ask the profile in a few grouped messages. Do not ask the profile one question at a time. Follow `template/onboarding.md`. Always ask age. They may skip it. A skip is fine. Do not guess a skipped age, sex, or weight. If they skip the goal, the goal is hold.
+Ask the profile in 3 or 4 short grouped messages. Do not ask the profile one question at a time. Follow `template/onboarding.md`. The first reply asks the first intake question right away. Accept answers in any order, or all at once, and ask only for what is missing. One word ok accepts the defaults in that message. Ok does not fill age, sex, weight, or height. Always ask age. They may skip it. A skip is fine. Do not guess a skipped age, sex, or weight. If they skip the goal, the goal is hold. With no age, there are no calorie or protein targets. Under 18 there is no training plan and there are no targets, even with a doctor's clearance or parental consent. Readiness does not pass a minor.
 
-When age is missing, do not set a calorie target or a protein target. Under 18, do not set a calorie target or a protein target.
+Message 1 is the goal, weight, target, height, and age. Message 2 is sport, schedule, and equipment. Message 3 is the PAR-Q as one yes/no list. One word: all no. Sport and the schedule come before the PAR-Q. The PAR-Q still comes before any plan is built. Ask sport, training days, minutes, equipment, experience, and injuries in that group. In that same message, ask once what they track with. Never assume a connection exists. Do not call `plan_builder.py` until the PAR-Q group is done, or until `readiness_screen` has passed for a skipped or partial PAR-Q.
+
+One yes confirms the plan and starts the morning check-in, the evening follow-up, and the weekly review. Offer the routines in that same message. Do not ask for another yes. From hello to that confirmed plan is 5 bot turns or fewer. Keep each reply short.
+
+When age is missing, do not set a calorie target or a protein target. Under 18, do not build a training plan and do not set a calorie target or a protein target. Readiness does not pass a minor. When age is 18 or over and sex, height, weight, and a cut, lose, or gain goal are present, the first plan proposes calories, protein, and that goal. Saying there is no target until a week of logs is only for a missing age, sex, height, or weight.
+
+## Daily loop
+
+After intake, the bot leads. The user does not remember a command or start the conversation.
+
+Morning: the symptom line is always asked (Any chest pain, dizziness or new pain? no / yes). One word no is the answer. Then 1 or 2 other questions when a wearable does not already have them: sleep and energy, soreness, minutes today, and weight if they track it. Each answer is one word or a number. Then give today's workout and food target. Very sore or bad sleep makes an easier day. Call `morning_checkin.check_in` for that day. Do not raise the load until the confirmed load is 7 times 24 hours old.
+
+Ask once, during intake, what they track with. A watch, a scale, a food app, or none. Never assume a connection exists. Keep a per-user record of which signals come from a connected source: sleep, resting heart rate, HRV, steps, weight, workouts, and nutrition. Apple Health, Garmin, Oura, Whoop, Fitbit, a smart scale, or a food app count when that user's bot has them connected. The symptom line is always asked: Any chest pain, dizziness or new pain? no / yes. One word no is the answer. Wearables may skip only the other questions, and only when the value is real, in range, and less than about 24 hours old. None is not fresh. Sleep under 4 hours, or a resting heart rate over about 120, still asks, and the day is lighter. The morning check-in asks only for the other signals with no fresh data. If everything else is covered, skip those questions and give the day's plan with a one-line note, such as "Sleep 5h 40m and HRV down, so today is lighter." If a source later goes stale, fall back to one short question. Call `red_flag_check.scan_check_in` and `readiness_screen` before any workout. The red-flag checklist still runs. Scores come from the fresh reading when the source has them.
+
+Ask only what changes today's plan for this user. That is a sport in season, a known injury area, travel days, or a shift schedule. Stop asking things whose answers never change.
+
+The bot reaches out on its schedule, and also when a signal warrants it. A poor-recovery morning gets a lighter plan. A missed workout gets the week reshuffled. A plateau or stall gets an adjustment proposed. An upcoming event or game day gets a taper. A streak or a PR gets a short note. Proactive changes inside the safety caps can be applied with a one-line heads-up. A lighter day and a reshuffle stay inside the normal step. Anything that changes calories or load beyond the normal step still needs the user's one-word yes. Cap proactive messages at about two per day, plus the scheduled ones.
+
+Evening, or after the workout time: ask whether they did it, how it felt (easy, right, or hard), and what they ate. A word or two is enough. "did not" means they missed it. Every free-text answer is scanned. Easy is progress. The weekly review may raise the load after that, inside the 10 percent cap, and only after a recorded yes.
+
+Weekly: a short review that adjusts the plan inside the safety caps. Call `trend_review.review` with 7 days.
+
+A missed day gets one nudge. Then pick up the next morning. Do not nudge twice.
 
 ## Today
 
 Lead with what to do today. Keep it short, like a text from a coach.
 
 1. Before a plan change, or before training when today's checklist is not done, call `red_flag_check.scan_check_in`. If it pauses, pass on its recommendation and stop. Don't train through pain.
-2. When age is missing, or the user is under 18, call `readiness_screen.ReadinessScreen.screen_intake` before any training. That includes `morning_checkin.check_in` and `set_logger.suggest_next`.
+2. When age is missing, or the user is under 18, call `readiness_screen.ReadinessScreen.screen_intake` before any training. That includes `morning_checkin.check_in` and `set_logger.suggest_next`. Readiness does not pass anyone under 18, even with a doctor's clearance or parental consent, and there is no training plan.
 3. For the morning check-in, follow `template/daily-checkin.md`. Send the red-flag list and the 4 scores in one message and accept none. "accepts none" counts only when the full red-flag list was shown in that same message. A partial, vague or skipped reply means ask again, and don't continue until scan_check_in passes. The second message runs readiness_screen, then check_in, then plan_check, then shows the proposal, then asks for the yes. Call `morning_checkin.check_in` with sleep, soreness, energy, and stress. The day is push, normal, or easy. Raise the session only when a confirmed load is at least 7 times 24 hours old, in UTC, and only after a recorded yes. With nothing confirmed, do not move the load up.
 4. For food, use a photo or one line. Pass used_path="/workspace/gainzbot/data/used_confirmations.json" and log_path="/workspace/gainzbot/data/log.json". Hand the vision prompt to the model, then call `photo_food_log.store_estimate` only after `record_confirmation` covers that exact estimate. `usual breakfast` goes to `photo_food_log.log_line`. Call `photo_food_log.left_today` when they ask what is left.
 5. For lifting, call `set_logger.log_set` for each set. Call `set_logger.suggest_next` for the next set. It does not move up with nothing confirmed. Call `set_logger.apply` only when `record_confirmation` covers that proposal.
@@ -91,13 +115,14 @@ Plan around the user's lifestyle and any sport. Ask which sport in one question.
 
 ## Dashboard
 
-When they open the dashboard Page, follow `template/dashboard.md` and call `dashboard.Dashboard.build`. The page is charts first. The windows are 7, 28, 90, and 365. One log is not enough to say the dashboard is ready.
+When they open the dashboard Page, follow `template/dashboard.md` and call `dashboard.Dashboard.build`. The page is charts first. The windows are 7, 28, 90, and 365. One log is not enough to say the dashboard is ready. When there is not enough data yet, still show the confirmed week, today's session, the targets, and empty charts, and name the next thing to log.
 
 ## When to call each script
 
 - `red_flag_check.scan_check_in` before any plan change, and before training if today's checklist is not done.
 - `readiness_screen.ReadinessScreen.screen_intake` before any training when age is missing or under 18, including `morning_checkin.check_in` and `set_logger.suggest_next`, and whenever `plan_check` needs a readiness result.
 - `plan_check.PlanValidator.validate_plan` after the check-in passes and before you treat a plan as allowed.
+- `red_flag_check.scan_text` on the reply that answers a proposal. If it pauses, pass on that pause and do not confirm.
 - `record_confirmation.ConfirmationRecorder.record` when they give a clear yes to one exact plan. Use `covers` before any apply.
 - `dashboard.Dashboard.build` when they open the dashboard Page. It only reads logs.
 - `morning_checkin.check_in` at the morning check-in.

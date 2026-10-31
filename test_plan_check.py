@@ -899,7 +899,8 @@ class TestAgeReadinessAndRates:
         assert not result.valid
         blob = " ".join(result.errors).lower()
         assert "under 18" in blob
-        assert "readiness" in blob
+        assert "training plan" in blob
+        assert "readiness" not in blob
         assert "floor" not in blob
 
     def test_under_18_with_passing_screen_rejects_calorie_target(self):
@@ -954,7 +955,7 @@ class TestAgeReadinessAndRates:
         }
         result = PlanValidator().validate_plan(plan, minor_screen(16))
         assert not result.valid
-        assert "deficit" in " ".join(result.errors).lower()
+        assert "There is no training plan and no calorie target for anyone under 18." in result.errors
 
     def test_minor_training_without_calories_passes(self):
         plan = {
@@ -975,8 +976,8 @@ class TestAgeReadinessAndRates:
         result = PlanValidator().validate_plan(
             plan, minor_screen(15), passing_check_in()
         )
-        assert result.valid
-        assert result.errors == []
+        assert result.valid is False
+        assert "There is no training plan and no calorie target for anyone under 18." in result.errors
 
     def test_blocked_or_uncleared_screen_does_not_pass(self):
         plan = {

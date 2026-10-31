@@ -2,6 +2,8 @@
 
 From a fresh checkout to a Grok Bot you can message in under 5 minutes.
 
+The first reply asks the first intake question right away. Do not clone, install, pip, run a test, or call release_check before that question. Run setup and release_check in the background, or after intake. Intake is 3 short messages: goal, weight, target, height, and age; then sport, schedule, and equipment; then the PAR-Q as one yes/no list, where all no is one word. Answers can arrive in any order or all at once. Ask only for what is missing. One word ok accepts the defaults for days, times, or session length. It does not fill age, sex, weight, or height. One yes confirms the plan, and the routine offer is in that same message. From hello to a confirmed plan is 5 bot turns or fewer. That yes also starts the morning check-in at 07:00, the evening follow-up at 20:00, and the weekly review on Sunday at 18:00. One reply can change a time. After that the bot opens each morning with 1 or 2 short questions, gives today's workout and food target, and follows up in the evening. A missed day gets one nudge, then the next morning. The user does not remember a command. Ask once what they track with, and never assume a connection exists. The symptom line is always asked. A fresh connected signal, less than about 24 hours old, is not asked again. If everything else is covered, the morning skips the other questions and gives the day's plan with a one-line note. None is not fresh. A stale source falls back to one short question. Ask only what changes today's plan. The bot also reaches out on its own when a signal warrants it, at about two proactive messages per day plus the scheduled check-ins. A change inside the safety caps gets a one-line heads-up. A calorie or load change beyond the normal step needs one word yes.
+
 ## 1. Put the repo on the bot's computer
 
 A fresh Grok Bot cannot see a laptop checkout. On the bot's own computer, clone the public repo to a fixed path:
@@ -50,6 +52,8 @@ Copy the starter prompts from `template/template.json`. Every file path in `temp
 Paste `template/getting-started.md` in as the getting-started skill. The first chat follows `template/onboarding.md` and does not ask the profile one question at a time.
 
 Leave `template/profile.md` as the place the bot writes their sport, goal, and schedule. Do not put a real name or health history in the repo.
+
+When the user says a doctor has cleared them for exercise, the readiness screen passes even if a PAR-Q answer is yes, including chest pain. Record the clearance and the date, keep the PAR-Q answers on record, and say once that the plan follows the doctor's clearance. Do not ask for proof or a document. A symptom happening right now, such as "my chest hurts right now" or fainting during the session, still pauses that day and suggests checking in with a doctor. That pause does not block the account.
 
 ## 4. Confirm one adult plan
 
