@@ -7,9 +7,11 @@ load, inside the 10 percent cap, and only after 7 times 24 hours. A planned
 load passed by the caller is ignored. A missed session rebuilds later
 days from that confirmed load. A day before the miss, and any session
 dated after this check, is min(sent load, confirmed load), so 80 stays 80
-and 200 becomes 100. A lighter deload is not raised. A missed date after
-the check is rejected. Nothing is applied until record_confirmation covers
-that proposal.
+and 200 becomes 100. A day between a past missed session and the check
+stays at that same cap, so a planned 100 is not raised to 110. A lighter
+deload is not raised. A missed date after the user's local day is
+rejected. 11:30 PM Pacific is still that evening, not the next UTC day.
+Nothing is applied until record_confirmation covers that proposal.
 """
 
 from datetime import date, datetime, timezone
@@ -40,6 +42,32 @@ def _clock(value):
             return None
         return datetime(day.year, day.month, day.day, tzinfo=timezone.utc)
     return None
+
+
+def _local_day(value) -> Optional[date]:
+    """The user's calendar day. An offset is not converted to UTC first."""
+    if isinstance(value, datetime):
+        if value.tzinfo is None or value.utcoffset() is None:
+            return None
+        return value.date()
+    if isinstance(value, date):
+        return value
+    if not isinstance(value, str):
+        return None
+    text = value.strip()
+    if len(text) == 10:
+        try:
+            return date.fromisoformat(text)
+        except ValueError:
+            return None
+    iso = text[:-1] + "+00:00" if text.endswith("Z") else text
+    try:
+        parsed = datetime.fromisoformat(iso)
+    except ValueError:
+        return None
+    if parsed.tzinfo is None or parsed.utcoffset() is None:
+        return None
+    return parsed.date()
 
 
 def _parse_day(value) -> Optional[date]:
@@ -110,20 +138,21 @@ class MorningCheckIn:
         matched = [row for row in rows if row["date"] == missed]
         if len(matched) != 1:
             return self._bad("That session is not in this week.")
-        clock = _clock(as_of)
-        if clock is not None and missed > clock.date():
+        local_day = _local_day(as_of)
+        if local_day is not None and missed > local_day:
             return self._bad("The missed session is after this check.")
+        clock = _clock(as_of)
         found = last_confirmed_change(confirmed_changes, "load", clock) if clock is not None else None
-        if found is None or not found.ok or found.value is None:
+        if found is None or not found.ok or found.value is None or local_day is None:
             return self._bad("The week is built from the confirmed load.")
         base = found.value
         can_raise = seven_days_old(found.at, clock)
         room = base * (PlanValidator.MAX_TRAINING_LOAD_INCREASE_PERCENT / 100) if can_raise else 0.0
         missed_row = matched[0]
-        check_day = clock.date()
+        check_day = local_day
         later = [row for row in rows if row["date"] > missed]
         rooms = [
-            0.0 if row["load"] < base or row["date"] > check_day else room
+            0.0 if row["date"] != check_day or row["load"] < base else room
             for row in later
         ]
         to_place = min(missed_row["load"], base)
@@ -137,7 +166,7 @@ class MorningCheckIn:
                     "missed": True,
                 })
                 continue
-            if row["date"] < missed or row["date"] > check_day:
+            if row["date"] != check_day:
                 updated.append({
                     "date": row["date"].isoformat(),
                     "load": _whole(min(row["load"], base)),

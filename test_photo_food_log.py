@@ -1,6 +1,8 @@
 #!/usr/bin/env python3
 """Tests for photo_food_log.py."""
 
+import copy
+
 from photo_food_log import GROK_VISION_PROMPT, FoodLog
 from plan_check import PlanValidator
 from record_confirmation import ConfirmationRecorder
@@ -85,6 +87,34 @@ class TestPhotoEstimate:
         assert len(log.entries) == 1
         again = log.store_estimate(meal, "2026-10-31", recorded(meal))
         assert again["stored"] is True
+
+    def test_a_copy_of_the_confirmation_cannot_log_the_meal_again(self):
+        log = FoodLog()
+        meal = estimate()
+        yes = recorded(meal)
+        clone = copy.copy(yes)
+        assert clone is not yes
+        assert clone.record_id == yes.record_id
+        assert log.store_estimate(meal, "2026-10-30", yes)["stored"] is True
+        second = log.store_estimate(meal, "2026-10-31", clone)
+        assert second["stored"] is False
+        assert "already used" in second["message"]
+        assert len(log.entries) == 1
+
+    def test_a_restart_cannot_log_the_same_confirmation_again(self, tmp_path):
+        meal = estimate()
+        yes = recorded(meal)
+        path = tmp_path / "used.json"
+        first = FoodLog(path)
+        assert first.store_estimate(meal, "2026-10-30", yes)["stored"] is True
+        assert yes.record_id in path.read_text(encoding="utf-8")
+        restarted = FoodLog(path)
+        second = restarted.store_estimate(meal, "2026-10-31", copy.copy(yes))
+        assert second["stored"] is False
+        assert "already used" in second["message"]
+        assert restarted.entries == []
+        fresh = restarted.store_estimate(meal, "2026-10-31", recorded(meal))
+        assert fresh["stored"] is True
 
     def test_a_day_stops_at_10000_kcal(self):
         log = FoodLog()
