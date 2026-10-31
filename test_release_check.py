@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """The existing install is accepted only for the template's release tag."""
 
+import json
 import os
 import subprocess
 import sys
@@ -20,15 +21,17 @@ ROOT = Path(__file__).resolve().parent
 
 
 def test_the_template_is_the_only_release_tag():
-    tag = expected_release_tag()
-    assert tag == "v0.1.0"
-    assert SEMVER_TAG.fullmatch(tag)
     raw = (ROOT / "template" / "template.json").read_text(encoding="utf-8")
+    stored = json.loads(raw).get("release_tag")
+    tag = expected_release_tag()
+    assert tag == stored
+    assert SEMVER_TAG.fullmatch(tag)
     assert raw.count('"release_tag"') == 1
 
 
 def test_the_current_tag_is_accepted_when_the_tree_is_clean():
-    ok, reason = existing_install_ok("v0.1.0\n", "", expected_release_tag())
+    tag = expected_release_tag()
+    ok, reason = existing_install_ok(f"{tag}\n", "", tag)
     assert ok
     assert reason == ""
 
