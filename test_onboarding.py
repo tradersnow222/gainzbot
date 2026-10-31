@@ -100,8 +100,9 @@ def test_question_one_comes_before_any_setup():
 
 
 def test_a_yes_with_only_a_schedule_edit_confirms_in_the_same_turn():
-    from datetime import date
+    from datetime import date, timedelta
 
+    import onboarding
     from onboarding import _profile
     from record_confirmation import is_clear_yes, is_plan_yes
     from red_flag_check import RedFlagChecker
@@ -139,8 +140,9 @@ def test_a_yes_with_only_a_schedule_edit_confirms_in_the_same_turn():
         assert bots[-2].lower().count("one example") == 1, reply
         proposal_bots = bots[-2]
         days = _profile(state)["days"]
-        assert state["first_checkin"] == first_checkin_day(min(days)), reply
-        assert date.fromisoformat(state["first_checkin"]).weekday() == 5, reply
+        assert state["first_checkin"] == first_checkin_day(min(days), now=onboarding._now()), reply
+        assert state["first_checkin"] == min(days), reply
+        assert date.fromisoformat(min(days)) >= onboarding._local_today() + timedelta(days=1), reply
     assert proposal_bots.lower().count("yes, morning 6:30") == 1
     chest = "yes, morning 6:30, but my chest hurts"
     scanned = RedFlagChecker().scan_text(chest)
@@ -1075,3 +1077,133 @@ def test_an_unreadable_seal_key_stops_without_a_crash(monkeypatch, tmp_path):
     finally:
         os.close(descriptor)
     assert path.stat().st_mode == mode
+
+
+def test_direct_confirm_helpers_refuse_outside_run_chat(tmp_path, monkeypatch):
+    import json
+
+    import onboarding
+    from plan_builder import PlanBuilder
+    from record_confirmation import (
+        ConfirmationRecorder,
+        _mark_first_plan,
+        _store_onboarding_record,
+        first_plan_seal,
+    )
+    from red_flag_check import RedFlagChecker
+    from routines import start_daily_loop
+
+    week = {
+        "plan": {"user": {"age": 30}},
+        "sessions": [{"date": "2026-11-02", "name": "Upper"}],
+    }
+    unmarked = _mark_first_plan(week)
+    assert not unmarked.get("first_plan_seal")
+    assert _store_onboarding_record(None, week) is False
+    checker = RedFlagChecker()
+    answers = {aliases[0]: "no" for _flag, aliases in checker.CHECKLIST_GROUPS}
+    check_in = checker.scan_check_in({"symptom_checklist": answers, "notes": "all no"})
+    sealed = dict(week)
+    sealed["first_plan"] = True
+    sealed["first_plan_seal"] = first_plan_seal(sealed)
+    record = ConfirmationRecorder().record(sealed, "yes, morning 6:15", "user", check_in)
+    assert record.confirmed is False
+    assert "run_chat" in record.message.lower()
+    started = start_daily_loop("yes, morning 6:15")
+    assert started["ok"] is False
+    assert "run_chat" in started["message"].lower()
+    assert start_daily_loop("yes")["ok"] is True
+    draft = tmp_path / "pending_profile.json"
+    draft.write_text("{}\n", encoding="utf-8")
+    monkeypatch.setattr(onboarding, "pending_profile_path", lambda: str(draft))
+    assert onboarding.clear_pending_profile() is False
+    assert draft.is_file()
+    saved = PlanBuilder().save(
+        {"training": {"previous_load": 80, "current_load": 80}},
+        record,
+        tmp_path / "week.json",
+        [{"date": "2026-11-02", "name": "Upper", "load": 80, "minutes": 30}],
+    )
+    assert saved["saved"] is False
+    assert "run_chat" in saved["message"].lower()
+    assert not onboarding.confirm_phase_active()
+    assert json.loads(draft.read_text(encoding="utf-8")) == {}
+
+
+def test_the_round3_transcript_confirms_in_four_turns(monkeypatch):
+    import json
+    from datetime import date, datetime
+    from zoneinfo import ZoneInfo
+
+    import onboarding
+    from plan_builder import session_volume
+    from record_confirmation import confirmation_seal_matches
+
+    zone = ZoneInfo("America/Los_Angeles")
+    pinned = datetime(2026, 10, 31, 12, 0, tzinfo=zone)
+    monkeypatch.setattr(onboarding, "_now", lambda: pinned)
+    monkeypatch.setattr(onboarding, "_default_timezone_name", lambda: "America/Los_Angeles")
+    monkeypatch.setattr(onboarding, "_local_today", lambda name=None: date(2026, 10, 31))
+    replies = [
+        "hey! a friend said you could help me get in shape",
+        "lose fat and get stronger. 70 kg now, want 64. 165 cm, 41, female. beginner, I have dumbbells at home (5 to 20 kg), can do 3 days a week, 30 min, mon wed fri. I also run a parkrun 5k most saturdays. I wear an oura ring",
+        "no injuries, parkrun is about 32 min. all no",
+        "yes, morning 6:15",
+    ]
+    state, bots = run_chat(replies)
+    assert state["turns"] <= 4
+    assert len(bots) <= 4
+    assert state["confirmed"] is True
+    answers = state["answers"]
+    assert answers["goal"] == "cut"
+    assert answers["weight"] == "70 kg"
+    assert answers["target"] == "64 kg"
+    assert answers["height"] == "165 cm"
+    assert answers["age"] == "41"
+    assert answers["sex"] == "female"
+    assert answers["experience"] == "beginner"
+    assert answers["equipment"] == "dumbbells"
+    assert answers["training_days"] == "3"
+    assert answers["minutes"] == "30"
+    assert answers["days"] == ["2026-11-02", "2026-11-04", "2026-11-06"]
+    assert answers["sport"] == "parkrun"
+    assert answers["sport_day"] == "Saturday"
+    assert "oura" in answers["sources"]
+    assert answers["injuries"] == "none"
+    assert len(state["par_q"]) == len(PAR_Q)
+    assert all(value is False for value in state["par_q"].values())
+    assert state["first_checkin"] == "2026-11-02"
+    assert "2026-11-02" in bots[-2]
+    assert state["times"]["daily_checkin"] == "06:15"
+    nutrition = state["plan"]["nutrition"]
+    assert nutrition["calories"] >= 1200
+    assert state["record"].confirmed is True
+    assert confirmation_seal_matches(state["record"])
+    from record_confirmation import onboarding_record_path
+
+    stored = json.loads(open(onboarding_record_path(), encoding="utf-8").read())
+    assert stored["first_plan_seal"]
+    assert stored["plan_hash"] == state["record"].plan_hash
+    week_path = onboarding.onboarding_week_path()
+    saved = json.loads(open(week_path, encoding="utf-8").read())
+    assert saved["sessions"][0]["date"] == "2026-11-02"
+    assert saved["plan"]["nutrition"]["calories"] >= 1200
+    for row in state["sessions"]:
+        assert row["minutes"] == 30
+        assert session_volume(row["exercises"]) <= 30
+        assert "DB Romanian deadlift" in [item["name"] for item in row["exercises"]]
+        assert all(item.get("reps") != "10 min" for item in row["exercises"])
+
+
+def test_all_no_phrases_need_the_message_to_stay_free_of_symptoms():
+    from onboarding import read_par_q
+
+    for phrase in ("all no", "no to all", "none", "all clear"):
+        status, parsed = read_par_q(phrase)
+        assert status == "all_no"
+        assert parsed and all(value is False for value in parsed.values())
+        mixed, _parsed = read_par_q(phrase + ", my chest hurts")
+        assert mixed != "all_no"
+    status, _parsed = read_par_q("no injuries, parkrun is about 32 min. all no")
+    assert status == "all_no"
+    assert read_par_q("not all no")[0] != "all_no"

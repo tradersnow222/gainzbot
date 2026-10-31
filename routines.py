@@ -300,20 +300,43 @@ def routine_cron(clock):
     return f"{minute} {hour} * * *"
 
 
-def first_checkin_day(week_start):
-    """The Saturday on or before a Monday start. That is the first check-in."""
-    from datetime import date, timedelta
+def first_checkin_day(week_start, now=None):
+    """The plan start, or the next morning once today's check-in time has passed.
+
+    The result is never the previous Saturday, and never earlier than tomorrow
+    when the local time is already past 07:00.
+    """
+    from datetime import date, datetime, time, timedelta
 
     origin = date.fromisoformat(week_start) if isinstance(week_start, str) else week_start
-    back = (origin.weekday() - 5) % 7
-    return (origin - timedelta(days=back)).isoformat()
+    current = now if now is not None else datetime.now().astimezone()
+    if current.tzinfo is None:
+        current = current.astimezone()
+    today = current.date()
+    earliest = today if current.timetz().replace(tzinfo=None) < time(7, 0) else today + timedelta(days=1)
+    if origin < earliest:
+        return earliest.isoformat()
+    return origin.isoformat()
 
 
 def start_daily_loop(reply):
-    """The plan yes starts morning, evening, and weekly. One reply can change a time."""
+    """The plan yes starts morning, evening, and weekly. One reply can change a time.
+
+    A yes that also sets a routine time starts the loop only from run_chat.
+    """
     from record_confirmation import is_clear_yes
 
     planned = plan_schedule(reply)
+    if planned is not None:
+        from onboarding import confirm_phase_active
+
+        if not confirm_phase_active():
+            return {
+                "ok": False,
+                "enabled": [],
+                "times": {},
+                "message": "Stop. This only runs inside onboarding.run_chat.",
+            }
     if planned is not None:
         return {
             "ok": True,

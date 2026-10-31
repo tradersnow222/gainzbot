@@ -984,6 +984,24 @@ def test_a_successful_save_removes_the_leftover_backup(tmp_path):
     assert log_path.read_bytes() == saved
 
 
+def test_three_lifts_and_a_ten_minute_run_have_to_fit_in_thirty_minutes():
+    """3 lifts x 3 sets, 90s rest, plus a 10 min run, checked against 30 min."""
+    from plan_builder import _fit_minutes
+
+    lifts = [
+        {"name": "Goblet squat", "sets": 3, "reps": "8-12", "rest": "90 sec", "effort": "Leave 3 reps in reserve"},
+        {"name": "Dumbbell bench", "sets": 3, "reps": "8-12", "rest": "90 sec", "effort": "Leave 3 reps in reserve"},
+        {"name": "DB Romanian deadlift", "sets": 3, "reps": "8-12", "rest": "90 sec", "effort": "Leave 3 reps in reserve"},
+    ]
+    run = {"name": "Easy run", "sets": 1, "reps": "10 min", "rest": "0 sec", "effort": "Easy, conversational"}
+    raw = lifts + [run]
+    assert session_volume(raw) > 30
+    fitted = _fit_minutes(raw, 30)
+    assert session_volume(fitted) <= 30
+    assert [row["name"] for row in fitted] == [row["name"] for row in lifts]
+    assert all(row["sets"] == 3 for row in fitted)
+
+
 def test_advanced_work_fits_in_the_named_minutes():
     built = PlanBuilder().propose(
         profile(experience="advanced", minutes=61, equipment="full gym", sport="lifting"),

@@ -3,6 +3,7 @@
 
 from datetime import date, datetime, timedelta, timezone
 from zoneinfo import ZoneInfo
+import contextvars
 import json
 import os
 import re
@@ -36,6 +37,13 @@ _TRAINING_DEFAULTS = {
 _OPTIONAL = {"name", "food_style", "sources", "target"}
 _ACCEPT = {"ok", "okay", "yep", "yeah", "defaults", "default", "sounds good", "do it", "lets go"}
 _WEEK_OFFSETS = (0, 2, 4, 5, 1, 3, 6)
+_DAY_INDEX = (
+    ("monday", 0), ("tuesday", 1), ("wednesday", 2), ("thursday", 3),
+    ("friday", 4), ("saturday", 5), ("sunday", 6),
+    ("mon", 0), ("tue", 1), ("wed", 2), ("thu", 3), ("fri", 4), ("sat", 5), ("sun", 6),
+)
+_CONFIRM_PHASE = contextvars.ContextVar("gainzbot_confirm_phase", default=False)
+_OUTSIDE_RUN_CHAT = "Stop. This only runs inside onboarding.run_chat."
 _SETUP_WORDS = ("clone", "pip", "pytest", "release_check", "install", "git ")
 
 HAPPY_PATH = (
@@ -267,11 +275,131 @@ def _today():
     return _local_today()
 
 
-def _dates(count):
-    today = datetime.now(timezone.utc).date()
-    monday = today - timedelta(days=today.weekday())
+def confirm_phase_active():
+    """True only while run_chat is handling a reply in the confirm phase."""
+    return _CONFIRM_PHASE.get() is True
+
+
+def _dates(count, weekdays=None):
+    """The next Mon/Wed/Fri, or the named days, on or after tomorrow."""
     count = max(1, min(7, int(count)))
-    return [(monday + timedelta(days=_WEEK_OFFSETS[index])).isoformat() for index in range(count)]
+    if not weekdays:
+        weekdays = list(_WEEK_OFFSETS[:count])
+    else:
+        weekdays = list(weekdays)[:count]
+    start = _local_today() + timedelta(days=1)
+    pending = list(weekdays)
+    found = []
+    day = start
+    for _step in range(28):
+        if day.weekday() in pending:
+            found.append(day)
+            pending = [item for item in pending if item != day.weekday()]
+            if not pending:
+                break
+        day += timedelta(days=1)
+    found.sort()
+    return [item.isoformat() for item in found]
+
+
+def _training_weekdays(folded):
+    """Named lifting days. A Saturday attached to parkrun is not one of them."""
+    text = re.sub(r"\bparkrun\b.{0,48}\b(?:saturdays?|sat)\b", " ", folded)
+    text = re.sub(r"\b(?:saturdays?|sat)\b.{0,48}\bparkrun\b", " ", text)
+    found = []
+    for word, index in _DAY_INDEX:
+        if re.search(rf"\b{word}\b", text) and index not in found:
+            found.append(index)
+    return found
+
+
+def _paired_session_minutes(folded):
+    """Session length from '30 min' next to days per week, not a parkrun time."""
+    if re.search(r"\b[1-7]\s+days?\b", folded) is None:
+        return None
+    masked = re.sub(
+        r"\bparkrun\b(?:\s+\w+){0,6}\s+\d+\s+min(?:ute)?s?\b",
+        " ",
+        folded,
+    )
+    masked = re.sub(
+        r"\b\d+\s+min(?:ute)?s?\b(?:\s+\w+){0,4}\s+parkrun\b",
+        " ",
+        masked,
+    )
+    match = re.search(r"\b(\d{2,3})\s+min(?:ute)?s?\b", masked)
+    if match is None:
+        return None
+    return match.group(1)
+
+
+def _bare_age(folded):
+    """One leftover number in 1 to 120. Kilograms, centimeters, and minutes are not ages."""
+    masked = re.sub(r"\b\d+(?:\.\d+)?\s*k\b", " ", folded)
+    masked = re.sub(r"\b\d+\s+to\s+\d+\b", " ", masked)
+    masked = re.sub(r"\b(?:want|target)\s+\d+(?:\.\d+)?\b", " ", masked)
+    masked = re.sub(r"\b\d+(?:\.\d+)?\s*(?:kg|cm)\b", " ", masked)
+    masked = re.sub(r"\b\d+\s+(?:min|mins|minutes|days?|weeks?|hours?|reps?|sets?)\b", " ", masked)
+    ages = []
+    for token in re.findall(r"\b(\d{1,3})\b", masked):
+        value = int(token)
+        if 1 <= value <= 120:
+            ages.append(value)
+    if len(ages) == 1:
+        return ages[0]
+    return None
+
+
+_SAFE_ALL_NO_WORDS = {
+    "is", "a", "the", "my", "i", "also", "most", "and", "at", "on", "for", "to",
+    "about", "parkrun", "run", "running", "saturday", "saturdays", "sat",
+    "min", "mins", "minute", "minutes", "well", "thanks", "lol", "honestly",
+    "ok", "okay",
+}
+
+
+def _safe_all_no(text):
+    """An all-no phrase with no symptom or condition word left beside it.
+
+    'all no', 'no to all', 'none', and 'all clear' count, including when the
+    same message also gives a profile fact such as no injuries or a parkrun time.
+    A symptom, a condition, a hedge, or a negation of the phrase does not.
+    """
+    if not isinstance(text, str) or _asks_instead(text):
+        return False
+    for char in text:
+        if char.isspace() or char.isalnum() or char in "👍":
+            continue
+        if "\U0001F3FB" <= char <= "\U0001F3FF":
+            continue
+        if ord(char) < 128 and unicodedata.category(char).startswith("P"):
+            continue
+        return False
+    folded = _fold(text)
+    if re.search(r"\b(?:not|isnt|far\s+from|not\s+quite)\b", folded) and re.search(
+        r"\b(?:all\s+no|no\s+to\s+all|all\s+clear|none)\b", folded
+    ):
+        return False
+    has = re.search(
+        r"\ball\s+no\b|\bno\s+to\s+all\b|\ball\s+clear\b|\bnone\b|\bnope\s+all\s+no\b",
+        folded,
+    )
+    if has is None:
+        return False
+    rest = folded
+    rest = re.sub(r"\bnope\s+all\s+no\b", " ", rest)
+    rest = re.sub(r"\bno\s+to\s+all\b", " ", rest)
+    rest = re.sub(r"\ball\s+no\b", " ", rest)
+    rest = re.sub(r"\ball\s+clear\b", " ", rest)
+    rest = re.sub(r"\bnone\b", " ", rest)
+    rest = re.sub(r"\bno\s+injur(?:y|ies)\b", " ", rest)
+    rest = re.sub(r"\binjur(?:y|ies)\s+none\b", " ", rest)
+    rest = re.sub(r"\b\d+(?:\.\d+)?\b", " ", rest)
+    leftover = [
+        token for token in rest.split()
+        if token not in _SAFE_ALL_NO_WORDS and token not in _ALL_NO_FILLERS
+    ]
+    return not leftover
 
 
 def _blank():
@@ -458,9 +586,9 @@ def read_par_q(text):
     Explicit item answers are parsed first. An all-no phrase never supplies
     the answers for an unclear reply.
     """
-    kind = bare_all_no(text)
-    if kind is True:
+    if bare_all_no(text) is True or _safe_all_no(text):
         return "all_no", {key: False for key, _question in PAR_Q}
+    kind = bare_all_no(text)
     if kind is False:
         return "unclear", _parse_par_q_items(_without_all_no(text))
     return "items", _parse_par_q_items(text)
@@ -577,20 +705,26 @@ def _parse_explicit(state, reply):
         state["par_q_unclear"] = False
         _store_par_q(state, parsed, False)
         state["par_q_reply"] = reply if isinstance(reply, str) else folded
-    for goal in ("cut", "lose", "gain", "hold"):
-        if re.search(rf"\b{goal}\b", folded):
-            answers["goal"] = goal
-            break
+    if re.search(r"\b(?:lose\s+fat|lose\s+weight|fat\s+loss|cut)\b", folded):
+        answers["goal"] = "cut"
+    else:
+        for goal in ("cut", "lose", "gain", "hold"):
+            if re.search(rf"\b{goal}\b", folded):
+                answers["goal"] = goal
+                break
     age = _intake_age(folded)
+    if age is None and "age" not in answers:
+        age = _bare_age(folded)
     if age is not None:
         answers["age"] = str(age)
     height = re.search(r"\b(\d{2,3})\s*cm\b", folded)
     if height:
         answers["height"] = height.group(1) + " cm"
-    target = re.search(r"\btarget\s+(\d+(?:\.\d+)?)\s*kg\b", folded)
+    target = re.search(r"\b(?:target|want)\s+(\d+(?:\.\d+)?)(?:\s*kg)?\b", folded)
     if target:
         answers["target"] = target.group(1) + " kg"
-    weight = re.search(r"\b(\d+(?:\.\d+)?)\s*kg\b", folded)
+    weight_text = re.sub(r"\b\d+(?:\.\d+)?\s+to\s+\d+(?:\.\d+)?\s*kg\b", " ", folded)
+    weight = re.search(r"\b(\d+(?:\.\d+)?)\s*kg\b", weight_text)
     if weight and "weight" not in answers:
         value = float(weight.group(1))
         if _kg_in_range(value):
@@ -601,13 +735,17 @@ def _parse_explicit(state, reply):
         answers["sex"] = "female"
     elif re.search(r"\b(male|man)\b", folded):
         answers["sex"] = "male"
+    named_days = _training_weekdays(folded)
     days = re.search(r"\b([1-7])\s+days?\b", folded)
     if days:
         answers["training_days"] = days.group(1)
-        answers["days"] = _dates(days.group(1))
-    minutes = re.search(r"\b(\d{2,3})\s+min\b", folded)
+        answers["days"] = _dates(days.group(1), named_days or None)
+    elif named_days:
+        answers["training_days"] = str(len(named_days))
+        answers["days"] = _dates(len(named_days), named_days)
+    minutes = _paired_session_minutes(folded)
     if minutes:
-        answers["minutes"] = minutes.group(1)
+        answers["minutes"] = minutes
     for equipment in ("full gym", "bodyweight", "dumbbells", "barbell", "none"):
         if equipment in folded:
             answers["equipment"] = equipment
@@ -618,7 +756,11 @@ def _parse_explicit(state, reply):
             break
     if "no injuries" in folded or "injuries none" in folded:
         answers["injuries"] = "none"
-    if "general training" in folded:
+    if re.search(r"\bparkrun\b", folded):
+        answers["sport"] = "parkrun"
+        if re.search(r"\b(?:saturdays?|sat)\b", folded):
+            answers["sport_day"] = "Saturday"
+    elif "general training" in folded:
         answers["sport"] = "general training"
     elif re.search(r"\brunning\b", folded):
         answers["sport"] = "running"
@@ -1409,7 +1551,11 @@ def _check_in(state):
     if scanned.pause_plan:
         return scanned
     folded = _fold(reply)
-    explicit_no = folded in {"no", "none", "nope"} or bare_all_no(reply) is True
+    explicit_no = (
+        folded in {"no", "none", "nope"}
+        or bare_all_no(reply) is True
+        or _safe_all_no(reply)
+    )
     clear = (
         len(state["par_q"]) == len(PAR_Q)
         and all(value is False for value in state["par_q"].values())
@@ -1426,6 +1572,11 @@ def _confirm(state, reply):
     from record_confirmation import ConfirmationRecorder, _mark_first_plan, _store_onboarding_record
     from red_flag_check import is_passing_check_in
 
+    if not confirm_phase_active():
+        state["error"] = _OUTSIDE_RUN_CHAT
+        state["confirmed"] = False
+        state["record"] = None
+        return
     if hold_is_active():
         _adopt_hold(state)
         state["confirmed"] = False
@@ -1462,17 +1613,32 @@ def _confirm(state, reply):
         state["confirmed"] = False
         state["record"] = None
         return
+    saved = PlanBuilder().save(
+        built["plan"],
+        record,
+        onboarding_week_path(),
+        built["sessions"],
+        check_in_result=check_in,
+        readiness_result=screen,
+    )
+    if not saved.get("saved"):
+        state["error"] = saved.get("message") or "The week could not be saved."
+        state["confirmed"] = False
+        state["record"] = None
+        return
     from routines import first_checkin_day, start_daily_loop
 
     state["error"] = None
     state["record"] = record
+    state["plan"] = built["plan"]
+    state["sessions"] = built["sessions"]
     state["confirmed"] = True
     loop = start_daily_loop(reply)
     state["routines_on"] = loop["enabled"]
     state["times"] = loop["times"]
     days = _profile(state).get("days") or []
     if days:
-        state["first_checkin"] = first_checkin_day(min(days))
+        state["first_checkin"] = first_checkin_day(min(days), now=_now())
     clear_pending_profile()
 
 
@@ -1482,8 +1648,11 @@ def _proposal(state):
     minutes = answers.get("minutes", "45")
     goal = answers.get("goal", "hold")
     equipment = answers.get("equipment", "bodyweight")
+    scheduled = answers.get("days") or []
+    start = f"The first session is {min(scheduled)}. " if scheduled else ""
     return (
         f"{days} days, {minutes} min, {goal}, {equipment}. "
+        f"{start}"
         "One yes confirms the plan and starts the morning check-in at 07:00, "
         "the evening follow-up at 20:00, and the weekly review Sunday at 18:00. "
         "Routines, each is opt-in. "
@@ -1509,8 +1678,18 @@ def pending_profile_path():
     return os.path.join(os.path.dirname(os.path.abspath(__file__)), "data", "pending_profile.json")
 
 
+def onboarding_week_path():
+    """The confirmed week written by run_chat. Not a second confirm path."""
+    return os.path.join(os.path.dirname(os.path.abspath(__file__)), "data", "week.json")
+
+
 def clear_pending_profile(path=None):
-    """Delete the draft. The profile memory and the saved week keep the answers."""
+    """Delete the draft. The profile memory and the saved week keep the answers.
+
+    This is an onboarding confirm step. A direct call outside run_chat does nothing.
+    """
+    if not confirm_phase_active():
+        return False
     target = pending_profile_path() if path is None else path
     if os.path.isfile(target):
         os.remove(target)
@@ -1631,12 +1810,23 @@ def open_chat():
 
 
 def run_chat(replies):
-    """The onboarding entry. A hold dated today is checked before any reply."""
+    """The onboarding entry. A hold dated today is checked before any reply.
+
+    Confirm helpers run only while this loop is on a confirm-phase reply.
+    If a reply leaves a field blank, the next line asks for that field.
+    """
     state = _state_for_attempt()
     bots = []
     for reply in replies:
-        apply_reply(state, reply)
-        bots.append(speak(state))
+        token = None
+        if state.get("phase") == "confirm":
+            token = _CONFIRM_PHASE.set(True)
+        try:
+            apply_reply(state, reply)
+            bots.append(speak(state))
+        finally:
+            if token is not None:
+                _CONFIRM_PHASE.reset(token)
         if state["confirmed"]:
             break
     state["turns"] = len(bots)

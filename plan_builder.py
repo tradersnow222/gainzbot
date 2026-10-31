@@ -60,7 +60,8 @@ _DOSE = {
 _MAX_EXERCISES = 8
 _MAX_SETS = 6
 _MAX_REPS = 20
-_SECONDS_PER_REP = 4
+_SET_WORK_SECONDS = 40
+_WARMUP_MINUTES = 5
 # Generous load ceilings, as a multiple of body weight.
 # A normal lifter stays inside these. An absurd load still refuses.
 _LOAD_MULTIPLE = {
@@ -72,10 +73,10 @@ _ABSOLUTE_LOAD_CAP = 300.0
 _FALLBACK_LOAD_CAP = 100.0
 _EXERCISE_KEYS = {"name", "sets", "reps", "rest", "effort", "load_kg"}
 _GYM = {
-    "Full body": ("Back squat", "Bench press", "Barbell row", "Romanian deadlift", "Plank", "Farmer carry"),
-    "Full body A": ("Back squat", "Bench press", "Barbell row", "Romanian deadlift", "Plank", "Farmer carry"),
-    "Full body B": ("Front squat", "Overhead press", "Pull-up", "Hip thrust", "Dead bug", "Carry"),
-    "Full body C": ("Leg press", "Incline bench", "Seated cable row", "Walking lunge", "Back extension", "Side plank"),
+    "Full body": ("Back squat", "Bench press", "Romanian deadlift", "Barbell row", "Plank", "Farmer carry"),
+    "Full body A": ("Back squat", "Bench press", "Romanian deadlift", "Barbell row", "Plank", "Farmer carry"),
+    "Full body B": ("Front squat", "Overhead press", "Romanian deadlift", "Pull-up", "Hip thrust", "Dead bug"),
+    "Full body C": ("Leg press", "Incline bench", "Romanian deadlift", "Seated cable row", "Walking lunge", "Side plank"),
     "Upper": ("Bench press", "Barbell row", "Overhead press", "Lat pulldown", "Curl", "Face pull"),
     "Lower": ("Back squat", "Romanian deadlift", "Leg press", "Walking lunge", "Calf raise", "Plank"),
     "Push": ("Bench press", "Overhead press", "Incline bench", "Dip", "Lateral raise", "Triceps press"),
@@ -181,6 +182,7 @@ def _dumbbell_name(name):
         .replace("Incline bench", "Dumbbell bench")
         .replace("Bench press", "Dumbbell bench")
         .replace("Overhead press", "Dumbbell shoulder press")
+        .replace("Romanian deadlift", "DB Romanian deadlift")
     )
     return swapped
 
@@ -318,19 +320,18 @@ def _block_minutes(exercise):
     duration = _duration_minutes(exercise.get("reps"))
     if duration is not None:
         return duration if sets == 1 else None
-    reps = _high_reps(exercise.get("reps"))
     rest = _rest_minutes(exercise.get("rest"))
-    if reps is None or rest is None or sets < 1:
+    if rest is None or sets < 1:
         return None
-    work = sets * reps * _SECONDS_PER_REP / 60.0
-    if sets <= 1:
-        return work
-    return work + (sets - 1) * rest
+    # sets x (about 40s of work + the rest after the set)
+    return sets * ((_SET_WORK_SECONDS / 60.0) + rest)
 
 
 def session_volume(exercises):
-    """Minutes of work and rest in one session's exercises."""
-    total = 0.0
+    """Warmup plus each set's work and rest, including a cardio add-on."""
+    if not exercises:
+        return 0.0
+    total = _WARMUP_MINUTES
     for exercise in exercises:
         block = _block_minutes(exercise)
         if block is None:
@@ -340,21 +341,24 @@ def session_volume(exercises):
 
 
 def _fit_minutes(chosen, minutes):
-    """Drop or shorten work until it fits in the minutes they asked for."""
-    while len(chosen) > 1 and session_volume(chosen) > minutes:
-        if _is_duration(chosen[-1]) and len(chosen) > 1:
-            chosen.pop(-2 if len(chosen) > 2 else 0)
-        else:
-            chosen.pop()
-    while chosen and session_volume(chosen) > minutes:
+    """Drop the add-on run, then trim sets, until the session fits the minutes."""
+    while chosen and session_volume(chosen) is not None and session_volume(chosen) > minutes:
+        add_on = next((index for index, row in enumerate(chosen) if _is_duration(row)), None)
+        if add_on is not None and len(chosen) > 1:
+            chosen.pop(add_on)
+            continue
         shrunk = False
         for row in chosen:
             if not _is_duration(row) and row["sets"] > 1:
                 row["sets"] -= 1
                 shrunk = True
                 break
-        if not shrunk:
+        if shrunk:
+            continue
+        if len(chosen) > 1:
             chosen.pop()
+            continue
+        break
     return chosen
 
 
@@ -664,7 +668,11 @@ def _read_bytes(path):
 
 
 class PlanBuilder:
-    """Proposes a first week and saves it only after a recorded yes."""
+    """Proposes a first week and saves it only after a recorded yes.
+
+    run_chat seals that week as first_plan. A schedule yes such as
+    "yes, morning 6:15" confirms only inside that confirm phase.
+    """
 
     def propose(self, profile, check_in_result, readiness_result=None):
         if not isinstance(profile, dict):
@@ -779,6 +787,12 @@ class PlanBuilder:
 
         if hold_is_active():
             return self._saved_no("Onboarding is held for today. This week is not saved.")
+        from onboarding import confirm_phase_active
+        from routines import plan_schedule
+
+        quoted = confirmation.quoted_words if isinstance(confirmation, ConfirmationRecord) else ""
+        if plan_schedule(quoted) and not confirm_phase_active():
+            return self._saved_no("Stop. This only runs inside onboarding.run_chat.")
         if path is None or (isinstance(path, str) and not path.strip()):
             return self._saved_no("A path is required.")
         if not isinstance(plan, dict) or not isinstance(plan.get("training"), dict):

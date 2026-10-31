@@ -56,12 +56,19 @@ def test_a_local_6_30_cron_does_not_shift_across_november_daylight_saving():
     assert after.astimezone(timezone.utc).hour == 14
 
 
-def test_the_first_check_in_is_the_saturday_before_a_monday_start():
+def test_the_first_check_in_is_the_plan_start_not_an_earlier_day():
+    from datetime import datetime
+    from zoneinfo import ZoneInfo
+
     from routines import first_checkin_day
 
-    assert first_checkin_day("2026-10-26") == "2026-10-24"
-    assert first_checkin_day("2026-10-24") == "2026-10-24"
-    assert first_checkin_day("2026-10-31") == "2026-10-31"
+    zone = ZoneInfo("America/Los_Angeles")
+    evening = datetime(2026, 10, 31, 18, 0, tzinfo=zone)
+    assert first_checkin_day("2026-11-02", now=evening) == "2026-11-02"
+    assert first_checkin_day("2026-10-26", now=evening) == "2026-11-01"
+    early = datetime(2026, 10, 31, 6, 0, tzinfo=zone)
+    assert first_checkin_day("2026-10-31", now=early) == "2026-10-31"
+    assert first_checkin_day("2026-10-26", now=early) == "2026-10-31"
 
 
 def test_a_rest_day_asks_only_the_symptom_line():
