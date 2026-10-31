@@ -100,6 +100,15 @@ class TestCharts:
         assert "18" in result["message"]
         assert "protein" in result["message"].lower()
 
+    def test_missing_age_has_no_protein_target(self):
+        result = Dashboard().build(
+            logs(), {"sex": "M", "weight_kg": 80}, 28, "2026-10-28", TARGETS,
+        )
+        assert chart(result, "protein")["points"][0]["target"] is None
+        assert chart(result, "calories")["points"][0]["target"] is None
+        assert "protein" in result["message"].lower()
+        assert "age" in result["message"].lower()
+
     def test_missing_age_has_no_calorie_target(self):
         result = Dashboard().build(
             logs(), {"sex": "M", "weight_kg": 80}, 28, "2026-10-28", TARGETS,

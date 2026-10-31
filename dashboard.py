@@ -281,7 +281,9 @@ class Dashboard:
 
     def _protein_target(self, user, targets):
         age = self._age(user)
-        if age is not None and age < PlanValidator.ADULT_AGE:
+        if age is None:
+            return None, "No protein target is set when age is missing."
+        if age < PlanValidator.ADULT_AGE:
             return None, "No protein target is set under 18."
         if "weight_kg" not in user or not isinstance(targets, dict) or "protein_g" not in targets:
             return None, ""
