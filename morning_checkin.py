@@ -2,9 +2,11 @@
 """
 Morning check-in for sleep, soreness, energy, and stress.
 
-The day is push, normal, or easy. The session scales inside the 10 percent
-load cap. A missed session rewrites the rest of the week without breaking
-that cap. Nothing is applied until record_confirmation covers that proposal.
+The day is push, normal, or easy. The session scales from the last confirmed
+load, inside the 10 percent cap, and only after 7 times 24 hours. A planned
+load passed by the caller is ignored. A missed session rewrites the rest of
+the week without breaking that cap. Nothing is applied until
+record_confirmation covers that proposal.
 """
 
 from datetime import date, datetime
@@ -13,6 +15,7 @@ import os
 import sys
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+from confirmed_change import last_confirmed_change, parse_utc, seven_days_old
 from guardrails.validate import InputValidator, ValidationError
 from plan_check import PlanValidator
 from record_confirmation import ConfirmationRecorder
@@ -40,31 +43,20 @@ def _whole(value: float):
 class MorningCheckIn:
     """Sets the day and proposes a load that stays inside the cap."""
 
-    def check_in(self, entry, planned_load, baseline_load=None) -> Dict:
+    def check_in(self, entry, planned_load=None, baseline_load=None, confirmed_changes=None, as_of=None) -> Dict:
+        """planned_load and baseline_load are ignored. The confirmed history is the baseline."""
+        del planned_load, baseline_load
         parsed = self._entry(entry)
         if not parsed["ok"]:
             return parsed
-        try:
-            planned = InputValidator.parse_number(planned_load, "planned_load")
-        except ValidationError as exc:
-            return self._bad(str(exc))
-        baseline = planned
-        if baseline_load is not None:
-            try:
-                baseline = InputValidator.parse_number(baseline_load, "baseline_load")
-            except ValidationError as exc:
-                return self._bad(str(exc))
-        if baseline <= 0:
-            return self._bad("Training load needs a positive baseline before it can change.")
-
         day_name = self._day_name(parsed)
-        factor = {"push": 1.10, "normal": 1.0, "easy": 0.90}[day_name]
-        cap = baseline * (1 + PlanValidator.MAX_TRAINING_LOAD_INCREASE_PERCENT / 100)
-        scaled = min(planned * factor, cap)
-        load = _whole(scaled)
+        load = self._scaled_load(day_name, confirmed_changes, as_of)
+        changes = {"day": day_name}
+        if load is not None:
+            changes["load"] = load
         proposal = {
             "summary": f"Today is a {day_name} day.",
-            "changes": {"day": day_name, "load": load},
+            "changes": changes,
             "needs_confirmation": True,
         }
         return {
@@ -74,6 +66,18 @@ class MorningCheckIn:
             "proposal": proposal,
             "message": f"Today is a {day_name} day. Nothing is applied until it is confirmed.",
         }
+
+    def _scaled_load(self, day_name, confirmed_changes, as_of):
+        if parse_utc(as_of) is None:
+            return None
+        found = last_confirmed_change(confirmed_changes, "load", as_of)
+        if not found.ok or found.value is None:
+            return None
+        if not seven_days_old(found.at, as_of):
+            return _whole(found.value)
+        factor = {"push": 1.10, "normal": 1.0, "easy": 0.90}[day_name]
+        cap = found.value * (1 + PlanValidator.MAX_TRAINING_LOAD_INCREASE_PERCENT / 100)
+        return _whole(min(found.value * factor, cap))
 
     def rewrite_week(self, sessions, missed_date) -> Dict:
         rows = self._sessions(sessions)
