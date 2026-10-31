@@ -153,9 +153,10 @@ class TestMissedSession:
         result = rewrite(week(200))
         sessions = result["proposal"]["changes"]["sessions"]
         by_date = {item["date"]: item for item in sessions}
-        assert by_date["2026-10-26"]["load"] == 200
+        assert by_date["2026-10-26"]["load"] == 100
         assert by_date["2026-10-28"]["load"] == 110
         assert by_date["2026-10-29"]["load"] == 110
+        assert all(item["load"] != 200 for item in sessions)
         assert all(item["load"] != 220 for item in sessions)
 
     def test_a_lighter_deload_week_does_not_become_110(self):
@@ -166,6 +167,12 @@ class TestMissedSession:
         assert by_date["2026-10-28"]["load"] == 80
         assert by_date["2026-10-29"]["load"] == 80
         assert all(item["load"] != 110 for item in sessions)
+
+    def test_a_missed_date_after_as_of_is_rejected(self):
+        result = rewrite(week(), "2026-10-29", as_of="2026-10-28T00:00:00Z")
+        assert result["ok"] is False
+        assert result["proposal"] is None
+        assert result["applied"] is False
 
     def test_sessions_before_the_miss_are_not_rewritten(self):
         sessions = week(100)

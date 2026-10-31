@@ -4,9 +4,10 @@ Morning check-in for sleep, soreness, energy, and stress.
 
 The day is push, normal, or easy. The session scales from the last confirmed
 load, inside the 10 percent cap, and only after 7 times 24 hours. A planned
-load passed by the caller is ignored. A missed session rebuilds the later
-days from that confirmed load. Sessions before the missed day stay as
-planned. A lighter deload is not raised. Nothing is applied until
+load passed by the caller is ignored. A missed session rebuilds later
+days from that confirmed load. An earlier day is min(sent load, confirmed
+load), so 80 stays 80 and 200 becomes 100. A lighter deload is not raised.
+A missed date after the check is rejected. Nothing is applied until
 record_confirmation covers that proposal.
 """
 
@@ -109,6 +110,8 @@ class MorningCheckIn:
         if len(matched) != 1:
             return self._bad("That session is not in this week.")
         clock = _clock(as_of)
+        if clock is not None and missed > clock.date():
+            return self._bad("The missed session is after this check.")
         found = last_confirmed_change(confirmed_changes, "load", clock) if clock is not None else None
         if found is None or not found.ok or found.value is None:
             return self._bad("The week is built from the confirmed load.")
@@ -132,7 +135,7 @@ class MorningCheckIn:
             if row["date"] < missed:
                 updated.append({
                     "date": row["date"].isoformat(),
-                    "load": _whole(row["load"]),
+                    "load": _whole(min(row["load"], base)),
                     "missed": False,
                 })
                 continue
