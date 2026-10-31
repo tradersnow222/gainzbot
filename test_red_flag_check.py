@@ -434,6 +434,26 @@ class TestReviewerProbes:
         assert result.pause_plan
         assert "fainting" in result.flags_detected
 
+    def test_a_bare_no_plus_scores_does_not_clear_scan_check_in(self):
+        from red_flag_check import clear_safety_no, is_passing_check_in
+
+        assert clear_safety_no("no, 7, 2")
+        assert clear_safety_no("nope, 7, 2")
+        assert clear_safety_no("none") is False
+        result = RedFlagChecker().scan_check_in({"notes": "no, 7, 2"})
+        assert not is_passing_check_in(result)
+        assert result.pause_plan
+        assert "checklist" in result.message.lower()
+        nope = RedFlagChecker().scan_check_in({"notes": "nope, 7, 2"})
+        assert not is_passing_check_in(nope)
+        bare = RedFlagChecker().scan_check_in({"notes": "none"})
+        assert bare.pause_plan
+        assert "checklist" in bare.message.lower()
+        symptom = RedFlagChecker().scan_check_in({"notes": "no but I have palpitations"})
+        assert symptom.pause_plan
+        assert "palpitations" in symptom.flags_detected
+        assert not is_passing_check_in(symptom)
+
     def test_checkin_none_asks(self):
         result = RedFlagChecker().scan_check_in(None)
         assert result.pause_plan

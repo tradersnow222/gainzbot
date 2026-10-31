@@ -28,6 +28,33 @@ def test_one_yes_starts_the_daily_loop_at_default_times():
     assert change_loop_time("morning 6:30 unless I'm busy", weekly)["daily_checkin"] == "06:30"
 
 
+def test_the_first_check_in_is_the_saturday_before_a_monday_start():
+    from routines import first_checkin_day
+
+    assert first_checkin_day("2026-10-26") == "2026-10-24"
+    assert first_checkin_day("2026-10-24") == "2026-10-24"
+    assert first_checkin_day("2026-10-31") == "2026-10-31"
+
+
+def test_a_rest_day_asks_only_the_symptom_line():
+    from daily_loop import DailyLoop, _MORNING, _SYMPTOM, adult_profile
+
+    profile = adult_profile()
+    profile["days"] = ["2026-10-26", "2026-10-28"]
+    rest = DailyLoop(load=80, minutes=45, profile=profile)
+    opened = rest.open_morning("2026-10-27")
+    assert opened == _SYMPTOM
+    assert "sleep" not in opened.lower()
+    assert rest.questions["2026-10-27"] == 0
+    session = DailyLoop(load=80, minutes=45, profile=profile)
+    asked = session.open_morning("2026-10-26")
+    assert asked.startswith(_SYMPTOM)
+    assert _MORNING in asked
+    assert "soreness from 1 to 5" in asked
+    assert "energy" not in asked.lower()
+    assert "stress" not in asked.lower()
+
+
 def test_a_missed_day_gets_one_nudge_then_the_next_morning():
     loop = DailyLoop()
     nudge = loop.nudge("2026-10-27")
@@ -130,7 +157,8 @@ def test_a_symptom_in_the_morning_pauses_before_the_workout():
     loop = DailyLoop(load=80, minutes=45, profile=adult_profile())
     day = "2026-10-26"
     opened = loop.open_morning(day)
-    assert opened.startswith("Morning. Any chest pain, dizziness or new pain? no / yes")
+    assert opened.startswith("Morning. Any chest pain, trouble breathing, dizziness or new pain? no / yes")
+    assert "soreness from 1 to 5" in opened
     paused = loop.hear(day, "my chest hurts 8 fine 45")
     assert "doctor" in paused.lower()
     assert "easy day" not in paused.lower()
@@ -236,6 +264,147 @@ def test_the_onboarding_profile_opens_the_day():
     refused = blocked.hear(day, "no 8 fine 45")
     assert "Unknown key: 'kcal'" in refused
     assert blocked.phase[day] == "paused"
+
+
+def test_a_confirmed_week_returns_that_session_without_a_yes(tmp_path):
+    import json
+
+    from daily_loop import DailyLoop, adult_profile
+
+    day = "2026-11-02"
+    exercises = [
+        {"name": "Bench press", "sets": 4, "reps": "6-10"},
+        {"name": "Barbell row", "sets": 4, "reps": "6-10"},
+    ]
+    week = {
+        "plan": {"training": {"current_load": 100, "previous_load": 100}},
+        "sessions": [{
+            "date": day,
+            "name": "Upper",
+            "load": 100,
+            "minutes": 45,
+            "experience": "intermediate",
+            "exercises": exercises,
+        }],
+        "confirmation": {
+            "record_id": "rec-1",
+            "plan_hash": "abc",
+            "saved_at": "2026-10-31T00:00:00Z",
+        },
+    }
+    path = tmp_path / "week.json"
+    path.write_text(json.dumps(week), encoding="utf-8")
+    loop = DailyLoop(load=80, minutes=45, calories=2200, profile=adult_profile(), week_path=str(path))
+    loop.open_morning(day)
+    text = loop.hear(day, "no, 7, 2, 4, 2")
+    assert loop.phase[day] == "workout"
+    assert loop.workouts[day]["name"] == "Upper"
+    assert loop.workouts[day]["exercises"] == exercises
+    assert loop.workouts[day]["needs_yes"] is False
+    assert text.startswith("Upper.")
+    assert "Bench press" in text
+    assert "Barbell row" in text
+    assert "yes" not in text.lower()
+    assert "push" not in text.lower()
+    assert "Pick a weight you can lift 10 times with 2 reps left." in text
+    raised = DailyLoop(
+        load=100,
+        minutes=45,
+        profile=adult_profile(),
+        week_path=str(path),
+        history=[{
+            "date": "2026-10-25T12:00:00Z",
+            "confirmed": True,
+            "changes": {"load": 100},
+        }],
+    )
+    raised.open_morning(day)
+    raised_text = raised.hear(day, "no, 7, 2, 4, 2")
+    assert raised.workouts[day]["name"] == "Upper"
+    assert raised.workouts[day]["needs_yes"] is True
+    assert "yes" in raised_text.lower()
+    assert raised.workouts[day]["load"] == 110
+
+
+def test_the_daily_loop_stops_while_onboarding_is_held():
+    from daily_loop import DailyLoop
+    from onboarding import run_chat
+
+    run_chat([
+        "hello",
+        "hold, male, age 25, 80 kg, 180 cm",
+        "ok",
+        "all no",
+        "my chest hurts",
+    ])
+    loop = DailyLoop()
+    morning = loop.open_morning("2026-10-31")
+    assert "tomorrow" in morning.lower()
+    assert "medical emergency" in morning.lower()
+    heard = loop.hear("2026-10-31", "no, 7, 2")
+    assert "tomorrow" in heard.lower()
+    assert loop.workouts == {}
+    evening = loop.open_evening("2026-10-31")
+    assert "tomorrow" in evening.lower()
+    review = loop.weekly("2026-10-31T18:00:00Z")
+    assert review["changed"] is False
+    assert "tomorrow" in review["text"].lower()
+
+
+def test_a_clear_no_with_sleep_and_soreness_sends_the_session_in_one_turn():
+    from daily_loop import DailyLoop, adult_profile
+    from red_flag_check import RedFlagChecker, is_passing_check_in
+
+    day = "2026-10-26"
+    loop = DailyLoop(load=80, minutes=45, calories=2200, profile=adult_profile())
+    loop.open_morning(day)
+    text = loop.hear(day, "no, 7, 2")
+    assert loop.phase[day] == "workout"
+    assert day in loop.workouts
+    assert text.startswith("Today is a normal day.")
+    assert "45 min" in text
+    assert "none" not in text.lower()
+    assert "checklist" not in text.lower()
+    assert loop.notes[day]["sleep"] == 7
+    assert loop.notes[day]["soreness"] == 2
+    checked = RedFlagChecker().scan_check_in({"notes": "no, 7, 2"})
+    assert not is_passing_check_in(checked)
+    longer = DailyLoop(load=80, minutes=45, calories=2200, profile=adult_profile())
+    longer.open_morning(day)
+    longer_text = longer.hear(day, "no, 7, 2, 4, 2")
+    assert longer.phase[day] == "workout"
+    assert longer.notes[day]["sleep"] == 7
+    assert longer.notes[day]["soreness"] == 2
+    assert longer.notes[day]["energy"] == 4
+    assert longer.notes[day]["stress"] == 2
+    assert longer_text.startswith("Today is a push day.")
+    assert not is_passing_check_in(RedFlagChecker().scan_check_in({"notes": "no, 7, 2, 4, 2"}))
+    nope = DailyLoop(load=80, minutes=45, calories=2200, profile=adult_profile())
+    nope.open_morning(day)
+    nope_text = nope.hear(day, "nope, 7, 2")
+    assert nope.phase[day] == "workout"
+    assert nope_text.startswith("Today is a normal day.")
+    assert nope.notes[day]["sleep"] == 7
+    assert nope.notes[day]["soreness"] == 2
+
+
+def test_no_but_palpitations_does_not_send_the_session():
+    from daily_loop import DailyLoop, adult_profile
+    from red_flag_check import RedFlagChecker, clear_safety_no, is_passing_check_in
+
+    reply = "no but I have palpitations"
+    assert clear_safety_no(reply) is False
+    day = "2026-10-26"
+    loop = DailyLoop(load=80, minutes=45, profile=adult_profile())
+    loop.open_morning(day)
+    text = loop.hear(day, reply)
+    assert day not in loop.workouts
+    assert loop.phase[day] == "paused"
+    assert "medical emergency" in text.lower()
+    scanned = RedFlagChecker().scan_check_in({"notes": reply})
+    assert scanned.pause_plan
+    assert "palpitations" in scanned.flags_detected
+    assert not is_passing_check_in(scanned)
 
 
 def test_a_no_with_anything_else_asks_the_symptom_line_again():

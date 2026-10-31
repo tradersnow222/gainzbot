@@ -257,6 +257,149 @@ class TestClearYes:
         assert record.confirmed is False
         assert record.quoted_words == reply
 
+    @pytest.mark.parametrize("reply", [
+        "yes, morning 6:30",
+        "yes morning 6:30am",
+        "yes, evening 9pm",
+        "yes but no evening one",
+        "yes, review sunday 7pm",
+    ])
+    def test_a_schedule_edit_is_not_a_bare_yes_for_a_generic_plan(self, reply):
+        from routines import plan_schedule
+
+        assert not is_clear_yes(reply)
+        assert is_plan_yes(reply, hash_plan(ADULT_PLAN)) is False
+        assert plan_schedule(reply) is not None
+        record = ConfirmationRecorder().record(
+            ADULT_PLAN, reply, "user", passing_check_in()
+        )
+        assert record.confirmed is False
+        assert record.quoted_words == reply
+
+    def test_record_on_a_load_proposal_refuses_a_schedule_yes(self):
+        load = {"summary": "Raise the load 10 percent.", "changes": {"load": 110}}
+        calories = {"summary": "Raise calories.", "changes": {"calories": 2400}}
+        for proposal, reply in (
+            (load, "yes, morning 6:30"),
+            (calories, "yes, evening 9pm"),
+        ):
+            record = ConfirmationRecorder().record(
+                proposal, reply, "user", passing_check_in()
+            )
+            assert record.confirmed is False
+            assert record.quoted_words == reply
+            assert "clear yes" in record.message.lower()
+            bare = ConfirmationRecorder().record(
+                proposal, "yes", "user", passing_check_in()
+            )
+            assert bare.confirmed is True
+        first = {
+            "plan": {"user": {"age": 30}},
+            "sessions": [{"date": "2026-11-02", "name": "Upper"}],
+        }
+        shaped = ConfirmationRecorder().record(
+            first, "yes, morning 6:30", "user", passing_check_in()
+        )
+        assert shaped.confirmed is False
+        assert "clear yes" in shaped.message.lower()
+        from record_confirmation import _mark_first_plan
+
+        marked = _mark_first_plan(first)
+        scheduled = ConfirmationRecorder().record(
+            marked, "yes, morning 6:30", "user", passing_check_in()
+        )
+        assert scheduled.confirmed is True
+        assert scheduled.quoted_words == "yes, morning 6:30"
+        assert hash_plan(marked) != hash_plan(first)
+        assert not ConfirmationRecorder().covers(scheduled, first)
+        assert ConfirmationRecorder().covers(scheduled, marked)
+        bare_flag = dict(first)
+        bare_flag["first_plan"] = True
+        forged = ConfirmationRecorder().record(
+            bare_flag, "yes, morning 6:30", "user", passing_check_in()
+        )
+        assert forged.confirmed is False
+        assert "clear yes" in forged.message.lower()
+        flagged = {"changes": {"load": 110}, "first_plan": True}
+        not_a_week = ConfirmationRecorder().record(
+            flagged, "yes, morning 6:30", "user", passing_check_in()
+        )
+        assert not_a_week.confirmed is False
+
+    def test_a_forged_first_plan_flag_cannot_take_a_schedule_yes(self):
+        import record_confirmation
+        from record_confirmation import _mark_first_plan
+
+        assert not hasattr(record_confirmation, "mark_first_plan")
+        later = {
+            "plan": {"training": {"current_load": 110, "previous_load": 100}},
+            "sessions": [{"date": "2026-11-09", "name": "Upper", "load": 110}],
+            "changes": {"load": 110},
+        }
+        forged = dict(later)
+        forged["first_plan"] = True
+        record = ConfirmationRecorder().record(
+            forged, "yes, morning 6:30", "user", passing_check_in()
+        )
+        assert record.confirmed is False
+        assert "clear yes" in record.message.lower()
+        real = _mark_first_plan({
+            "plan": {"user": {"age": 30}},
+            "sessions": [{"date": "2026-11-02", "name": "Upper"}],
+        })
+        stolen = dict(forged)
+        stolen["first_plan_seal"] = real["first_plan_seal"]
+        copied = ConfirmationRecorder().record(
+            stolen, "yes, evening 9pm", "user", passing_check_in()
+        )
+        assert copied.confirmed is False
+        assert hash_plan(forged) != hash_plan(later)
+        assert not ConfirmationRecorder().covers(record, later)
+        from record_confirmation import first_plan_seal
+
+        assert first_plan_seal(later) == ""
+        sealed = _mark_first_plan(later)
+        assert not sealed.get("first_plan_seal")
+        assert ConfirmationRecorder().record(
+            sealed, "yes, morning 6:30", "user", passing_check_in()
+        ).confirmed is False
+        from record_confirmation import _is_later_week
+
+        bare = {
+            "plan": {"user": {"age": 30}},
+            "sessions": [{"date": "2026-11-02", "name": "Upper"}],
+        }
+        assert "changes" not in bare
+        assert _is_later_week(bare) is False
+        assert first_plan_seal(bare)
+        omitted = {
+            "plan": {"training": {"current_load": 100, "previous_load": 100}},
+            "sessions": [{"date": "2026-11-09", "name": "Upper", "load": 100}],
+        }
+        assert "changes" not in omitted
+        assert _is_later_week(omitted) is True
+        assert first_plan_seal(omitted) == ""
+        unmarked = _mark_first_plan(omitted)
+        assert not unmarked.get("first_plan_seal")
+        calories = {
+            "plan": {"nutrition": {"calories": 2200}, "user": {"age": 30}},
+            "sessions": [{"date": "2026-11-02", "name": "Upper"}],
+        }
+        assert "changes" not in calories
+        assert _is_later_week(calories) is True
+        assert first_plan_seal(calories) == ""
+
+    def test_a_schedule_yes_with_a_symptom_stays_a_red_flag(self):
+        reply = "yes, morning 6:30, but my chest hurts"
+        assert not is_clear_yes(reply)
+        scanned = RedFlagChecker().scan_text(reply)
+        assert scanned.pause_plan
+        record = ConfirmationRecorder().record(
+            ADULT_PLAN, reply, "user", passing_check_in()
+        )
+        assert record.confirmed is False
+        assert scanned.message in record.message
+
     def test_a_red_flag_in_the_reply_is_the_pause(self):
         reply = "yes, I have chest pain"
         scanned = RedFlagChecker().scan_text(reply)

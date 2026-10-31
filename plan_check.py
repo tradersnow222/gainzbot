@@ -37,6 +37,8 @@ class PlanValidator:
     MIN_AGE = 13
     ADULT_AGE = 18
     MAX_AGE = 100
+    MIN_BODY_WEIGHT_KG = 30
+    MAX_BODY_WEIGHT_KG = 300
     MAX_WEIGHT_LOSS_PERCENT = 1.0
     MIN_PROTEIN_G_PER_KG = 1.6
     MAX_PROTEIN_G_PER_KG = 2.2
@@ -472,6 +474,14 @@ class PlanValidator:
             if height_cm < 50 or height_cm > 280:
                 all_errors.append(
                     f"height_cm value {height_cm} is not a plausible height in centimeters."
+                )
+                return ValidationResult(valid=False, errors=all_errors)
+
+            weight_kg = user_validated["weight_kg"]
+            if weight_kg < self.MIN_BODY_WEIGHT_KG or weight_kg > self.MAX_BODY_WEIGHT_KG:
+                all_errors.append(
+                    f"weight_kg value {weight_kg:g} is outside "
+                    f"{self.MIN_BODY_WEIGHT_KG:g} to {self.MAX_BODY_WEIGHT_KG:g} kg."
                 )
                 return ValidationResult(valid=False, errors=all_errors)
 

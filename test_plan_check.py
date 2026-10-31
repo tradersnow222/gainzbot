@@ -586,6 +586,32 @@ class TestK06aProbes:
         assert not result.valid
         assert any("calories" in err.lower() and "require" in err.lower() for err in result.errors)
     
+    def test_body_weight_has_to_be_from_30_to_300_kg(self):
+        flags = {flag: False for flag in ReadinessScreen.PAR_Q_RED_FLAGS}
+        training = {
+            "previous_load": 100,
+            "current_load": 100,
+            "weeks_since_deload": 0,
+            "structured_hours": 1,
+            "sport_hours": 0,
+        }
+        check_in = passing_check_in()
+
+        def plan(weight):
+            return {
+                "user": {"sex": "M", "weight_kg": weight, "age": 30, "height_cm": 180},
+                "training": training,
+                "par_q": flags,
+            }
+
+        for weight in (30, 80, 300):
+            result = PlanValidator().validate_plan(plan(weight), check_in_result=check_in)
+            assert result.valid, (weight, result.errors)
+        for weight in (29, 29.9, 300.1, 301):
+            result = PlanValidator().validate_plan(plan(weight), check_in_result=check_in)
+            assert not result.valid, weight
+            assert any("30" in err and "300" in err for err in result.errors), result.errors
+
     def test_par_q_is_an_allowed_plan_key(self):
         flags = {flag: False for flag in ReadinessScreen.PAR_Q_RED_FLAGS}
         plan = {

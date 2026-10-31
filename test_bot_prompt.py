@@ -226,6 +226,31 @@ def test_first_run_clones_the_repo_and_uses_that_path():
     assert "each is opt-in" in PROMPT.lower()
 
 
+def test_bot_prompt_and_daily_checkin_agree_on_the_default_morning():
+    prompt = (ROOT / "BOT_PROMPT.md").read_text(encoding="utf-8")
+    guide = (ROOT / "template" / "daily-checkin.md").read_text(encoding="utf-8")
+
+    def morning_line(text):
+        start = text.find("Default morning:")
+        assert start != -1
+        end = text.find("soreness from 1 to 5.", start)
+        assert end != -1
+        return text[start:end + len("soreness from 1 to 5.")]
+
+    agreed = (
+        "Default morning: Any chest pain, trouble breathing, dizziness or new pain? no / yes. "
+        "Plus hours of sleep and soreness from 1 to 5."
+    )
+    assert morning_line(prompt) == morning_line(guide) == agreed
+    for text in (prompt, guide):
+        assert "Skip sleep when a real wearable reading from the last 24 hours covers it." in text
+        assert "Energy and stress are optional." in text
+        assert "Show the full red-flag list only after a yes, an unclear reply, or a symptom word." in text
+    before_list = guide.split("## After a yes", 1)[0]
+    assert "chest pain or pressure" not in before_list
+    assert "Ask sleep hours, soreness from 1 to 5, energy from 1 to 5, and stress from 1 to 5." not in guide
+
+
 def test_template_json_file_paths_are_repo_root_relative():
     paths = [
         TEMPLATE["instructions_file"],

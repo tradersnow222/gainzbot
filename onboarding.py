@@ -1,7 +1,10 @@
 #!/usr/bin/env python3
 """Grouped onboarding. A few short messages, then one yes."""
 
-from datetime import datetime, timedelta, timezone
+from datetime import date, datetime, timedelta, timezone
+from zoneinfo import ZoneInfo
+import json
+import os
 import re
 import unicodedata
 
@@ -95,7 +98,14 @@ def messages():
 
 
 def question_one():
-    """The first thing the bot says. No setup in front of it."""
+    """The first thing the bot says. No setup in front of it.
+
+    A symptom hold dated today replaces that question. The bot still
+    starts through run_chat, which is the only onboarding entry.
+    """
+    if hold_is_active():
+        state = _state_for_attempt()
+        return state.get("error") or state.get("hold_message") or _HOLD_CLOSED
     return GROUPS[0]["text"]
 
 
@@ -107,6 +117,154 @@ def _fold(reply):
     for char in text:
         cleaned.append(char if char.isalnum() or char.isspace() else " ")
     return " ".join("".join(cleaned).split())
+
+
+_LOCALTIME_PATH = "/etc/localtime"
+_TIMEZONE_FILE = "/etc/timezone"
+_memory_hold = None
+
+
+def _now():
+    """Aware local time. Tests replace this to pin the clock."""
+    return datetime.now().astimezone()
+
+
+def _zone(name):
+    if not isinstance(name, str) or not name.strip():
+        return None
+    try:
+        return ZoneInfo(name.strip())
+    except (KeyError, ValueError, OSError):
+        return None
+
+
+def _offset_zone(name):
+    """A stored UTC offset such as -07:00. The word UTC is not an offset."""
+    if not isinstance(name, str):
+        return None
+    match = re.fullmatch(r"([+-])(\d{2}):(\d{2})", name.strip())
+    if match is None:
+        return None
+    hours = int(match.group(2))
+    minutes = int(match.group(3))
+    if hours > 23 or minutes > 59:
+        return None
+    sign = 1 if match.group(1) == "+" else -1
+    return timezone(sign * timedelta(hours=hours, minutes=minutes))
+
+
+def _usable_zone(name):
+    return _zone(name) or _offset_zone(name)
+
+
+def _format_offset(delta):
+    if not isinstance(delta, timedelta):
+        delta = timedelta(0)
+    total = int(delta.total_seconds())
+    sign = "+" if total >= 0 else "-"
+    total = abs(total)
+    hours, rem = divmod(total, 3600)
+    minutes = rem // 60
+    return f"{sign}{hours:02d}:{minutes:02d}"
+
+
+def _tz_env_name():
+    raw = os.environ.get("TZ")
+    if not isinstance(raw, str):
+        return None
+    name = raw.strip()
+    if name.startswith(":"):
+        name = name[1:].strip()
+    if _zone(name) is None:
+        return None
+    return name
+
+
+def _localtime_zone_name():
+    path = _LOCALTIME_PATH
+    try:
+        if not os.path.islink(path):
+            return None
+        target = os.path.realpath(path)
+    except OSError:
+        return None
+    marker = f"{os.sep}zoneinfo{os.sep}"
+    index = target.rfind(marker)
+    if index == -1:
+        return None
+    name = target[index + len(marker):].strip()
+    if _zone(name) is None:
+        return None
+    return name
+
+
+def _timezone_file_name():
+    try:
+        with open(_TIMEZONE_FILE, encoding="utf-8") as handle:
+            line = handle.read().strip().splitlines()
+    except OSError:
+        return None
+    name = line[0].strip() if line else ""
+    if _zone(name) is None:
+        return None
+    return name
+
+
+def _iana_zone_name():
+    """IANA name from TZ, then the localtime symlink, then /etc/timezone."""
+    for name in (_tz_env_name(), _localtime_zone_name(), _timezone_file_name()):
+        if name:
+            return name
+    return None
+
+
+def _default_timezone_name():
+    """The profile timezone. An offset when the box has no IANA name.
+
+    datetime.now().astimezone() is a fixed offset and has no zone key.
+    That offset is stored as -07:00. It is never the word UTC.
+    """
+    named = _iana_zone_name()
+    if named:
+        return named
+    now = _now()
+    if now.tzinfo is None:
+        now = now.astimezone()
+    return _format_offset(now.utcoffset())
+
+
+def _timezone_name(answers=None, saved=None):
+    """Name or offset on the profile, then the one stored with the hold, then the box."""
+    sources = []
+    if isinstance(answers, dict):
+        sources.append(answers.get("timezone"))
+    if isinstance(saved, dict):
+        sources.append(saved.get("timezone"))
+        nested = saved.get("answers")
+        if isinstance(nested, dict):
+            sources.append(nested.get("timezone"))
+    for name in sources:
+        if _usable_zone(name) is not None:
+            return name.strip()
+    return _default_timezone_name()
+
+
+def _local_today(name=None):
+    """The user's local calendar date. Not the UTC date."""
+    zone = _usable_zone(name) if name else None
+    if zone is None:
+        named = _iana_zone_name()
+        zone = _zone(named) if named else None
+    now = _now()
+    if now.tzinfo is None:
+        now = now.astimezone()
+    if zone is None:
+        return now.astimezone().date()
+    return now.astimezone(zone).date()
+
+
+def _today():
+    return _local_today()
 
 
 def _dates(count):
@@ -423,9 +581,9 @@ def _parse_explicit(state, reply):
         if re.search(rf"\b{goal}\b", folded):
             answers["goal"] = goal
             break
-    age = re.search(r"\bage\s+(\d{1,3})\b", folded)
-    if age:
-        answers["age"] = age.group(1)
+    age = _intake_age(folded)
+    if age is not None:
+        answers["age"] = str(age)
     height = re.search(r"\b(\d{2,3})\s*cm\b", folded)
     if height:
         answers["height"] = height.group(1) + " cm"
@@ -434,7 +592,11 @@ def _parse_explicit(state, reply):
         answers["target"] = target.group(1) + " kg"
     weight = re.search(r"\b(\d+(?:\.\d+)?)\s*kg\b", folded)
     if weight and "weight" not in answers:
-        answers["weight"] = weight.group(1) + " kg"
+        value = float(weight.group(1))
+        if _kg_in_range(value):
+            answers["weight"] = weight.group(1) + " kg"
+        else:
+            state["error"] = _WEIGHT_ASK
     if re.search(r"\b(female|woman)\b", folded):
         answers["sex"] = "female"
     elif re.search(r"\b(male|man)\b", folded):
@@ -485,10 +647,236 @@ def _remember_skip(state):
             state["par_q"].pop(key, None)
 
 
-def apply_reply(state, reply):
+_CLOCK = re.compile(
+    r"\b\d{1,2}:\d{2}(?:\s*(?:am|pm))?\b"
+    r"|\b\d{1,2}\s*(?:am|pm)\b"
+    r"|\bat\s+(?:[1-9]|1[0-2])\b",
+    re.IGNORECASE,
+)
+
+
+def _mask_clocks(reply):
+    """Drop a parsed routine time so its digits are not an age hint."""
+    if not isinstance(reply, str):
+        return ""
+    return _CLOCK.sub(lambda match: re.sub(r"\d", " ", match.group(0)), reply)
+
+
+_AGE_ASK = "How old are you? Please type the number."
+_WEIGHT_ASK = "That weight looks off. What's your weight in kg?"
+_REST_LINE = "Rest today. Come back tomorrow, or after you see a doctor."
+_HOLD_CLOSED = (
+    "Onboarding is held. The hold file is not usable. "
+    "Rest today. Come back tomorrow, or after you see a doctor."
+)
+_HOLD_WRITE_FAILED = (
+    "Stop. The onboarding hold could not be saved. Onboarding does not continue."
+)
+_AGE_EMOJI = "\U0001F9D2\U0001F476\U0001F466\U0001F467"
+_NUMBER_WORDS = frozenset({
+    "zero", "one", "two", "three", "four", "five", "six", "seven", "eight", "nine",
+    "ten", "eleven", "twelve", "thirteen", "fourteen", "fifteen", "sixteen",
+    "seventeen", "eighteen", "nineteen", "twenty", "thirty", "forty", "fifty",
+    "sixty", "seventy", "eighty", "ninety", "hundred",
+    "first", "second", "third", "fourth", "fifth", "sixth", "seventh", "eighth",
+    "ninth", "tenth", "eleventh", "twelfth", "thirteenth", "fourteenth",
+    "fifteenth", "sixteenth", "seventeenth", "eighteenth", "nineteenth", "twentieth",
+})
+_AGE_WORDS = frozenset({
+    "under", "over", "minor", "grade", "school", "yo", "years", "old", "teen",
+    "teens", "teenage", "teenager", "kid", "child", "young", "son", "daughter",
+})
+_WEIGHT_EDIT = re.compile(
+    r"^(?:(?:wait|actually|please|sorry|just)\s+)*"
+    r"(?:my\s+)?(?:weight(?:\s+is)?\s+)?(\d+(?:\.\d+)?)\s+kg$"
+)
+_DAYS_EDIT = re.compile(
+    r"^(?:(?:wait|actually|please|sorry|just)\s+)*"
+    r"(?:make\s+it\s+|change\s+(?:it\s+)?to\s+)?"
+    r"([1-7])\s+days?$"
+)
+_HEIGHT_EDIT = re.compile(
+    r"^(?:(?:wait|actually|please|sorry|just)\s+)*"
+    r"(?:my\s+)?height(?:\s+is)?\s+(\d{2,3})\s+cm$"
+)
+
+
+def _soft(reply):
+    """Fold a reply but keep a decimal point that sits between digits."""
+    if not isinstance(reply, str):
+        return ""
+    text = reply.strip().lower().replace("'", "").replace("\u2019", "")
+    protected = re.sub(r"(?<=\d)\.(?=\d)", "\x00", text)
+    cleaned = []
+    for char in protected:
+        if char == "\x00" or char.isalnum() or char.isspace():
+            cleaned.append(char)
+        else:
+            cleaned.append(" ")
+    return " ".join("".join(cleaned).split()).replace("\x00", ".")
+
+
+def _kg_in_range(value):
+    from plan_check import PlanValidator
+
+    return PlanValidator.MIN_BODY_WEIGHT_KG <= float(value) <= PlanValidator.MAX_BODY_WEIGHT_KG
+
+
+def _non_latin_letter(reply):
+    if not isinstance(reply, str):
+        return False
+    for char in reply:
+        if not char.isalpha():
+            continue
+        try:
+            name = unicodedata.name(char)
+        except ValueError:
+            return True
+        if "LATIN" not in name:
+            return True
+    return False
+
+
+def _hints_age(reply):
+    """True when the reply hints at age. The number itself is not read."""
+    if not isinstance(reply, str) or not reply.strip():
+        return False
+    if any(char in reply for char in _AGE_EMOJI):
+        return True
+    if _non_latin_letter(reply):
+        return True
+    folded = _fold(_mask_clocks(reply))
+    if re.search(r"\d", folded):
+        return True
+    for token in folded.split():
+        if token in _AGE_WORDS or token in _NUMBER_WORDS or token.startswith("teen"):
+            return True
+    return False
+
+
+def _explicit_edit(reply):
+    """A profile edit that uses the whole reply, or None."""
+    weight = _WEIGHT_EDIT.fullmatch(_soft(reply))
+    if weight:
+        return ("weight", weight.group(1) + " kg")
     folded = _fold(reply)
-    if state["phase"] == "confirm" and _is_plan_yes(reply):
-        _confirm(state, reply)
+    days = _DAYS_EDIT.fullmatch(folded)
+    if days:
+        return ("days", days.group(1))
+    height = _HEIGHT_EDIT.fullmatch(folded)
+    if height:
+        return ("height", height.group(1) + " cm")
+    return None
+
+
+def _apply_edit(state, edit):
+    kind, value = edit
+    state["confirmed"] = False
+    state["record"] = None
+    state["awaiting"] = None
+    if kind == "weight":
+        number = float(value.split()[0])
+        if not _kg_in_range(number):
+            state["awaiting"] = "weight"
+            state["error"] = _WEIGHT_ASK
+            return True
+        state["answers"]["weight"] = value
+    elif kind == "days":
+        state["answers"]["training_days"] = value
+        state["answers"]["days"] = _dates(value)
+    elif kind == "height":
+        state["answers"]["height"] = value
+    state["error"] = None
+    return True
+
+
+def _typed_int(reply):
+    folded = _fold(reply)
+    if not re.fullmatch(r"\d{1,3}", folded):
+        return None
+    return int(folded)
+
+
+def _clear_proposal(state):
+    """Drop the confirmable proposal. The intake draft stays on disk."""
+    state["confirmed"] = False
+    state["record"] = None
+
+
+def _take_age_number(state, reply):
+    """Readiness runs on the typed number. Leftover text is not an age."""
+    _clear_proposal(state)
+    number = _typed_int(reply)
+    if number is None or not 1 <= number <= 120:
+        state["phase"] = "age"
+        state["awaiting"] = None
+        state["need_age"] = True
+        state["error"] = _AGE_ASK
+        return True
+    state["answers"]["age"] = str(number)
+    state["awaiting"] = None
+    state["need_age"] = False
+    _apply_age_readiness(state)
+    if state.get("error"):
+        state["phase"] = "blocked"
+        return True
+    state["hold_message"] = None
+    state["phase"] = "confirm"
+    return True
+
+
+def _take_weight_number(state, reply):
+    state["confirmed"] = False
+    state["record"] = None
+    match = re.fullmatch(r"(\d+(?:\.\d+)?)(?:\s+kg)?", _soft(reply))
+    if match is None:
+        state["awaiting"] = "weight"
+        state["error"] = _WEIGHT_ASK
+        return True
+    number = float(match.group(1))
+    if not _kg_in_range(number):
+        state["awaiting"] = "weight"
+        state["error"] = _WEIGHT_ASK
+        return True
+    shown = match.group(1)
+    if shown.endswith(".0"):
+        shown = shown[:-2]
+    state["answers"]["weight"] = shown + " kg"
+    state["awaiting"] = None
+    state["error"] = None
+    return True
+
+
+def _intake_age(folded):
+    age = re.search(r"\bage\s+(\d{1,3})\b", folded)
+    if not age:
+        age = re.search(r"\b(?:im|i am)\s+actually\s+(\d{1,3})\b", folded)
+    if not age:
+        return None
+    value = int(age.group(1))
+    if 1 <= value <= 120:
+        return value
+    return None
+
+
+def apply_reply(state, reply):
+    state["error"] = None
+    if hold_is_active():
+        _adopt_hold(state)
+        _handle_symptom(state, reply)
+        return
+    phase = state.get("phase")
+    if phase == "symptom":
+        _handle_symptom(state, reply)
+        return
+    if phase == "age":
+        _handle_age(state, reply)
+        return
+    if phase == "blocked":
+        _handle_blocked(state, reply)
+        return
+    folded = _fold(reply)
+    if phase == "confirm" and _handle_confirm(state, reply):
         return
     if folded == "skip":
         _remember_skip(state)
@@ -497,12 +885,442 @@ def apply_reply(state, reply):
         _fill_group(state, state["asked"])
         return
     _parse_explicit(state, reply)
+    if state["phase"] == "confirm":
+        _review_confirm_edit(state, reply)
+
+
+def _symptom_hold_message(paused):
+    text = (getattr(paused, "message", None) or "").strip()
+    if _REST_LINE not in text:
+        text = (text + " " + _REST_LINE).strip()
+    return text
+
+
+def onboarding_state_path():
+    """Dated symptom hold and the answers to resume the next day."""
+    return os.path.join(os.path.dirname(os.path.abspath(__file__)), "data", "onboarding_state.json")
+
+
+def _remember_timezone(state):
+    """Keep the profile timezone. The box zone fills in when none was saved."""
+    answers = state.get("answers")
+    if not isinstance(answers, dict):
+        answers = {}
+        state["answers"] = answers
+    if _usable_zone(answers.get("timezone")) is None:
+        answers["timezone"] = _default_timezone_name()
+    return answers["timezone"].strip()
+
+
+def _write_onboarding_state(state):
+    zone_name = _remember_timezone(state)
+    payload = {
+        "answers": state.get("answers") if isinstance(state.get("answers"), dict) else {},
+        "checks_again": True,
+        "timezone": zone_name,
+        "hold": {
+            "date": _local_today(zone_name).isoformat(),
+            "message": state.get("hold_message") or _REST_LINE,
+        },
+    }
+    path = onboarding_state_path()
+    temporary = path + ".tmp"
+    try:
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        with open(temporary, "w", encoding="utf-8") as handle:
+            json.dump(payload, handle)
+            handle.write("\n")
+        os.replace(temporary, path)
+    except OSError:
+        return False
+    return True
+
+
+def _arm_memory_hold(state):
+    """Keep today's hold in this process when the file could not be saved.
+
+    A restarted process does not see it. The file is the only hold that
+    survives a new process.
+    """
+    global _memory_hold
+    zone_name = _timezone_name(state.get("answers") if isinstance(state.get("answers"), dict) else None)
+    answers = dict(state.get("answers") or {})
+    answers["timezone"] = zone_name
+    state["answers"] = answers
+    _memory_hold = {
+        "answers": answers,
+        "checks_again": True,
+        "timezone": zone_name,
+        "hold": {
+            "date": _local_today(zone_name).isoformat(),
+            "message": state.get("hold_message") or _REST_LINE,
+        },
+    }
+
+
+def _persist_hold(state):
+    """Write the hold. A failed write is the reply, and onboarding stops."""
+    global _memory_hold
+    if _write_onboarding_state(state):
+        _memory_hold = None
+        return True
+    _arm_memory_hold(state)
+    state["phase"] = "symptom"
+    state["confirmed"] = False
+    state["record"] = None
+    state["error"] = _HOLD_WRITE_FAILED
+    return False
+
+
+def _can_refresh_hold():
+    """A bad or future-dated file stays as it is. A missing or today's hold can be written."""
+    kind, saved = _read_hold_file()
+    if kind == "missing" or kind == "expired":
+        return True
+    return _hold_is_today(saved)
+
+
+def _read_hold_file():
+    """('missing', None), ('active', payload or None), or ('expired', payload).
+
+    A missing file is not a hold. A date strictly before the user's local
+    today has stopped counting, and the file stays. Unreadable, garbage,
+    corrupt, and future-dated files are an active hold.
+    """
+    path = onboarding_state_path()
+    if not os.path.lexists(path):
+        if isinstance(_memory_hold, dict):
+            return _classify_saved(_memory_hold)
+        return "missing", None
+    try:
+        with open(path, encoding="utf-8") as handle:
+            raw = handle.read()
+    except OSError:
+        return "active", None
+    try:
+        loaded = json.loads(raw)
+    except json.JSONDecodeError:
+        return "active", None
+    return _classify_saved(loaded)
+
+
+def _classify_saved(loaded):
+    if not isinstance(loaded, dict):
+        return "active", None
+    hold = loaded.get("hold")
+    if not isinstance(hold, dict):
+        return "active", None
+    text = hold.get("date")
+    if not isinstance(text, str):
+        return "active", None
+    try:
+        hold_day = date.fromisoformat(text)
+    except ValueError:
+        return "active", None
+    today = _local_today(_timezone_name(saved=loaded))
+    if hold_day < today:
+        return "expired", loaded
+    return "active", loaded
+
+
+def hold_is_active():
+    """True while a symptom hold blocks onboarding, including a bad hold file."""
+    kind, _saved = _read_hold_file()
+    return kind == "active"
+
+
+def active_hold_message():
+    """The line to show while a hold blocks, or None when nothing is held."""
+    if not hold_is_active():
+        return None
+    _kind, saved = _read_hold_file()
+    if _hold_is_today(saved):
+        hold = saved.get("hold") if isinstance(saved, dict) else {}
+        message = hold.get("message") if isinstance(hold, dict) else ""
+        if isinstance(message, str) and message.strip():
+            return message.strip()
+        return _REST_LINE
+    return _HOLD_CLOSED
+
+
+def _typed_date(reply):
+    if not isinstance(reply, str):
+        return None
+    text = reply.strip()
+    if text.lower().startswith("clear_hold"):
+        parts = text.split(None, 1)
+        text = parts[1].strip() if len(parts) == 2 else ""
+    if not re.fullmatch(r"\d{4}-\d{2}-\d{2}", text):
+        return None
+    try:
+        return date.fromisoformat(text).isoformat()
+    except ValueError:
+        return None
+
+
+def _clear_date(saved):
+    """The date that has to be typed. A file with no date uses the local today."""
+    if isinstance(saved, dict):
+        hold = saved.get("hold")
+        if isinstance(hold, dict) and isinstance(hold.get("date"), str):
+            try:
+                return date.fromisoformat(hold["date"]).isoformat()
+            except ValueError:
+                pass
+    if isinstance(saved, dict):
+        return _local_today(_timezone_name(saved=saved)).isoformat()
+    return _local_today().isoformat()
+
+
+def clear_hold(reply):
+    """Clear a corrupt or future-dated hold when the reply is that date.
+
+    A hold dated today is not cleared. It stops on a later local date.
+    Type the date in the file as YYYY-MM-DD. A corrupt or unreadable file
+    has no date, so type today's local date.
+    """
+    global _memory_hold
+    kind, saved = _read_hold_file()
+    if kind != "active":
+        return "There is no hold to clear."
+    if _hold_is_today(saved):
+        return "A hold dated today stays until the next local day. It is not cleared."
+    wanted = _clear_date(saved)
+    typed = _typed_date(reply)
+    if typed != wanted:
+        return f"Type the date {wanted} to clear this hold."
+    path = onboarding_state_path()
+    if os.path.lexists(path):
+        try:
+            os.remove(path)
+        except OSError:
+            return "Stop. The hold file could not be cleared. Please check it."
+    _memory_hold = None
+    return "The hold is cleared."
+
+
+def _hold_is_today(saved):
+    if not isinstance(saved, dict):
+        return False
+    hold = saved.get("hold")
+    if not isinstance(hold, dict) or not isinstance(hold.get("date"), str):
+        return False
+    try:
+        hold_day = date.fromisoformat(hold["date"])
+    except ValueError:
+        return False
+    return hold_day == _local_today(_timezone_name(saved=saved))
+
+
+def _adopt_hold(state):
+    """Force the in-memory attempt onto the hold. It does not clear the file."""
+    _kind, saved = _read_hold_file()
+    state["phase"] = "symptom"
+    state["confirmed"] = False
+    state["record"] = None
+    state["checks_again"] = True
+    state["awaiting"] = None
+    state["need_age"] = False
+    if isinstance(saved, dict) and isinstance(saved.get("answers"), dict):
+        state["answers"] = saved["answers"]
+    if _hold_is_today(saved):
+        hold = saved.get("hold") if isinstance(saved.get("hold"), dict) else {}
+        message = hold.get("message") if isinstance(hold.get("message"), str) else ""
+        state["hold_message"] = message.strip() or _REST_LINE
+    else:
+        state["hold_message"] = _HOLD_CLOSED
+    state["error"] = state["hold_message"]
+
+
+def _clear_onboarding_state():
+    """A symptom hold is not deleted. It stops counting on a later local date."""
+    return False
+
+
+def _end_onboarding_for_today(state, paused):
+    """A symptom happening now ends onboarding until the next local date."""
+    _clear_proposal(state)
+    state["phase"] = "symptom"
+    state["awaiting"] = None
+    state["need_age"] = False
+    state["checks_again"] = True
+    state["confirmed"] = False
+    state["record"] = None
+    state["hold_message"] = _symptom_hold_message(paused)
+    if not _can_refresh_hold():
+        state["error"] = _HOLD_CLOSED
+        return True
+    if not _persist_hold(state):
+        return True
+    state["error"] = state["hold_message"]
+    return True
+
+
+def _hold_symptom(state, reply, paused):
+    """Leave confirm for the rest of the day. Nothing in this conversation resumes it."""
+    return _end_onboarding_for_today(state, paused)
+
+
+def _hold_age(state):
+    """Leave confirm and ask for a typed age. A later yes is not a confirm."""
+    _clear_proposal(state)
+    state["phase"] = "age"
+    state["awaiting"] = None
+    state["need_age"] = True
+    state["error"] = _AGE_ASK
+    return True
+
+
+def _handle_symptom(state, reply):
+    """The day is over. A typed age can only block a minor. It never resumes."""
+    from record_confirmation import reply_pause
+
+    _clear_proposal(state)
+    state["phase"] = "symptom"
+    paused = reply_pause(reply)
+    if paused is not None:
+        return _end_onboarding_for_today(state, paused)
+    state["confirmed"] = False
+    state["record"] = None
+    if not isinstance(state.get("answers"), dict):
+        state["answers"] = {}
+    stored_age = state["answers"].get("age")
+    number = _typed_int(reply)
+    typed_minor = number is not None and 1 <= number <= 120 and number < 18
+    under = ""
+    if typed_minor:
+        state["answers"]["age"] = str(number)
+        _apply_age_readiness(state)
+        under = state.get("error") or ""
+        if stored_age is None:
+            state["answers"].pop("age", None)
+        else:
+            state["answers"]["age"] = stored_age
+    age = _number(state["answers"].get("age"))
+    if age is not None and age < 18 and not under:
+        _apply_age_readiness(state)
+        under = state.get("error") or ""
+    hold = state.get("hold_message") or _REST_LINE
+    if under:
+        state["error"] = under if hold in under else f"{hold} {under}".strip()
+    else:
+        state["error"] = hold
+    state["phase"] = "symptom"
+    _clear_proposal(state)
+    state["confirmed"] = False
+    state["record"] = None
+    if _can_refresh_hold():
+        saved_error = state["error"]
+        if not _persist_hold(state):
+            return True
+        state["error"] = saved_error
+    return True
+
+
+def _handle_age(state, reply):
+    """A typed number runs readiness. A yes stays here and does not confirm."""
+    from record_confirmation import reply_pause
+
+    _clear_proposal(state)
+    paused = reply_pause(reply)
+    if paused is not None:
+        return _hold_symptom(state, reply, paused)
+    return _take_age_number(state, reply)
+
+
+def _handle_blocked(state, reply):
+    """Under 18, or readiness failed. A yes repeats that refusal."""
+    from record_confirmation import reply_pause
+
+    _clear_proposal(state)
+    paused = reply_pause(reply)
+    if paused is not None:
+        return _hold_symptom(state, reply, paused)
+    if _typed_int(reply) is not None:
+        return _take_age_number(state, reply)
+    _apply_age_readiness(state)
+    state["phase"] = "blocked"
+    _clear_proposal(state)
+    return True
+
+
+def _handle_confirm(state, reply):
+    """Confirm only when the whole reply is a plan-yes.
+
+    Anything else is an edit. A clear weight or profile edit updates the
+    profile and the proposal is shown again. A symptom ends onboarding for
+    the day. An age hint asks for a typed age, and readiness runs on that
+    number before the plan is shown again.
+    """
+    from record_confirmation import reply_pause
+
+    paused = reply_pause(reply)
+    if paused is not None:
+        return _hold_symptom(state, reply, paused)
+    if state.get("awaiting") == "weight":
+        return _take_weight_number(state, reply)
+    if _is_plan_yes(reply):
+        state["awaiting"] = None
+        _confirm(state, reply)
+        return True
+    edit = _explicit_edit(reply)
+    if edit is not None:
+        return _apply_edit(state, edit)
+    return _hold_age(state)
+
+
+def _apply_age_readiness(state):
+    from readiness_screen import ReadinessScreen, passing_readiness
+
+    screen = ReadinessScreen().screen_intake(_readiness_intake(state))
+    state["readiness"] = screen
+    state["confirmed"] = False
+    state["record"] = None
+    age = _number(state["answers"].get("age"))
+    if age is not None and age < 18:
+        state["error"] = _under_18_message(screen)
+        return
+    if not passing_readiness(screen):
+        state["error"] = " ".join(screen.reasons) or "Readiness has to pass before a plan is built."
+        return
+    state["error"] = None
+
+
+def _review_confirm_edit(state, reply):
+    """A confirm-step reply that fell through still cannot stay confirmable."""
+    from record_confirmation import reply_pause
+
+    paused = reply_pause(reply)
+    if paused is not None:
+        _hold_symptom(state, reply, paused)
+        return
+    age = _number(state["answers"].get("age"))
+    if age is not None and age < 18:
+        from readiness_screen import ReadinessScreen
+
+        screen = ReadinessScreen().screen_intake(_readiness_intake(state))
+        state["readiness"] = screen
+        _clear_proposal(state)
+        state["phase"] = "blocked"
+        state["error"] = _under_18_message(screen)
 
 
 def _is_plan_yes(reply):
-    from record_confirmation import is_clear_yes
+    from record_confirmation import is_clear_yes, reply_pause
+    from routines import plan_schedule
 
-    return is_clear_yes(reply)
+    if reply_pause(reply) is not None:
+        return False
+    return is_clear_yes(reply) or plan_schedule(reply) is not None
+
+
+def _under_18_message(screen):
+    text = " ".join(screen.reasons) if getattr(screen, "reasons", None) else (
+        "There is no training plan for anyone under 18."
+    )
+    if "calorie" not in text.lower() or "protein" not in text.lower():
+        text += " No calorie target and no protein target."
+    return text
 
 
 def _number(text):
@@ -586,15 +1404,24 @@ def _check_in(state):
 def _confirm(state, reply):
     from plan_builder import PlanBuilder
     from readiness_screen import ReadinessScreen, passing_readiness
-    from record_confirmation import ConfirmationRecorder
+    from record_confirmation import ConfirmationRecorder, _mark_first_plan, _store_onboarding_record
     from red_flag_check import is_passing_check_in
 
+    if hold_is_active():
+        _adopt_hold(state)
+        state["confirmed"] = False
+        state["record"] = None
+        return
     if _first_missing(state) is not None:
         return
     screen = ReadinessScreen().screen_intake(_readiness_intake(state))
     state["readiness"] = screen
     if not passing_readiness(screen):
-        state["error"] = " ".join(screen.reasons) or "Readiness has to pass before a plan is built."
+        age = _number(state["answers"].get("age"))
+        if age is not None and age < 18:
+            state["error"] = _under_18_message(screen)
+        else:
+            state["error"] = " ".join(screen.reasons) or "Readiness has to pass before a plan is built."
         return
     check_in = _check_in(state)
     if not is_passing_check_in(check_in):
@@ -604,17 +1431,30 @@ def _confirm(state, reply):
     if not built.get("ok"):
         state["error"] = built.get("message", "The week did not pass.")
         return
-    record = ConfirmationRecorder().record(built["confirm"], reply, "user", check_in)
+    confirm = _mark_first_plan(built["confirm"])
+    record = ConfirmationRecorder().record(confirm, reply, "user", check_in)
     if not record.confirmed:
         state["error"] = record.message
         return
-    from routines import start_daily_loop
+    if not _store_onboarding_record(record, built["confirm"]):
+        from seal_secret import DATA_FILE_MESSAGE
 
+        state["error"] = DATA_FILE_MESSAGE
+        state["confirmed"] = False
+        state["record"] = None
+        return
+    from routines import first_checkin_day, start_daily_loop
+
+    state["error"] = None
     state["record"] = record
     state["confirmed"] = True
     loop = start_daily_loop(reply)
     state["routines_on"] = loop["enabled"]
     state["times"] = loop["times"]
+    days = _profile(state).get("days") or []
+    if days:
+        state["first_checkin"] = first_checkin_day(min(days))
+    clear_pending_profile()
 
 
 def _proposal(state):
@@ -625,11 +1465,10 @@ def _proposal(state):
     equipment = answers.get("equipment", "bodyweight")
     return (
         f"{days} days, {minutes} min, {goal}, {equipment}. "
-        "One yes confirms the plan and starts the morning check-in at 7:00, "
+        "One yes confirms the plan and starts the morning check-in at 07:00, "
         "the evening follow-up at 20:00, and the weekly review Sunday at 18:00. "
-        "Routines, each is opt-in, in this same message: "
-        "daily check-in, evening follow-up, weekly review, monthly review, yearly review. "
-        "One reply can change a time. Do not ask for another yes."
+        "Routines, each is opt-in. "
+        "One example: yes, morning 6:30."
     )
 
 
@@ -646,15 +1485,82 @@ def _unclear_par_q(state):
     return "Still need a yes or no: " + ", ".join(missing) + "."
 
 
+def pending_profile_path():
+    """Draft answers during intake. Removed once the plan is confirmed."""
+    return os.path.join(os.path.dirname(os.path.abspath(__file__)), "data", "pending_profile.json")
+
+
+def clear_pending_profile(path=None):
+    """Delete the draft. The profile memory and the saved week keep the answers."""
+    target = pending_profile_path() if path is None else path
+    if os.path.isfile(target):
+        os.remove(target)
+        return True
+    return False
+
+
+def _confirmed_line(state):
+    times = state.get("times") or {}
+    enabled = state.get("routines_on") or []
+    parts = []
+    if "daily_checkin" in enabled:
+        parts.append(f"morning at {times.get('daily_checkin', '07:00')}")
+    if "evening_followup" in enabled:
+        parts.append(f"evening at {times.get('evening_followup', '20:00')}")
+    if "weekly_review" in enabled:
+        parts.append(f"weekly {times.get('weekly_review', 'Sun 18:00')}")
+    if not parts:
+        return "Confirmed."
+    line = ", ".join(parts)
+    return "Confirmed. " + line[0].upper() + line[1:] + "."
+
+
 def speak(state):
     """The next bot reply. The first one is question 1 when nothing is known."""
     from seal_secret import DATA_FILE_MESSAGE
 
+    if hold_is_active() and state.get("phase") != "symptom":
+        _adopt_hold(state)
     error = state.get("error")
     if isinstance(error, str) and DATA_FILE_MESSAGE in error:
         return DATA_FILE_MESSAGE
     if state["confirmed"]:
-        return "Confirmed. Morning at 07:00, evening at 20:00, weekly Sunday at 18:00."
+        return _confirmed_line(state)
+    error = state.get("error")
+    if isinstance(error, str) and error:
+        return error
+    held = state.get("phase")
+    if held == "age":
+        state["error"] = _AGE_ASK
+        return _AGE_ASK
+    if held == "symptom":
+        message = state.get("hold_message") or _AGE_ASK
+        state["error"] = message
+        return message
+    if held == "blocked":
+        _apply_age_readiness(state)
+        state["phase"] = "blocked"
+        _clear_proposal(state)
+        if state.get("error"):
+            return state["error"]
+        state["error"] = _AGE_ASK
+        return _AGE_ASK
+    missing = _first_missing(state)
+    if missing is None and state.get("checks_again"):
+        _apply_age_readiness(state)
+        if state.get("error"):
+            state["phase"] = "blocked"
+            _clear_proposal(state)
+            return state["error"]
+        from red_flag_check import is_passing_check_in
+
+        check_in = _check_in(state)
+        if not is_passing_check_in(check_in):
+            state["phase"] = "intake"
+            state["asked"] = "par_q"
+            state["error"] = check_in.message
+            return check_in.message
+        state["checks_again"] = False
     missing = _first_missing(state)
     if missing is not None:
         state["phase"] = "intake"
@@ -669,9 +1575,45 @@ def speak(state):
     return _proposal(state)
 
 
+def _state_for_attempt():
+    """The attempt a new conversation starts from.
+
+    An active hold, including a bad hold file, stays closed. A hold whose
+    date is already a previous local day reopens on the red-flag check.
+    The file is not removed.
+    """
+    kind, saved = _read_hold_file()
+    if kind == "active":
+        state = _blank()
+        _adopt_hold(state)
+        return state
+    answers = {}
+    if isinstance(saved, dict) and isinstance(saved.get("answers"), dict):
+        answers = saved["answers"]
+    if kind == "expired" and saved.get("checks_again") and answers:
+        state = _blank()
+        state["answers"] = answers
+        state["par_q"] = {}
+        state["phase"] = "intake"
+        state["asked"] = "par_q"
+        state["checks_again"] = True
+        state["readiness"] = None
+        state["par_q_reply"] = ""
+        state["confirmed"] = False
+        state["record"] = None
+        return state
+    return _blank()
+
+
+def open_chat():
+    """Same start as run_chat, before any reply. The bot calls run_chat."""
+    state = _state_for_attempt()
+    return state, speak(state)
+
+
 def run_chat(replies):
-    """Bot replies for these user messages, through the confirmed plan."""
-    state = _blank()
+    """The onboarding entry. A hold dated today is checked before any reply."""
+    state = _state_for_attempt()
     bots = []
     for reply in replies:
         apply_reply(state, reply)

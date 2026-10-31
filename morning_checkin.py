@@ -134,6 +134,7 @@ class MorningCheckIn:
 
         row = {
             "date": when.isoformat(),
+            "sleep_hours": parsed["sleep"],
             "sleep": parsed["sleep"],
             "soreness": parsed["soreness"],
             "energy": parsed["energy"],
@@ -254,16 +255,34 @@ class MorningCheckIn:
         return "normal"
 
     def _entry(self, entry) -> Dict:
+        expected = "sleep_hours, soreness, energy, stress"
         if not isinstance(entry, dict):
-            return self._bad("The check-in has to include sleep, soreness, energy, and stress.")
+            return self._bad(
+                "The check-in has to include sleep_hours, soreness, energy, and stress. "
+                f"Expected keys: {expected}."
+            )
+        unknown = [str(key) for key in entry if str(key) not in {
+            "sleep_hours", "sleep", "soreness", "energy", "stress", "date",
+        }]
+        if unknown:
+            listed = ", ".join(repr(key) for key in unknown)
+            return self._bad(f"Unknown key: {listed}. Expected keys: {expected}.")
+        values = dict(entry)
+        if "sleep_hours" in values:
+            values["sleep"] = values["sleep_hours"]
+        elif "sleep" not in values:
+            return self._bad(f"The check-in needs sleep_hours. Expected keys: {expected}.")
         try:
-            sleep = InputValidator.parse_number(entry["sleep"], "sleep", allow_zero=True)
-            soreness = InputValidator.parse_number(entry["soreness"], "soreness")
-            energy = InputValidator.parse_number(entry["energy"], "energy")
-            stress = InputValidator.parse_number(entry["stress"], "stress")
+            sleep = InputValidator.parse_number(values["sleep"], "sleep_hours", allow_zero=True)
+            soreness = InputValidator.parse_number(values["soreness"], "soreness")
+            energy = InputValidator.parse_number(values["energy"], "energy")
+            stress = InputValidator.parse_number(values["stress"], "stress")
         except (KeyError, ValidationError) as exc:
             if isinstance(exc, KeyError):
-                return self._bad("The check-in has to include sleep, soreness, energy, and stress.")
+                return self._bad(
+                    "The check-in has to include sleep_hours, soreness, energy, and stress. "
+                    f"Expected keys: {expected}."
+                )
             return self._bad(str(exc))
         if sleep > 24:
             return self._bad("Sleep hours have to be between 0 and 24.")

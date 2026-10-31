@@ -35,9 +35,199 @@ CLEAR_YES = {
 
 
 def hash_plan(plan) -> str:
-    """Stable hash of one exact plan version."""
+    """Stable hash of one exact plan version.
+
+    first_plan and its seal are part of this hash. A later week with the
+    flag copied on does not match a first-plan confirmation.
+    """
     payload = json.dumps(plan, sort_keys=True, separators=(",", ":"), default=str)
     return hashlib.sha256(payload.encode("utf-8")).hexdigest()
+
+
+def _first_plan_body(plan):
+    return {
+        key: value
+        for key, value in plan.items()
+        if key not in ("first_plan", "first_plan_seal")
+    }
+
+
+def _carries_load_or_calories(plan_body, sessions):
+    """True when this week has a load or a calorie target to put in changes."""
+    training = plan_body.get("training") if isinstance(plan_body.get("training"), dict) else None
+    if training is not None:
+        if training.get("current_load") not in (None, "") or training.get("previous_load") not in (None, ""):
+            return True
+    nutrition = plan_body.get("nutrition")
+    if isinstance(nutrition, dict) and nutrition.get("calories") not in (None, ""):
+        return True
+    for row in sessions:
+        if isinstance(row, dict) and row.get("load") not in (None, ""):
+            return True
+    return False
+
+
+def _is_later_week(plan):
+    """A raised load or a calorie change is not the one first plan.
+
+    A week with no changes field is still a later week when it carries a
+    load or calories. The sealed first plan that has a load also stores
+    that load in changes. A plan and sessions with neither a load nor a
+    changes field can still be the first plan.
+    """
+    if not isinstance(plan, dict):
+        return True
+    body = _first_plan_body(plan)
+    plan_body = body.get("plan")
+    sessions = body.get("sessions")
+    if not isinstance(plan_body, dict) or not isinstance(sessions, list) or not sessions:
+        return True
+    if any(not isinstance(row, dict) for row in sessions):
+        return True
+    training = plan_body.get("training") if isinstance(plan_body.get("training"), dict) else None
+    previous = training.get("previous_load") if training else None
+    current = training.get("current_load") if training else None
+    if previous not in (None, "") and current not in (None, "") and previous != current:
+        return True
+    if "changes" not in body or not isinstance(body.get("changes"), dict):
+        if "changes" in body:
+            return True
+        if _carries_load_or_calories(plan_body, sessions):
+            return True
+    else:
+        changes = body["changes"]
+        if "load" in changes:
+            if training is None or changes.get("load") != current or current != previous:
+                return True
+        if "calories" in changes:
+            nutrition = plan_body.get("nutrition")
+            if not isinstance(nutrition, dict) or nutrition.get("calories") != changes.get("calories"):
+                return True
+        if set(changes) - {"load", "calories"}:
+            return True
+    if previous not in (None, ""):
+        for row in sessions:
+            if row.get("load") != previous:
+                return True
+    return False
+
+
+def first_plan_seal(plan):
+    """HMAC over the first week. A later week gets no seal."""
+    from seal_secret import seal_hex
+
+    if _is_later_week(plan):
+        return ""
+    payload = json.dumps(
+        _first_plan_body(plan),
+        sort_keys=True,
+        separators=(",", ":"),
+        default=str,
+    )
+    return seal_hex(b"first_plan", payload)
+
+
+def _mark_first_plan(plan):
+    """Seal the first plan. Only onboarding, and tests, call this.
+
+    A later week is returned unmarked. A bare first_plan flag is not this.
+    """
+    if not isinstance(plan, dict):
+        return plan
+    marked = _first_plan_body(plan)
+    if _is_later_week(marked):
+        return marked
+    marked["first_plan"] = True
+    try:
+        marked["first_plan_seal"] = first_plan_seal(marked)
+    except OSError:
+        marked["first_plan_seal"] = ""
+    return marked
+
+
+def _canonical(value):
+    return json.dumps(value, sort_keys=True, separators=(",", ":"), default=str)
+
+
+def onboarding_record_path():
+    """The one first-plan confirmation for this install."""
+    return os.path.join(os.path.dirname(os.path.abspath(__file__)), "data", "onboarding_record.json")
+
+
+def _store_onboarding_record(record, week):
+    """Remember the onboarding confirmation. A later week is not stored."""
+    if not isinstance(record, ConfirmationRecord) or record.confirmed is not True:
+        return False
+    if _is_later_week(week):
+        return False
+    marked = _mark_first_plan(week)
+    seal = marked.get("first_plan_seal") if isinstance(marked, dict) else ""
+    if not isinstance(seal, str) or not seal:
+        return False
+    try:
+        if hash_plan(marked) != record.plan_hash:
+            return False
+    except (TypeError, ValueError):
+        return False
+    payload = {
+        "plan_hash": record.plan_hash,
+        "record_id": record.record_id,
+        "week": json.loads(_canonical(week)),
+        "first_plan_seal": seal,
+    }
+    path = onboarding_record_path()
+    folder = os.path.dirname(path)
+    temporary = path + ".tmp"
+    try:
+        os.makedirs(folder, exist_ok=True)
+        with open(temporary, "w", encoding="utf-8") as handle:
+            json.dump(payload, handle)
+            handle.write("\n")
+        os.replace(temporary, path)
+    except OSError:
+        return False
+    return True
+
+
+def _read_onboarding_record():
+    try:
+        with open(onboarding_record_path(), encoding="utf-8") as handle:
+            loaded = json.load(handle)
+    except (OSError, json.JSONDecodeError):
+        return None
+    return loaded if isinstance(loaded, dict) else None
+
+
+def covers_first_plan(record, week) -> bool:
+    """True when this record is the stored onboarding first plan for this week.
+
+    The week is not sealed here. A later week does not match the stored record.
+    """
+    stored = _read_onboarding_record()
+    if not isinstance(stored, dict) or not isinstance(record, ConfirmationRecord):
+        return False
+    if record.confirmed is not True or not confirmation_seal_matches(record):
+        return False
+    if record.plan_hash != stored.get("plan_hash") or record.record_id != stored.get("record_id"):
+        return False
+    if not isinstance(week, dict) or _canonical(week) != _canonical(stored.get("week")):
+        return False
+    seal = stored.get("first_plan_seal")
+    if not isinstance(seal, str) or not seal:
+        return False
+    try:
+        expected = first_plan_seal(week)
+    except OSError:
+        return False
+    if not expected or len(seal) != len(expected) or not hmac.compare_digest(seal, expected):
+        return False
+    marked = _first_plan_body(week)
+    marked["first_plan"] = True
+    marked["first_plan_seal"] = seal
+    try:
+        return hash_plan(marked) == record.plan_hash
+    except (TypeError, ValueError):
+        return False
 
 
 # Emoji that may sit beside a bare yes. Every other symbol stays and refuses.
@@ -131,6 +321,30 @@ def is_plan_yes(reply, proposal_hash) -> bool:
     if reply_pause(reply) is not None:
         return False
     return is_clear_yes(reply)
+
+
+def _first_plan_confirm(plan) -> bool:
+    """True only when onboarding sealed this object as the first plan.
+
+    A copied first_plan flag, or a seal from a different week, does not
+    count. A load or calorie proposal still needs a bare yes.
+    """
+    if not isinstance(plan, dict) or plan.get("first_plan") is not True:
+        return False
+    if not isinstance(plan.get("plan"), dict):
+        return False
+    if not isinstance(plan.get("sessions"), list):
+        return False
+    seal = plan.get("first_plan_seal")
+    if not isinstance(seal, str) or not seal:
+        return False
+    try:
+        expected = first_plan_seal(plan)
+    except OSError:
+        return False
+    if len(seal) != len(expected):
+        return False
+    return hmac.compare_digest(seal, expected)
 
 
 def reply_pause(reply):
@@ -279,11 +493,18 @@ class ConfirmationRecorder:
             errors.append("The plan has to be an object.")
 
         paused = reply_pause(reply)
+        schedule = None
+        # A routine-time yes confirms the first week only. A later load or
+        # calorie proposal still needs a bare yes.
+        if paused is None and _first_plan_confirm(plan):
+            from routines import plan_schedule
+
+            schedule = plan_schedule(reply)
         if not isinstance(reply, str) or not reply.strip():
             errors.append("The confirmation has to be the user's own words.")
         elif paused is not None:
             errors.append(paused.message)
-        elif not is_clear_yes(reply):
+        elif not is_clear_yes(reply) and schedule is None:
             errors.append(
                 "That reply is not a clear yes. "
                 "Vague replies like 'sure I guess', 'looks fine', or 'whatever' do not confirm a plan."

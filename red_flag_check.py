@@ -27,6 +27,38 @@ def _check_in_seal(message: str):
         return None
 
 
+def clear_safety_no(reply) -> bool:
+    """A clear no to the short safety line, with only scores after it.
+
+    'no', 'no, 7, 2', and 'no, 7, 2, 4, 2' answer that line.
+    'none' does not. That word counts only after the full red-flag list.
+    A symptom, a 'but', another script, or any other word does not.
+    """
+    if not isinstance(reply, str) or not reply.strip():
+        return False
+    if "?" in reply or "？" in reply:
+        return False
+    for char in reply:
+        if char.isspace() or char.isdigit() or ("a" <= char.lower() <= "z"):
+            continue
+        if char in ".,!;:'\"-":
+            continue
+        return False
+    tokens = re.findall(r"[a-z]+|\d+(?:\.\d+)?", reply.lower().replace("'", ""))
+    if not tokens or tokens[0] not in {"no", "nope"}:
+        return False
+    allowed = {
+        "no", "nope", "fine", "sore", "very", "bad", "sleep", "slept",
+        "min", "kg", "good", "low", "ok", "okay",
+    }
+    for token in tokens:
+        if re.fullmatch(r"\d+(?:\.\d+)?", token):
+            continue
+        if token not in allowed:
+            return False
+    return True
+
+
 def is_passing_check_in(result) -> bool:
     """True only for a clear scan_check_in result issued by this module."""
     if not isinstance(result, RedFlagResult):
