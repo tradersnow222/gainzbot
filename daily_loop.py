@@ -13,10 +13,168 @@ from safety_labels import hard_stop, hard_stop_message, label_action
 from signals import read_gap_reply
 
 
+def _evening_step(step_id, prompt, options=None, typed=False, custom=False, optional=False):
+    step = {"id": step_id, "prompt": prompt}
+    if typed:
+        step["input"] = "text"
+    else:
+        step["options"] = list(options)
+    if custom:
+        step["allowCustom"] = True
+    if optional:
+        step["optional"] = True
+    return step
+
+
+_EVENING_PROMPT = (
+    "Did you do it? "
+    "How it felt, enjoyment, soreness, energy, and any symptoms. "
+    "Food is optional. Type it or send a photo. It does not block."
+)
+_POST_DID = {"yes": True, "partly": True, "no": False}
+_POST_FELT = {"easy", "right", "hard"}
+_POST_SYMPTOMS = {
+    "none": {
+        "minor_signal": False,
+        "red_flag": "none",
+        "injury": "none",
+        "note_ok": False,
+    },
+    "chest pain": {
+        "minor_signal": False,
+        "red_flag": "chest_pain",
+        "injury": "none",
+        "note_ok": False,
+    },
+    "dizziness or fainting": {
+        "minor_signal": False,
+        "red_flag": "fainting",
+        "injury": "none",
+        "note_ok": False,
+    },
+    "sharp joint pain": {
+        "minor_signal": False,
+        "red_flag": "sharp_joint_pain",
+        "injury": "none",
+        "note_ok": False,
+    },
+}
+
+
+def post_workout_card():
+    """One evening card. Food is optional and does not block."""
+    scores = ["1", "2", "3", "4", "5"]
+    return {
+        "id": "post_workout",
+        "widget": "question_card",
+        "prompt": _EVENING_PROMPT,
+        "steps": [
+            _evening_step("did_it", "Did you do it?", ["yes", "partly", "no"]),
+            _evening_step("felt", "How it felt", ["easy", "right", "hard"]),
+            _evening_step("enjoyment", "Enjoyment", scores),
+            _evening_step("soreness", "Soreness", scores),
+            _evening_step("energy", "Energy", scores),
+            _evening_step(
+                "symptoms",
+                "Any symptoms?",
+                ["none", "chest pain", "dizziness or fainting", "sharp joint pain", "other"],
+                custom=True,
+            ),
+            _evening_step("food", "Food", typed=True, optional=True),
+        ],
+    }
+
+
+def post_workout_text():
+    card = post_workout_card()
+    payload = {"widget": "question_card", "steps": [dict(step) for step in card["steps"]]}
+    return card["prompt"] + "\n" + json.dumps(payload)
+
+
+def _post_line(value):
+    if isinstance(value, bool) or value is None:
+        return ""
+    if isinstance(value, int):
+        return str(value)
+    if not isinstance(value, str):
+        return ""
+    return " ".join(value.strip().lower().split())
+
+
+def _post_score(value):
+    if isinstance(value, bool):
+        return None
+    if isinstance(value, int) and 1 <= value <= 5:
+        return value
+    if isinstance(value, str) and value.strip().isdigit():
+        number = int(value.strip())
+        if 1 <= number <= 5:
+            return number
+    return None
+
+
+def map_post_workout(answers):
+    """Card taps onto did_it, felt, ate, enjoyment, soreness, energy, and labels.
+
+    Food may be missing. Typed food or a custom symptom is the hard-stop text.
+    A custom symptom that is not a hard stop is an ordinary note.
+    """
+    if not isinstance(answers, dict):
+        return None
+    did = _post_line(answers.get("did_it"))
+    if did not in _POST_DID:
+        return None
+    felt = _post_line(answers.get("felt"))
+    if felt not in _POST_FELT:
+        return None
+    enjoyment = _post_score(answers.get("enjoyment"))
+    soreness = _post_score(answers.get("soreness"))
+    energy = _post_score(answers.get("energy"))
+    if enjoyment is None or soreness is None or energy is None:
+        return None
+    symptom = _post_line(answers.get("symptoms"))
+    labels = _POST_SYMPTOMS.get(symptom)
+    custom = ""
+    if labels is None:
+        raw = answers.get("symptoms")
+        custom = raw.strip() if isinstance(raw, str) else ""
+        if _post_line(custom) in {"", "other"}:
+            note = answers.get("symptoms_note")
+            if not isinstance(note, str) or not note.strip():
+                note = answers.get("custom")
+            custom = note.strip() if isinstance(note, str) else ""
+        if not custom:
+            return None
+        labels = {
+            "minor_signal": False,
+            "red_flag": "none",
+            "injury": "none",
+            "note_ok": True,
+        }
+    food = answers.get("food")
+    if food is None:
+        food = answers.get("ate")
+    typed = []
+    if isinstance(food, str) and food.strip():
+        typed.append(food.strip())
+    if custom:
+        typed.append(custom)
+    fields = {
+        "did_it": _POST_DID[did],
+        "felt": felt,
+        "enjoyment": enjoyment,
+        "soreness": soreness,
+        "energy": energy,
+    }
+    if isinstance(food, str):
+        fields["ate"] = " ".join(food.split())
+    return {"fields": fields, "labels": dict(labels), "typed": " ".join(typed)}
+
+
 _SYMPTOM = "Morning. Any chest pain, trouble breathing, dizziness or new pain? no / yes"
 _MORNING = "Hours of sleep, and soreness from 1 to 5?"
 _SECOND = "One more: soreness or sleep, in a word or a number."
-_EVENING = "Did you do it? easy, right, or hard. What did you eat? Enjoyment 1-5."
+_EVENING = post_workout_text()
 _NUDGE = "Missed today. I'll pick it up in the morning."
 
 
@@ -693,6 +851,18 @@ class DailyLoop:
             blocked = _data_file_message()
             if blocked:
                 return blocked
+        card_fields = None
+        if isinstance(reply, dict):
+            if self.phase.get(day) != "evening":
+                reply = ""
+            else:
+                mapped = map_post_workout(reply)
+                if mapped is None:
+                    return _EVENING
+                reply = mapped["typed"]
+                card_fields = mapped["fields"]
+                if labels is None:
+                    labels = mapped["labels"]
         if hard_stop(reply):
             self.notes.setdefault(day, {})["reply"] = reply
             return self._remember_pause(day, _safety_line(reply))
@@ -728,7 +898,7 @@ class DailyLoop:
             notes.update(parse_morning(reply))
             return self._workout(day)
         if phase == "evening":
-            return self._evening(day, reply, labels)
+            return self._evening(day, reply, labels, card_fields)
         return "I'll pick it up in the morning."
 
     def _unclear_path(self):
@@ -1393,26 +1563,8 @@ class DailyLoop:
             return _SECOND
         return _SYMPTOM
 
-    def _evening(self, day, reply, labels=None):
-        if labels is not None:
-            action = label_action(labels, self._unclear_count(day))
-            if action == "hold":
-                return self._remember_pause(day, _label_hold_text(reply, labels))
-            if action == "clear_age":
-                self._write_pending(day, "age_check")
-                return "How old are you? Please type the number."
-            if action == "swap":
-                self._remember_old_injury(day, reply)
-            if action not in {"note", "pass", "swap"}:
-                self._set_unclear(day, self._unclear_count(day) + 1)
-                self._open_follow_up(day, reply, labels)
-                self.phase[day] = "evening"
-                return _EVENING
-        elif not _evening_exact(reply):
-            self.phase[day] = "evening"
-            return _EVENING
+    def _store_evening(self, day, parsed):
         notes = self.notes.setdefault(day, {})
-        parsed = parse_evening(reply)
         if parsed.get("ate") == "" and notes.get("ate"):
             parsed = {key: value for key, value in parsed.items() if key != "ate"}
         notes.update(parsed)
@@ -1430,6 +1582,30 @@ class DailyLoop:
         if parsed["did_it"]:
             return "Logged. See you in the morning."
         return "Logged the miss. See you in the morning."
+
+    def _evening(self, day, reply, labels=None, card_fields=None):
+        if labels is not None:
+            action = label_action(labels, self._unclear_count(day))
+            if action == "hold":
+                return self._remember_pause(day, _label_hold_text(reply, labels))
+            if action == "clear_age":
+                self._write_pending(day, "age_check")
+                return "How old are you? Please type the number."
+            if action == "swap":
+                self._remember_old_injury(day, reply)
+            if action not in {"note", "pass", "swap"}:
+                self._set_unclear(day, self._unclear_count(day) + 1)
+                self._open_follow_up(day, reply, labels)
+                self.phase[day] = "evening"
+                return _EVENING
+        elif not _evening_exact(reply):
+            self.phase[day] = "evening"
+            return _EVENING
+        if card_fields is not None:
+            if isinstance(reply, str) and reply.strip():
+                self.notes.setdefault(day, {})["reply"] = reply
+            return self._store_evening(day, card_fields)
+        return self._store_evening(day, parse_evening(reply))
 
     def weekly(self, as_of):
         """A short review. A raise waits for 7 times 24 hours and stays inside 10 percent."""

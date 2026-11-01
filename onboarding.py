@@ -123,11 +123,15 @@ _GOAL_STEPS = (
     _step("days_per_week", "Days per week", ["2", "3", "4", "5+"]),
     _step("minutes", "Session length", ["20", "30", "45", "60+"]),
 )
-_TRAINING_STEPS = (
+_SAFETY_STEP = _step(
+    "safety",
+    "Has a doctor told you to limit exercise, or do you get chest pain, dizziness or fainting with activity?",
+    ["yes", "no"],
+)
+# Eight steps is the widget cap, so the second card keeps one real-life item.
+# Other benchmark keys still count when a profile includes them.
+_NOW_STEPS = (
     _step("stairs", "Carry groceries up two flights", ["easily", "with a break", "hard"]),
-    _step("play", "Play with kids or a dog for 20 min", ["easily", "with breaks", "hard"]),
-    _step("floor", "Get up off the floor", ["easily", "one hand", "both hands"]),
-    _step("toes", "Touch your toes", ["easily", "almost", "no"]),
     _step(
         "likes",
         "Activities you like",
@@ -155,22 +159,11 @@ _TRAINING_STEPS = (
         ["none", "old and healed", "knee", "back", "shoulder"],
         custom=True,
     ),
-)
-_SAFETY_STEPS = (
-    _step("hike", "Hike a few miles", ["easily", "with breaks", "hard"]),
-    _step("suitcase", "Carry a heavy suitcase", ["easily", "with a break", "hard"]),
-    _step("jog", "Easy jog", ["under 5 min", "5-15 min", "15-30 min", "30 min or more"]),
-    _step("pushups", "Push-ups, if you train", ["skip", "0-5", "6-15", "16-30", "31+"]),
-    _step(
-        "lifts",
-        "Lifts you know, if you train",
-        ["none", "light dumbbells", "a barbell I know", "heavy for me"],
-        custom=True,
-    ),
     _step("tracker", "Tracker", ["watch", "scale", "food app", "none"]),
     _step("stiffness", "Stiffness or a desk job", ["no", "some stiffness", "desk job", "both"]),
-    _step("safety", "Safety", ["yes", "no"]),
+    _SAFETY_STEP,
 )
+_NOW_PROMPT = _TRAINING_PROMPT + " " + _SAFETY_PROMPT
 _SAFETY_ASK = (
     "Has a doctor told you to limit exercise, or do you get chest pain, "
     "dizziness or fainting with activity? Yes or no."
@@ -189,11 +182,10 @@ def _card_text(prompt, steps):
 
 
 def intake_cards():
-    """The three intake messages, each one widget with at most 8 steps."""
+    """Intake widgets. At most two cards, at most 8 steps each."""
     cards = (
         ("goal", _GOAL_PROMPT, _GOAL_STEPS),
-        ("training", _TRAINING_PROMPT, _TRAINING_STEPS),
-        ("par_q", _SAFETY_PROMPT, _SAFETY_STEPS),
+        ("training", _NOW_PROMPT, _NOW_STEPS),
     )
     built = []
     for card_id, prompt, steps in cards:
@@ -207,7 +199,7 @@ def intake_cards():
 
 
 def _par_q_text():
-    return _card_text(_SAFETY_PROMPT, _SAFETY_STEPS)
+    return _card_text(_SAFETY_PROMPT, (_SAFETY_STEP,))
 
 
 def _injury_and_par_q(state):
@@ -237,7 +229,7 @@ GROUPS = (
     {
         "id": "training",
         "asks": ("sport", "training_days", "minutes", "equipment", "experience", "injuries", "sources"),
-        "text": _card_text(_TRAINING_PROMPT, _TRAINING_STEPS),
+        "text": _card_text(_NOW_PROMPT, _NOW_STEPS),
     },
     {
         "id": "par_q",
@@ -248,10 +240,13 @@ GROUPS = (
 
 
 def messages():
-    """Three or four short intake messages. Not one question at a time."""
-    if not (3 <= len(GROUPS) <= 4):
+    """The intake cards, one or two. The opening sends them in one turn."""
+    cards = intake_cards()
+    if not 1 <= len(cards) <= 2:
         return []
-    return [group["text"] for group in GROUPS]
+    if any(not 1 <= len(card["steps"]) <= 8 for card in cards):
+        return []
+    return [_card_text(card["prompt"], card["steps"]) for card in cards]
 
 
 def question_one():
@@ -263,7 +258,7 @@ def question_one():
     if hold_is_active():
         state = _state_for_attempt()
         return state.get("error") or state.get("hold_message") or _HOLD_CLOSED
-    return GROUPS[0]["text"]
+    return "\n".join(messages())
 
 
 def _fold(reply):
@@ -803,6 +798,18 @@ def _first_missing(state):
         if _missing_keys(state, group):
             return group
     return None
+
+
+def _intake_unstarted(state):
+    """No intake answer yet, so every card goes out in this turn."""
+    if state.get("from_profile_payload") or state.get("goal_vague") or state.get("safety_followup"):
+        return False
+    if state.get("par_q"):
+        return False
+    if state.get("phase") not in {None, "intake"}:
+        return False
+    answers = state.get("answers") if isinstance(state.get("answers"), dict) else {}
+    return not answers
 
 
 def _fill_group(state, group_id):
@@ -4853,6 +4860,10 @@ def speak(state):
         state["checks_again"] = False
     missing = _first_missing(state)
     if missing is not None:
+        if _intake_unstarted(state):
+            state["phase"] = "intake"
+            state["asked"] = "goal"
+            return question_one()
         if (
             missing["id"] == "goal"
             and state.get("goal_vague")
