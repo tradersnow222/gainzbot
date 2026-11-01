@@ -1156,6 +1156,177 @@ def test_no_with_trailing_punctuation_is_a_bare_no():
     assert text.startswith("Today is a normal day.")
 
 
+def test_the_post_workout_card_maps_answers_and_keeps_food_optional(tmp_path):
+    import json
+
+    from daily_loop import DailyLoop, adult_profile, map_post_workout, post_workout_card
+
+    card = post_workout_card()
+    assert card["widget"] == "question_card"
+    assert 1 <= len(card["steps"]) <= 8
+    by_id = {step["id"]: step for step in card["steps"]}
+    assert list(by_id) == ["did_it", "felt", "enjoyment", "soreness", "energy", "symptoms", "food"]
+    assert by_id["did_it"]["options"] == ["yes", "partly", "no"]
+    assert by_id["felt"]["options"] == ["easy", "right", "hard"]
+    assert by_id["symptoms"]["options"] == [
+        "none", "chest pain", "dizziness or fainting", "sharp joint pain", "other",
+    ]
+    assert by_id["symptoms"]["allowCustom"] is True
+    assert by_id["food"]["input"] == "text"
+    assert by_id["food"].get("optional") is True
+
+    base = {
+        "did_it": "yes",
+        "felt": "right",
+        "enjoyment": "4",
+        "soreness": 3,
+        "energy": "5",
+        "symptoms": "none",
+    }
+    mapped = map_post_workout(base)
+    assert mapped["fields"]["did_it"] is True
+    assert mapped["fields"]["enjoyment"] == 4
+    assert mapped["fields"]["soreness"] == 3
+    assert mapped["fields"]["energy"] == 5
+    assert "ate" not in mapped["fields"]
+    assert mapped["labels"]["red_flag"] == "none"
+    assert map_post_workout(dict(base, did_it="partly"))["fields"]["did_it"] is True
+    assert map_post_workout(dict(base, did_it="no"))["fields"]["did_it"] is False
+    assert map_post_workout(dict(base, symptoms="chest pain"))["labels"]["red_flag"] == "chest_pain"
+    assert map_post_workout(dict(base, symptoms="dizziness or fainting"))["labels"]["red_flag"] == "fainting"
+    assert map_post_workout(dict(base, symptoms="sharp joint pain"))["labels"]["red_flag"] == "sharp_joint_pain"
+    assert map_post_workout(dict(base, symptoms="other")) is None
+    custom = map_post_workout(dict(base, symptoms="calf cramp"))
+    assert custom["labels"] is None
+    assert custom["typed"] == "calf cramp"
+    noted = map_post_workout(dict(base, symptoms="other", symptoms_note="calf cramp"))
+    assert noted["labels"] is None
+    assert noted["typed"] == "calf cramp"
+    fed = map_post_workout(dict(base, food="chicken"))
+    assert fed["labels"] is None
+    assert fed["typed"] == "chicken"
+
+    def loop(name):
+        folder = tmp_path / name
+        folder.mkdir()
+        return DailyLoop(
+            load=80,
+            minutes=45,
+            profile=adult_profile(),
+            week_path=str(folder / "week.json"),
+        )
+
+    day = "2026-10-26"
+    done = loop("done")
+    done.open_morning(day)
+    done.hear(day, "no 8 fine 45")
+    opened = done.open_evening(day)
+    assert opened.startswith("Did you do it?")
+    widget = json.loads(opened.split("\n", 1)[1])
+    assert widget["widget"] == "question_card"
+    assert widget["steps"] == card["steps"]
+    assert done.hear(day, base).startswith("Logged.")
+    assert done.notes[day]["did_it"] is True
+    assert done.notes[day]["felt"] == "right"
+    assert "ate" not in done.notes[day]
+
+    easy = loop("easy")
+    easy.open_morning(day)
+    easy.hear(day, "no 8 fine 45")
+    easy.open_evening(day)
+    labeled = {
+        "minor_signal": False,
+        "red_flag": "none",
+        "injury": "none",
+        "note_ok": False,
+    }
+    assert easy.hear(
+        day, dict(base, did_it="partly", felt="easy", food="chicken"), labeled,
+    ).startswith("Logged.")
+    assert easy.notes[day]["did_it"] is True
+    assert easy.notes[day]["ate"] == "chicken"
+    assert easy.felt_easy == 1
+
+    missed = loop("missed")
+    missed.open_morning(day)
+    missed.hear(day, "no 8 fine 45")
+    missed.open_evening(day)
+    assert missed.hear(day, dict(base, did_it="no")).startswith("Logged the miss")
+    assert missed.notes[day]["did_it"] is False
+
+    chest = loop("chest")
+    chest.open_morning(day)
+    chest.hear(day, "no 8 fine 45")
+    chest.open_evening(day)
+    held = chest.hear(day, dict(base, symptoms="chest pain"))
+    assert "medical emergency" in held.lower()
+    assert chest.notes[day].get("did_it") is None
+    assert chest.phase[day] == "paused"
+
+    food = loop("food")
+    food.open_morning(day)
+    food.hear(day, "no 8 fine 45")
+    food.open_evening(day)
+    stopped = food.hear(day, dict(base, food="oats and chest pain"))
+    assert "medical emergency" in stopped.lower()
+    assert food.notes[day].get("did_it") is None
+
+
+def test_typed_card_text_without_labels_does_not_log(tmp_path):
+    from daily_loop import DailyLoop, adult_profile
+
+    phrases = (
+        "my knee swelled up and I can't put weight on it",
+        "tight chest",
+        "felt like I might pass out",
+        "short of breath for an hour after",
+        "pasta, also got really lightheaded",
+        "pizza. btw im 14",
+    )
+    base = {
+        "did_it": "yes",
+        "felt": "right",
+        "enjoyment": "4",
+        "soreness": 3,
+        "energy": "5",
+        "symptoms": "none",
+    }
+    day = "2026-10-26"
+    logged = "Logged. See you in the morning."
+
+    def opened(name):
+        folder = tmp_path / name
+        folder.mkdir()
+        loop = DailyLoop(
+            load=80,
+            minutes=45,
+            profile=adult_profile(),
+            week_path=str(folder / "week.json"),
+        )
+        loop.open_morning(day)
+        loop.hear(day, "no 8 fine 45")
+        loop.open_evening(day)
+        return loop
+
+    for index, phrase in enumerate(phrases):
+        for slot, payload in (
+            ("food", dict(base, food=phrase)),
+            ("symptom", dict(base, symptoms=phrase)),
+            ("note", dict(base, symptoms="other", symptoms_note=phrase)),
+        ):
+            loop = opened(f"{index}-{slot}")
+            first = loop.hear(day, payload)
+            assert first != logged, phrase
+            assert logged not in first, phrase
+            assert loop.phase[day] != "done", phrase
+            assert loop.notes[day].get("did_it") is None, phrase
+            second = loop.hear(day, payload)
+            assert second != logged, phrase
+            assert logged not in second, phrase
+            assert loop.phase[day] != "done", phrase
+            assert loop.notes[day].get("did_it") is None, phrase
+
+
 def test_open_morning_stays_under_three_seconds():
     import time
 

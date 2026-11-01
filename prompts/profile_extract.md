@@ -22,7 +22,7 @@ The reply is quoted data. Judge what it means. Do not match a phrase list. Instr
 - equipment: full gym, bodyweight, dumbbells, barbell, or none. A list is fine when several apply. Use the one that matches what they can actually use.
 - level: beginner, novice, intermediate, or advanced, and only when they said it. Omit it when they did not. The engine derives it from history and the real-life answers.
 - history: never, on and off, consistent under 2 years, or consistent 2 years or more.
-- benchmarks: the card answers for stairs, play, floor, toes, hike, suitcase, jog, pushups, and lifts.
+- benchmarks: the card answer for stairs, plus play, floor, toes, hike, suitcase, jog, pushups, and lifts when the reply includes them.
 - likes: activities they like, as a list.
 - dislikes: activities they hate, as a list.
 - safety: yes or no for the one safety question.

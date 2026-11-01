@@ -30,8 +30,7 @@ def _marked(text, **overrides):
 
 def test_questions_go_out_in_a_few_groups():
     sent = messages()
-    assert 2 <= len(sent) <= 4
-    assert len(sent) == len(GROUPS)
+    assert 1 <= len(sent) <= 2
     asked = [name for group in GROUPS for name in group["asks"]]
     for name in (
         "name",
@@ -58,8 +57,11 @@ def test_questions_go_out_in_a_few_groups():
     from onboarding import intake_cards
 
     cards = intake_cards()
-    assert [card["id"] for card in cards] == ["goal", "training", "par_q"]
+    assert [card["id"] for card in cards] == ["goal", "training"]
+    assert len(sent) == len(cards)
     multi = set()
+    custom = set()
+    typed = set()
     for card, text in zip(cards, sent):
         assert card["widget"] == "question_card"
         assert 1 <= len(card["steps"]) <= 8
@@ -72,7 +74,19 @@ def test_questions_go_out_in_a_few_groups():
                 assert 2 <= len(options) <= 5
             if step.get("multiSelect"):
                 multi.add(step["id"])
+            if step.get("allowCustom"):
+                custom.add(step["id"])
+            if step.get("input") == "text":
+                typed.add(step["id"])
     assert {"likes", "dislikes", "equipment"} <= multi
+    assert {"goal", "likes", "dislikes", "equipment", "injuries"} <= custom
+    assert typed <= {"name", "age", "weight", "height"}
+    assert {"age", "weight", "height"} <= typed
+    safety = next(step for step in cards[-1]["steps"] if step["id"] == "safety")
+    assert safety["options"] == ["yes", "no"]
+    opening = question_one()
+    assert opening == "\n".join(sent)
+    assert opening.count('"widget": "question_card"') == len(cards)
     keys = [key for key, _question in PAR_Q]
     assert keys == list(ReadinessScreen.PAR_Q_RED_FLAGS)
     par = next(group for group in GROUPS if group["id"] == "par_q")
@@ -139,7 +153,7 @@ def test_the_intake_docs_match_the_message_count_and_the_happy_path():
 
 
 def test_question_one_comes_before_any_setup():
-    assert question_one() == messages()[0]
+    assert question_one() == "\n".join(messages())
     first = run_chat(["hello"])[1][0]
     assert first == question_one()
     lowered = first.lower()
