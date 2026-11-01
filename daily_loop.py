@@ -116,8 +116,8 @@ def _post_score(value):
 def map_post_workout(answers):
     """Card taps onto did_it, felt, ate, enjoyment, soreness, energy, and labels.
 
-    Food may be missing. Typed food or a custom symptom is the hard-stop text.
-    A custom symptom that is not a hard stop is an ordinary note.
+    Food may be missing. Taps with no typed text keep their built-in labels.
+    Typed text does not get a label here. The caller treats it as unlabeled.
     """
     if not isinstance(answers, dict):
         return None
@@ -145,12 +145,6 @@ def map_post_workout(answers):
             custom = note.strip() if isinstance(note, str) else ""
         if not custom:
             return None
-        labels = {
-            "minor_signal": False,
-            "red_flag": "none",
-            "injury": "none",
-            "note_ok": True,
-        }
     food = answers.get("food")
     if food is None:
         food = answers.get("ate")
@@ -168,7 +162,10 @@ def map_post_workout(answers):
     }
     if isinstance(food, str):
         fields["ate"] = " ".join(food.split())
-    return {"fields": fields, "labels": dict(labels), "typed": " ".join(typed)}
+    text = " ".join(typed)
+    if text:
+        labels = None
+    return {"fields": fields, "labels": None if labels is None else dict(labels), "typed": text}
 
 
 _SYMPTOM = "Morning. Any chest pain, trouble breathing, dizziness or new pain? no / yes"
@@ -860,9 +857,13 @@ class DailyLoop:
                 if mapped is None:
                     return _EVENING
                 reply = mapped["typed"]
-                card_fields = mapped["fields"]
-                if labels is None:
+                # Taps alone use the built-in labels. Typed text with no host
+                # labels stays unlabeled, same as a free-text evening reply.
+                if labels is None and not reply.strip():
                     labels = mapped["labels"]
+                    card_fields = mapped["fields"]
+                elif labels is not None:
+                    card_fields = mapped["fields"]
         if hard_stop(reply):
             self.notes.setdefault(day, {})["reply"] = reply
             return self._remember_pause(day, _safety_line(reply))
